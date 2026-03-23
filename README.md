@@ -82,7 +82,6 @@ The app will be available at `http://localhost:5000`.
 ├── models.py                   # SQLAlchemy database models
 ├── database.py                 # Database initialisation
 ├── database_storage_manager.py # PostgreSQL session storage
-├── storage_manager.py          # File-based session storage fallback
 ├── performance_optimizations.py# In-memory caching and rate limiting
 ├── speed_optimizations.py      # Connection pooling and async cleanup
 ├── deployment_config.py        # HTTPS redirect and security headers

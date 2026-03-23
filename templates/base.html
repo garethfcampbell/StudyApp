@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}QUB Finance Self-Study{% endblock %}</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <!-- Critical CSS loaded immediately, non-critical deferred -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome deferred - icons load after page is interactive -->
+    <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" as="style" crossorigin="anonymous" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"></noscript>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #ffffff;
+            line-height: 1.2;
+        }
+        
+        /* Global line height for ALL text elements */
+        *, *::before, *::after,
+        body, html, div, p, span, h1, h2, h3, h4, h5, h6,
+        ul, ol, li, blockquote, pre, code, strong, em, i, b,
+        .message, .message-content, .assistant,
+        .chat-message, .btn, input, textarea, select,
+        .form-control, .form-group, .container, .row, .col,
+        .card, .card-body, .card-title, .card-text,
+        .panel, .panel-body, .text-muted, .lead,
+        a, label, small, .small, .text-sm {
+            line-height: 1.2 !important;
+        }
+        
+        /* Force line height on all text content */
+        .message-content * {
+            line-height: 1.2 !important;
+        }
+        
+        /* Override Bootstrap line heights */
+        .lead, .text-lead {
+            line-height: 1.2 !important;
+        }
+        .main-header {
+            background: transparent;
+            color: #8B0000;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+        .header-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 3rem;
+        }
+        .qub-logo {
+            height: 60px;
+            width: auto;
+        }
+        .header-title {
+            color: #D6000D;
+            font-weight: bold;
+            margin: 0;
+        }
+        
+        /* Portrait phone layout */
+        @media (max-width: 576px) and (orientation: portrait) {
+            .header-content {
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 1rem;
+                text-align: center;
+            }
+            .qub-logo {
+                height: 50px;
+                margin-bottom: 0.5rem;
+                order: -1; /* Move logo above text */
+            }
+            .header-title {
+                font-size: 1.25rem;
+                order: 1; /* Move text below logo */
+            }
+            .main-header {
+                padding: 1.5rem 0;
+                margin-bottom: 1.5rem;
+            }
+        }
+        .chat-container {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05), 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        .message {
+            margin-bottom: 1rem;
+            padding: 1rem;
+            border-radius: 10px;
+            max-width: 85%;
+            box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.03), 0 2px 4px rgba(0, 0, 0, 0.08);
+        }
+        .homepage-panel {
+            padding: 2rem 2rem 1rem 2rem !important;
+            box-sizing: border-box !important;
+        }
+        #benefitsSummary {
+            padding: 2rem 2rem 1rem 2rem !important;
+            box-sizing: border-box !important;
+        }
+        div.homepage-panel.message {
+            padding: 2rem 2rem 1rem 2rem !important;
+        }
+        .message.user {
+            background-color: #D6000D;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+            font-weight: bold;
+        }
+        .message.assistant {
+            background-color: #f5f5f5;
+            margin-right: auto;
+        }
+        .sidebar {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05), 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .quick-actions {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05), 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+            margin-top: 1.5rem;
+        }
+        .chat-input {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05), 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+            margin-top: 1rem;
+        }
+        .loading {
+            text-align: center;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        .file-upload-area {
+            border: 2px dashed #ddd;
+            border-radius: 10px;
+            padding: 2rem;
+            text-align: center;
+            margin-bottom: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .file-upload-area:hover {
+            border-color: #667eea;
+            background-color: #f8f9ff;
+        }
+        .file-upload-area.dragover {
+            border-color: #667eea;
+            background-color: #f0f4ff;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+        }
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+        }
+        .btn-primary.qub-submit {
+            background: #D6000D !important;
+            border-color: #D6000D !important;
+        }
+        .btn-primary.qub-submit:hover {
+            background: #B8000B !important;
+            border-color: #B8000B !important;
+        }
+        .alert {
+            border-radius: 10px;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 1rem;
+        }
+        .spinner-border {
+            width: 1.5rem;
+            height: 1.5rem;
+        }
+        /* HANGING INDENT BULLET POINTS - NUCLEAR OPTION */
+        .message ul,
+        .message-content ul,
+        .assistant ul,
+        div.message ul,
+        div.message-content ul,
+        div.assistant ul {
+            list-style-type: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            margin-top: 1.5rem !important;
+            margin-bottom: 0.25rem !important;
+        }
+        
+        /* COMPREHENSIVE SPACING BETWEEN HEADINGS AND UL ELEMENTS */
+        .message strong + ul,
+        .message strong + br + ul,
+        .message-content strong + ul,
+        .message-content strong + br + ul,
+        .assistant strong + ul,
+        .assistant strong + br + ul,
+        div.message strong + ul,
+        div.message strong + br + ul,
+        div.message-content strong + ul,
+        div.message-content strong + br + ul,
+        div.assistant strong + ul,
+        div.assistant strong + br + ul,
+        .message h1 + ul,
+        .message h2 + ul,
+        .message h3 + ul,
+        .message h4 + ul,
+        .message h5 + ul,
+        .message h6 + ul,
+        .message-content h1 + ul,
+        .message-content h2 + ul,
+        .message-content h3 + ul,
+        .message-content h4 + ul,
+        .message-content h5 + ul,
+        .message-content h6 + ul,
+        .assistant h1 + ul,
+        .assistant h2 + ul,
+        .assistant h3 + ul,
+        .assistant h4 + ul,
+        .assistant h5 + ul,
+        .assistant h6 + ul {
+            margin-top: 1rem !important;
+        }
+        
+        /* FORCE SPACING AFTER UL ELEMENTS BEFORE NEXT HEADING */
+        .message ul + strong,
+        .message ul + br + strong,
+        .message-content ul + strong,
+        .message-content ul + br + strong,
+        .assistant ul + strong,
+        .assistant ul + br + strong,
+        div.message ul + strong,
+        div.message ul + br + strong,
+        div.message-content ul + strong,
+        div.message-content ul + br + strong,
+        div.assistant ul + strong,
+        div.assistant ul + br + strong {
+            margin-top: 1.5rem !important;
+            display: inline-block !important;
+        }
+        
+        .message ul li,
+        .message-content ul li,
+        .assistant ul li,
+        div.message ul li,
+        div.message-content ul li,
+        div.assistant ul li {
+            position: relative !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            padding-left: 1.5rem !important;
+            margin-bottom: 0 !important;
+            line-height: 1.2 !important;
+            text-indent: 0 !important;
+            list-style: none !important;
+            display: block !important;
+        }
+        
+        .message ul li:before,
+        .message-content ul li:before,
+        .assistant ul li:before,
+        div.message ul li:before,
+        div.message-content ul li:before,
+        div.assistant ul li:before {
+            content: "-" !important;
+            position: absolute !important;
+            left: 0.3rem !important;
+            top: 0 !important;
+            color: #333 !important;
+            font-weight: bold !important;
+            font-size: 1em !important;
+            line-height: 1.6 !important;
+        }
+        
+        .message ul li ul {
+            margin-top: 0.5rem !important;
+            margin-bottom: 0.2rem !important;
+        }
+        .message ul li ul li {
+            margin-top: 0;
+            margin-bottom: 0;
+            line-height: 1.2;
+        }
+        .message ul > li {
+            margin-bottom: 0;
+        }
+        .message ul ul {
+            margin-top: 0.5rem !important;
+            margin-bottom: 0.2rem !important;
+        }
+        
+        /* Custom upload alert box colors */
+        .alert.upload-progress {
+            background-color: #FF6600 !important;
+            color: white !important;
+            border-color: #FF6600 !important;
+        }
+        
+        .alert.upload-completed {
+            background-color: #28a745 !important;
+            color: white !important;
+            border-color: #28a745 !important;
+        }
+        
+        /* Custom styling for Revision Techniques buttons - Override Bootstrap completely */
+        .quick-actions .btn-outline-primary.processing,
+        .quick-actions .btn-outline-primary:active.processing,
+        .quick-actions .btn-outline-primary.active.processing {
+            background-color: #28a745 !important;
+            border-color: #28a745 !important;
+            color: white !important;
+        }
+        
+        /* Force override Bootstrap's default states */
+        .btn-outline-primary.processing {
+            background-color: #28a745 !important;
+            border-color: #28a745 !important;
+            color: white !important;
+        }
+        
+        .btn-outline-primary.processing:hover,
+        .btn-outline-primary.processing:focus,
+        .btn-outline-primary.processing:active {
+            background-color: #28a745 !important;
+            border-color: #28a745 !important;
+            color: white !important;
+        }
+        
+        /* Override Bootstrap's focus states */
+        .btn-outline-primary.processing:focus {
+            box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25) !important;
+        }
+        
+        /* Prevent Bootstrap from overriding our green state */
+        .btn-outline-primary.processing:not(:disabled):not(.disabled):active,
+        .btn-outline-primary.processing:not(:disabled):not(.disabled).active {
+            background-color: #28a745 !important;
+            border-color: #28a745 !important;
+            color: white !important;
+            box-shadow: 0 0 0 0.2rem rgba(40, 167, 69, 0.25) !important;
+        }
+
+
+
+
+        /* ADD THESE STYLES TO BASE.HTML */
+
+        /* Styling for the new calculation quiz layout */
+        .calculation-quiz-content .card {
+            border: 1px solid #e0e0e0;
+            margin-bottom: 1.5rem;
+            box-shadow: none;
+        }
+        .calculation-quiz-content .card-header {
+            background-color: #f8f9fa;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .equation-display {
+            background-color: #f1f3f5;
+            padding: 1.5rem;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 1.2rem;
+            border: 1px solid #dee2e6;
+        }
+        .challenge-problem-card {
+            border: 2px solid #D6000D; /* Highlight the user's main task */
+        }
+        .variables-content, .challenge-content, .worked-example-content {
+            padding: 1rem;
+        }
+        .quiz-options .form-check-label {
+            padding: 0.75rem 1.25rem;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            width: 100%;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+        }
+        
+        /* Add padding around the quiz options container for better spacing */
+        .quiz-options {
+            padding: 1.5rem 0;
+            margin-bottom: 1.5rem;
+        }
+        .quiz-options .form-check-label:hover {
+            background-color: #f8f9ff;
+            border-color: #667eea;
+        }
+        .quiz-options .form-check-input:checked + .form-check-label {
+            background-color: #e3e7fe;
+            border-color: #667eea;
+            font-weight: bold;
+        }
+        .quiz-options .form-check-input {
+            display: none; /* Hide the radio button, the label is the new button */
+        }
+
+        /* Accordion styles for collapsible sections */
+        .accordion-button {
+            font-weight: 500;
+        }
+        .accordion-button:not(.collapsed) {
+            color: #000;
+            background-color: #f7f7f7;
+        }
+        .accordion-button:focus {
+            box-shadow: none;
+        }
+
+        /* CALCULATION QUESTION SPECIFIC BULLET POINT FORMATTING - UL ELEMENTS ONLY */
+        .message.assistant ul,
+        .calculation-answer-input ul,
+        .calculation-quiz-content ul,
+        #calculationAnswerInput ul,
+        div[id*="calculation"] ul {
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1.2 !important;
+            margin-top: 1.5rem !important;
+            margin-bottom: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
+        
+        /* CALCULATION QUESTION SPECIFIC BULLET POINT FORMATTING - LI ELEMENTS ONLY */
+        .message.assistant ul li,
+        .calculation-answer-input ul li,
+        .calculation-quiz-content ul li,
+        #calculationAnswerInput ul li,
+        div[id*="calculation"] ul li {
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1.2 !important;
+            margin-top: 0 !important;
+            margin-bottom: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
+        
+        /* Override bullet point pseudo-elements for calculation questions */
+        .message.assistant ul li:before,
+        .calculation-answer-input ul li:before,
+        .calculation-quiz-content ul li:before,
+        #calculationAnswerInput ul li:before,
+        div[id*="calculation"] ul li:before {
+            line-height: 1.2 !important;
+            margin: 0 !important;
+            margin-top: 0 !important;
+            padding: 0 !important;
+        }
+        
+        /* Ensure padding-left is still applied only for the bullet positioning */
+        .message.assistant ul li,
+        .calculation-answer-input ul li,
+        .calculation-quiz-content ul li,
+        #calculationAnswerInput ul li,
+        div[id*="calculation"] ul li {
+            padding-left: 1.5rem !important; /* Only for bullet positioning */
+        }
+        
+    </style>
+</head>
+<body>
+    <header class="main-header">
+        <div class="container">
+            <div class="header-content">
+                <h1 class="header-title">
+                    QUB Finance: Self Study Tool
+                </h1>
+                <img src="{{ url_for('static', filename='images/qub_logo_new.jpg') }}" alt="Queen's University Belfast" class="qub-logo">
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Defer non-critical JavaScript for faster initial render -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js" defer></script>
+    
+    <!-- MathJax will be loaded conditionally when calculation questions are generated -->
+    
+    <!-- app.js also deferred to ensure Bootstrap/marked load first -->
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=1753136400000" defer></script>
+    
+    <script>
+        // Conditional MathJax loader for calculation questions
+        let mathJaxLoaded = false;
+        let mathJaxLoadingPromise = null;
+        
+        function loadMathJax() {
+            if (mathJaxLoaded) {
+                console.log('MathJax already loaded');
+                return Promise.resolve();
+            }
+            
+            if (mathJaxLoadingPromise) {
+                console.log('MathJax already loading');
+                return mathJaxLoadingPromise;
+            }
+            
+            console.log('Loading MathJax for calculation questions...');
+            
+            mathJaxLoadingPromise = new Promise((resolve, reject) => {
+                // Configure MathJax before loading
+                window.MathJax = {
+                    tex: {
+                        // Use only modern LaTeX delimiters (removed $ and $$ to prevent conflicts)
+                        inlineMath: [
+                            ['\\(', '\\)']
+                        ],        
+                        displayMath: [
+                            ['\\[', '\\]']
+                        ],                      
+                        processEscapes: true,
+                        // Load packages for advanced math environments
+                        packages: {'[+]': ['ams']}
+                    },
+                    loader: {
+                        load: ['[tex]/ams']
+                    },
+                    options: {
+                        // Only skip the standard tags. Don't limit by class.
+                        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+                    },
+                    startup: {
+                        ready() {
+                            console.log('MathJax ready');
+                            mathJaxLoaded = true;
+                            MathJax.startup.defaultReady();
+                            resolve();
+                        }
+                    }
+                };
+                
+                // Load MathJax script
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js';
+                script.async = true;
+                script.onload = () => {
+                    // Script loaded, MathJax will call startup.ready when fully initialized
+                };
+                script.onerror = (error) => {
+                    console.error('Failed to load MathJax:', error);
+                    reject(error);
+                };
+                document.head.appendChild(script);
+            });
+            
+            return mathJaxLoadingPromise;
+        }
+        
+        // Global math rendering function
+        async function renderMathInElement(element) {
+            if (window.MathJax && window.MathJax.typesetPromise) {
+                try {
+                    await window.MathJax.typesetPromise([element]);
+                } catch (err) {
+                    console.error('MathJax rendering error:', err);
+                }
+            }
+        }
+        
+        // Animated progress bar function
+        function animateProgressBar(progressBar, duration = 3000) {
+            let progress = 0;
+            const interval = 500; // Update every 0.5 seconds
+            const increment = 100 / (duration / interval);
+            
+            const timer = setInterval(() => {
+                progress += increment;
+                if (progress >= 100) {
+                    progress = 100;
+                    clearInterval(timer);
+                }
+                progressBar.style.width = progress + '%';
+                progressBar.setAttribute('aria-valuenow', Math.round(progress));
+            }, interval);
+            
+            return timer;
+        }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

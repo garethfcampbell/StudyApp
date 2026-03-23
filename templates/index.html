@@ -1,0 +1,3099 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row main-content">
+    <!-- Sidebar -->
+    <div class="col-md-4">
+        <div class="sidebar">
+            <h4><i class="fas fa-book me-2"></i>Lecture Notes</h4>
+            
+            <!-- File Upload Area -->
+            <div class="file-upload-area" id="fileUploadArea">
+                <div class="upload-content">
+                    <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
+                    <h5>Upload your lecture notes</h5>
+                    <p class="text-muted">Drag and drop or click to select PDF or PowerPoint files</p>
+                    <input type="file" id="fileInput" accept=".pdf,.pptx" style="display: none;">
+                </div>
+            </div>
+            
+            <!-- Upload Status -->
+            <div id="uploadStatus" class="mt-3"></div>
+            
+            <!-- Current File Info -->
+            {% if pdf_filename %}
+            <div class="alert alert-info" style="background-color: #28a745; color: white; border-color: #28a745;">
+                <i class="fas fa-check-circle me-2"></i>
+                <strong>Successfully loaded:</strong> {{ pdf_filename }}
+            </div>
+            {% endif %}
+            
+            <!-- Clear Session -->
+            <button class="btn btn-outline-danger btn-sm mt-3" onclick="clearSession()">
+                <i class="fas fa-trash me-2"></i>Clear Session
+            </button>
+        </div>
+    </div>
+    
+    <!-- Main Content -->
+    <div class="col-md-8">
+        {% if not has_document %}
+        <!-- Benefits Summary -->
+        <div class="homepage-panel" id="benefitsSummary" style="background-color: #f5f5f5; margin-bottom: 1rem; padding: 2rem 2rem 1rem 2rem !important; border-radius: 10px; max-width: 85%; box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.03), 0 2px 4px rgba(0, 0, 0, 0.08);">
+            <div class="message-content">
+                <h5><i class="fas fa-rocket me-2"></i>Why Use This Self-Study Tool?</h5>
+                
+                <div class="message-text">
+                    <p>This tool has been designed by staff in the Finance department at Queen's University Belfast, using AI tools, specifically for our students. You are encouraged to use it for 30 minutes each day, to help you understand and remember your lecture notes more effectively.</p>
+                    
+                    <p>It is powered by Artificial Intelligence to help you study and revise. AI is, and will be, an extremely helpful tool, but it should never be used for plagiarism, which would happen if you attempted to claim its output was your own work, without acknowledgement.</p>
+                    
+                    
+                    <ul>
+                        <li><strong><i class="fas fa-book me-2"></i>Upload your Lecture Notes</strong> - accepts PDFs and PowerPoint files of your QUB lecture notes to instantly create a personalized tutor</li>
+                        <li><strong><i class="fas fa-lightbulb me-2"></i>Key Concept Explanations</strong> - Get clear explanations of complex topics with real-world examples</li>
+                        <li><strong><i class="fas fa-chart-bar me-2"></i>Calculation Questions</strong> - Practice calculations with worked examples and step-by-step solutions</li>
+                        <li><strong><i class="fas fa-bullseye me-2"></i>Interactive Quizzes</strong> - Test your knowledge with retrieval practice questions</li>
+                        <li><strong><i class="fas fa-pen me-2"></i>Essay Practice</strong> - Generate comprehensive essay questions to develop analytical skills</li>
+                        <li><strong><i class="fas fa-sync me-2"></i>Continuous Learning</strong> - Ask follow-up questions and dive deeper into any topic</li>
+                    </ul>
+                    <br>
+                    <p class="text-muted"><em>Simply upload your notes in the sidebar to get started!</em></p>
+                </div>
+            </div>
+        </div>
+        
+
+        {% endif %}
+        
+        <!-- Messages Area -->
+        <div id="chatContainer" {% if not has_document %}style="display: none;"{% endif %}>
+            <div id="messages">
+                {% if message_count > 0 %}
+                    <div class="loading" id="loadingMessages">
+                        <div class="spinner-border" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <span class="ms-2">Loading chat history...</span>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Quiz Container -->
+        <div class="quiz-container" id="quizContainer" style="display: none; margin-bottom: 2rem;">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-question-circle me-2"></i>Retrieval Quiz</h5>
+                </div>
+                <div class="card-body" id="quizContent">
+                    <!-- Quiz content will be populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+        
+        <!-- Equations Container -->
+        <div class="equations-container" id="equationsContainer" style="display: none;">
+            <div class="card">
+                <div class="card-header">
+                    <h5><i class="fas fa-calculator me-2"></i>Equation Practice</h5>
+                </div>
+                <div class="card-body" id="equationsContent">
+                    <!-- Equations content will be populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+        
+        <!-- Loading Indicator -->
+        <div class="loading" id="loadingIndicator" style="display: none;">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+        
+        <!-- Removed duplicate chat input - moved above calculation input for proper order -->
+        
+        <!-- Chat Input - positioned after messages, before calculation input -->
+        <div class="chat-input mt-3 mb-3" id="generalChatInput" style="display: none;">
+            <h5>Ask a question</h5>
+            <div class="input-group">
+                <input type="text" id="newChatInput" class="form-control" 
+                       placeholder="Ask me anything about your learning materials..."
+                       onkeypress="if(event.key==='Enter') newSendMessage()">
+                <button class="btn btn-primary qub-submit" id="newSendBtn" onclick="newSendMessage()">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+            <div id="newChatLoading" style="display: none;" class="mt-2">
+                <div class="spinner-border spinner-border-sm" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <span class="ms-2">Thinking...</span>
+            </div>
+        </div>
+        
+        <!-- Calculation Answer Input - positioned between chat input and Quick Actions -->
+        <div class="quick-actions mt-4 mb-4" id="calculationAnswerInput" style="display: none;">
+            <h5><i class="fas fa-calculator me-2"></i>Your Answer</h5>
+            <div class="input-group">
+                <input type="text" id="calcAnswerInput" class="form-control" 
+                       placeholder="Enter your numerical answer (e.g., 4.68, 15.2%, $250)..."
+                       onkeypress="if(event.key==='Enter') submitCalculationAnswer()">
+                <button class="btn btn-success" id="calcSubmitBtn" onclick="submitCalculationAnswer()">
+                    <i class="fas fa-check"></i> Check Answer
+                </button>
+            </div>
+            <div class="mt-2" style="margin-bottom: 1rem !important;">
+                <button class="btn btn-outline-secondary btn-sm me-2" onclick="nextCalculationQuestion()">
+                    <i class="fas fa-forward"></i> Next Question
+                </button>
+                <button class="btn btn-outline-danger btn-sm" onclick="endCalculationSession()">
+                    <i class="fas fa-stop"></i> End Practice
+                </button>
+            </div>
+            <div id="calcAnswerLoading" style="display: none;" class="mt-2">
+                <div class="spinner-border spinner-border-sm" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <span class="ms-2">Checking your answer...</span>
+            </div>
+        </div>
+
+        <!-- Calculation Feedback Actions - shown after answer submission -->
+        <div class="quick-actions mt-4 mb-4" id="calculationFeedbackActions" style="display: none;">
+            <div class="d-flex gap-2 justify-content-center mt-3" style="margin-bottom: 1rem !important;">
+                <button class="btn btn-outline-secondary btn-sm" onclick="nextCalculationQuestion()">
+                    <i class="fas fa-forward me-2"></i>Next Question
+                </button>
+                <button class="btn btn-outline-danger btn-sm" onclick="endCalculationSession()">
+                    <i class="fas fa-stop me-2"></i>End Practice
+                </button>
+            </div>
+        </div>
+        
+        <!-- Quick Actions - positioned at the bottom -->
+        <div class="quick-actions mt-4 mb-4" id="revisionTechniques" style="display: {% if has_document %}block{% else %}none{% endif %};">
+            <h5>Revision Techniques</h5>
+            <div class="row">
+                <div class="col-md-6 mb-2">
+                    <button class="btn btn-outline-primary w-100" onclick="quickAction('Explanation of key concepts')" style="color: #D6000D; border-color: #D6000D;">
+                        <i class="fas fa-lightbulb me-2"></i>Explanation of key concepts
+                    </button>
+                </div>
+                <div class="col-md-6 mb-2">
+                    <button class="btn btn-outline-primary w-100" onclick="aiTutor.startQuiz()" style="color: #D6000D; border-color: #D6000D;">
+                        <i class="fas fa-question-circle me-2"></i>Retrieval quiz of key points
+                    </button>
+                </div>
+                <div class="col-md-6 mb-2">
+                    <button class="btn btn-outline-primary w-100" onclick="quickAction('Calculation questions')" style="color: #D6000D; border-color: #D6000D;">
+                        <i class="fas fa-calculator me-2"></i>Calculation questions
+                    </button>
+                </div>
+                <div class="col-md-6 mb-2">
+                    <button class="btn btn-outline-primary w-100" onclick="quickAction('Essay question')" style="color: #D6000D; border-color: #D6000D;">
+                        <i class="fas fa-pen me-2"></i>Essay question
+                    </button>
+                </div>
+            </div>
+        </div>
+
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// NEW SIMPLE CHAT SYSTEM - Direct Gemini calls without polling
+async function newSendMessage() {
+    const input = document.getElementById('newChatInput');
+    const loadingDiv = document.getElementById('newChatLoading');
+    const messagesDiv = document.getElementById('messages');
+    
+    const userMessage = input.value.trim();
+    if (!userMessage) return;
+    
+    // Clear input and show loading
+    input.value = '';
+    loadingDiv.style.display = 'block';
+    
+    // Add user message to chat
+    addNewMessage('user', userMessage);
+    
+    try {
+        // Call new simple backend endpoint
+        const response = await fetch('/simple_chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ message: userMessage })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Add AI response to chat
+            console.log('🔥 CALC ANSWER FRONTEND: Received response from backend:');
+            console.log('🔥 Response type:', typeof data.response);
+            console.log('🔥 Response length:', data.response ? data.response.length : 'null/undefined');
+            console.log('🔥 FULL RESPONSE CONTENT:');
+            console.log(data.response);
+            console.log('🔥 END FULL RESPONSE');
+            addNewMessage('assistant', data.response);
+            
+            // Check if this was a calculation answer and hide input if so
+            if (data.calculation_mode || data.response.includes('CORRECT') || data.response.includes('INCORRECT')) {
+                console.log('🔥 CALC MODE DETECTED: This appears to be a calculation answer response');
+                
+                // Hide the input form part but keep the section visible
+                const calcAnswerInputGroup = document.querySelector('#calculationAnswerInput .input-group');
+                console.log('🔥 CALC MODE: Found input group element:', calcAnswerInputGroup);
+                if (calcAnswerInputGroup) {
+                    calcAnswerInputGroup.style.display = 'none';
+                    console.log('🔥 CALC MODE: Hidden calculation answer input form after submission');
+                } else {
+                    console.log('🔥 CALC MODE: Could not find input group element to hide');
+                }
+                
+                // Show only the Next Question and End Practice buttons (they should already be visible)
+                const calcButtonSection = document.querySelector('#calculationAnswerInput .mt-2');
+                console.log('🔥 CALC MODE: Found button section element:', calcButtonSection);
+                if (calcButtonSection) {
+                    calcButtonSection.style.display = 'block';
+                    console.log('🔥 CALC MODE: Ensured buttons are visible');
+                }
+            }
+        } else {
+            addNewMessage('assistant', 'Sorry, I encountered an error. Please try again.');
+        }
+    } catch (error) {
+        console.error('Chat error:', error);
+        addNewMessage('assistant', 'Sorry, I encountered an error. Please try again.');
+    } finally {
+        loadingDiv.style.display = 'none';
+    }
+}
+
+function addNewMessage(role, content) {
+    console.log('🔥 ADDNEWMESSAGE DEBUG: Adding message with role:', role);
+    console.log('🔥 ADDNEWMESSAGE DEBUG: Content length:', content ? content.length : 'null/undefined');
+    console.log('🔥 ADDNEWMESSAGE DEBUG: Content contains LaTeX?', content && (content.includes('\\[') || content.includes('\\(') || content.includes('$')));
+    
+    const messagesDiv = document.getElementById('messages');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${role} chat-message entering`;
+    
+    const messageContent = document.createElement('div');
+    messageContent.className = 'message-content';
+    
+    // Use simplified LaTeX formatting to fix multi-line rendering
+    console.log('🔥 ADDNEWMESSAGE DEBUG: Calling formatMessageSimplified...');
+    console.log('🔥 ADDNEWMESSAGE DEBUG: Content before formatting (first 800 chars):', content ? content.substring(0, 800) : 'null/undefined');
+    const formattedContent = formatMessageSimplified(content);
+    console.log('🔥 ADDNEWMESSAGE DEBUG: Formatted content length:', formattedContent ? formattedContent.length : 'null/undefined');
+    console.log('🔥 ADDNEWMESSAGE DEBUG: Formatted content sample (first 800 chars):', formattedContent ? formattedContent.substring(0, 800) : 'null/undefined');
+    
+    messageContent.innerHTML = formattedContent;
+    
+    messageDiv.appendChild(messageContent);
+    messagesDiv.appendChild(messageDiv);
+    
+    // Trigger smooth entrance animation
+    requestAnimationFrame(() => {
+        messageDiv.classList.remove('entering');
+        messageDiv.classList.add('entered');
+    });
+    
+    // Scroll to bottom
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    
+    // Check for math expressions and render with MathJax
+    const hasMath = content.includes('$') || content.includes('\\(') || content.includes('\\[') || content.includes('\\begin{align');
+    console.log('🔥 ADDNEWMESSAGE DEBUG: Has math expressions:', hasMath);
+    
+    // Only render MathJax if content contains math expressions
+    if (hasMath) {
+        console.log('🔥 ADDNEWMESSAGE DEBUG: Math detected, ensuring MathJax is loaded...');
+        // Ensure MathJax is loaded before rendering
+        loadMathJax().then(() => {
+            console.log('🔥 ADDNEWMESSAGE DEBUG: MathJax loaded, rendering math content...');
+            return renderMathInElement(messageDiv);
+        }).then(() => {
+            console.log('🔥 ADDNEWMESSAGE DEBUG: MathJax rendered successfully');
+        }).catch((err) => {
+            console.error('🔥 ADDNEWMESSAGE DEBUG: MathJax loading or rendering failed:', err);
+            // Try to render anyway in case MathJax was already available
+            if (window.MathJax && window.MathJax.typesetPromise) {
+                renderMathInElement(messageDiv).catch(console.error);
+            }
+        });
+    } else {
+        console.log('🔥 ADDNEWMESSAGE DEBUG: No math expressions detected, skipping MathJax rendering');
+    }
+}
+
+function formatMessageContent(content) {
+    // Simple markdown formatting
+    content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    content = content.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    content = content.replace(/`(.*?)`/g, '<code>$1</code>');
+    content = content.replace(/\n/g, '<br>');
+    return content;
+}
+
+// CALCULATION ANSWER INPUT FUNCTIONS
+let calculationSessionEnded = false;
+
+function showCalculationAnswerInput() {
+    if (calculationSessionEnded) {
+        console.log('📝 BLOCKED: Calculation session has ended, not showing answer input');
+        return;
+    }
+    
+    console.log('📝 Showing calculation answer input');
+    document.getElementById('calculationAnswerInput').style.display = 'block';
+    document.getElementById('generalChatInput').style.display = 'none';
+    
+    // Focus on the calculation input
+    const calcInput = document.getElementById('calcAnswerInput');
+    if (calcInput) {
+        calcInput.focus();
+    }
+}
+
+function hideCalculationAnswerInput() {
+    console.log('📝 Hiding calculation answer input and showing Revision Techniques panel');
+    
+    // Hide calculation answer input
+    const calcAnswerSection = document.getElementById('calculationAnswerInput');
+    if (calcAnswerSection) {
+        calcAnswerSection.style.display = 'none';
+        console.log('📝 GLOBAL DEBUG: Aggressively hidden calculation answer input after ending session');
+    }
+    
+    // Hide feedback actions section too
+    const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
+    if (feedbackActionsSection) {
+        feedbackActionsSection.style.display = 'none';
+        console.log('📝 GLOBAL DEBUG: Hidden calculation feedback actions after ending session');
+    }
+    
+    // Show general chat input
+    const generalChatInput = document.getElementById('generalChatInput');
+    if (generalChatInput) {
+        generalChatInput.style.display = 'block';
+        console.log('📝 GLOBAL DEBUG: Restored normal chat input');
+    }
+    
+    // Show Revision Techniques panel again
+    const revisionPanel = document.getElementById('revisionTechniques');
+    if (revisionPanel) {
+        revisionPanel.style.display = 'block';
+        console.log('📝 GLOBAL DEBUG: Restored Revision Techniques panel');
+    }
+    
+    // Clear the calculation input
+    const calcInput = document.getElementById('calcAnswerInput');
+    if (calcInput) {
+        calcInput.value = '';
+    }
+    
+    console.log('📝 GLOBAL DEBUG: Successfully restored normal chat interface after ending calculation session');
+}
+
+async function submitCalculationAnswer() {
+    const input = document.getElementById('calcAnswerInput');
+    const loadingDiv = document.getElementById('calcAnswerLoading');
+    
+    const userAnswer = input.value.trim();
+    if (!userAnswer) {
+        alert('Please enter your answer before submitting.');
+        return;
+    }
+    
+    console.log('📝 Submitting calculation answer:', userAnswer);
+    
+    // Show loading
+    loadingDiv.style.display = 'block';
+    
+    // Add user answer to chat
+    addNewMessage('user', userAnswer);
+    
+    try {
+        // Send answer to backend for checking
+        const response = await fetch('/simple_chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ message: userAnswer })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // Add AI response to chat
+            addNewMessage('assistant', data.response);
+            
+            // COMPLETELY HIDE the calculation answer input section after feedback
+            console.log('📝 GLOBAL DEBUG: Completely hiding calculation answer input after feedback');
+            const calcAnswerSection = document.getElementById('calculationAnswerInput');
+            console.log('📝 GLOBAL DEBUG: Found calc answer section:', calcAnswerSection);
+            if (calcAnswerSection) {
+                calcAnswerSection.style.display = 'none';
+                console.log('📝 GLOBAL DEBUG: Successfully hidden calculation answer input section');
+            } else {
+                console.log('📝 GLOBAL DEBUG: Could not find calculation answer input section to hide');
+            }
+            
+            // Show the feedback actions (Next Question and End Practice buttons)
+            let feedbackActionsSection = document.getElementById('calculationFeedbackActions');
+            if (!feedbackActionsSection) {
+                // Create the feedback actions section if it doesn't exist
+                feedbackActionsSection = document.createElement('div');
+                feedbackActionsSection.id = 'calculationFeedbackActions';
+                feedbackActionsSection.style.cssText = `
+                    background-color: rgba(214, 0, 13, 0.1) !important;
+                    border: 3px solid #D6000D !important;
+                    border-radius: 12px !important;
+                    padding: 2rem !important;
+                    margin: 2rem 0 4rem 0 !important;
+                    text-align: center !important;
+                    display: block !important;
+                `;
+                feedbackActionsSection.innerHTML = `
+                    <div style="margin-bottom: 2rem;">
+                        <button type="button" class="btn btn-primary" onclick="nextCalculationQuestion()" style="margin: 0.5rem; padding: 0.75rem 1.5rem; font-weight: 600;">
+                            <i class="fas fa-arrow-right"></i> Next Question
+                        </button>
+                        <button type="button" class="btn btn-secondary" onclick="endCalculationSession()" style="margin: 0.5rem; padding: 0.75rem 1.5rem; font-weight: 600;">
+                            <i class="fas fa-times"></i> End Practice
+                        </button>
+                    </div>
+                    <div style="height: 4rem; background-color: rgba(255,0,0,0.2); border: 2px solid red; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: bold; color: red;">
+                        🔴 PADDING DEBUG: 4rem bottom space visible here 🔴
+                    </div>
+                `;
+                
+                // Insert after the calculation answer input section
+                if (calcAnswerSection && calcAnswerSection.parentNode) {
+                    calcAnswerSection.parentNode.insertBefore(feedbackActionsSection, calcAnswerSection.nextSibling);
+                }
+            }
+            
+            if (feedbackActionsSection) {
+                feedbackActionsSection.style.display = 'block';
+                console.log('📝 GLOBAL DEBUG: Showing feedback actions (Next Question and End Practice buttons)');
+            }
+            
+            // Clear input 
+            input.value = '';
+        } else {
+            addNewMessage('assistant', 'Sorry, I encountered an error checking your answer. Please try again.');
+        }
+    } catch (error) {
+        console.error('Calculation answer error:', error);
+        addNewMessage('assistant', 'Sorry, I encountered an error checking your answer. Please try again.');
+    } finally {
+        loadingDiv.style.display = 'none';
+    }
+}
+
+function nextCalculationQuestion() {
+    console.log('📝 Generating next calculation question');
+    calculationSessionEnded = false; // Reset flag for continuing calculation session
+    
+    // Hide the feedback actions section
+    const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
+    if (feedbackActionsSection) {
+        feedbackActionsSection.style.display = 'none';
+        console.log('📝 GLOBAL DEBUG: Hidden feedback actions section');
+    }
+    
+    // Show the calculation answer input section again
+    const calcAnswerSection = document.getElementById('calculationAnswerInput');
+    if (calcAnswerSection) {
+        calcAnswerSection.style.display = 'block';
+        console.log('📝 GLOBAL DEBUG: Restored calculation answer input section for new question');
+    }
+    
+    // Clear the input
+    const calcInput = document.getElementById('calcAnswerInput');
+    if (calcInput) {
+        calcInput.value = '';
+    }
+    
+    // Generate new question using quickAction
+    if (typeof quickAction === 'function') {
+        quickAction('Calculation questions');
+    } else {
+        console.error('quickAction function not found');
+    }
+}
+
+function endCalculationSession() {
+    console.log('📝 Ending calculation session');
+    calculationSessionEnded = true; // Set flag to prevent showing calculation input again
+    addNewMessage('user', 'end practice');
+    
+    // Send end command through simple chat
+    fetch('/simple_chat', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message: 'end practice' })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            addNewMessage('assistant', data.response);
+        }
+        // Hide the feedback actions section (Next Question and End Practice buttons)
+        const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
+        if (feedbackActionsSection) {
+            feedbackActionsSection.style.display = 'none';
+            console.log('📝 GLOBAL DEBUG: Hidden calculation feedback actions after ending session');
+        }
+        
+        // Hide the calculation answer input section with aggressive CSS
+        const calcAnswerSection = document.getElementById('calculationAnswerInput');
+        if (calcAnswerSection) {
+            calcAnswerSection.style.display = 'none';
+            calcAnswerSection.style.visibility = 'hidden';
+            calcAnswerSection.style.setProperty('display', 'none', 'important');
+            calcAnswerSection.classList.add('d-none');
+            console.log('📝 GLOBAL DEBUG: Aggressively hidden calculation answer input after ending session');
+        } else {
+            console.log('📝 GLOBAL DEBUG: calculationAnswerInput element not found!');
+        }
+        
+        // Also hide any dynamically created calculation answer sections
+        const allCalcSections = document.querySelectorAll('.calculation-answer-input, [id*="calculation"], [class*="calculation"]');
+        allCalcSections.forEach((section, index) => {
+            section.style.display = 'none';
+            section.style.visibility = 'hidden';
+            section.style.setProperty('display', 'none', 'important');
+            section.classList.add('d-none');
+            console.log(`📝 GLOBAL DEBUG: Aggressively hidden calc-related section ${index}:`, section.id || section.className);
+        });
+        
+        // Show the normal chat input and Quick Actions
+        const chatInput = document.getElementById('generalChatInput');
+        if (chatInput) {
+            chatInput.style.display = 'block';
+            console.log('📝 GLOBAL DEBUG: Restored normal chat input');
+        } else {
+            console.log('📝 GLOBAL DEBUG: Could not find generalChatInput element');
+        }
+        
+        // Show the existing Quick Actions panel (Revision Techniques) - exact same code as showQuickActions()
+        const revisionTechniques = document.getElementById('revisionTechniques');
+        if (revisionTechniques) {
+            revisionTechniques.style.display = 'block';
+            console.log('📝 GLOBAL DEBUG: Showed Revision Techniques panel');
+        } else {
+            console.warn('📝 GLOBAL DEBUG: Revision Techniques panel not found');
+        }
+        
+        console.log('📝 GLOBAL DEBUG: Successfully restored normal chat interface after ending calculation session');
+    })
+    .catch(error => {
+        console.error('End session error:', error);
+        addNewMessage('assistant', 'Error ending practice session. Please try again.');
+        
+        // Still restore normal interface even on error
+        const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
+        if (feedbackActionsSection) {
+            feedbackActionsSection.style.display = 'none';
+        }
+        
+        const calcAnswerSection = document.getElementById('calculationAnswerInput');
+        if (calcAnswerSection) {
+            calcAnswerSection.style.display = 'none';
+            calcAnswerSection.style.visibility = 'hidden';
+            calcAnswerSection.style.setProperty('display', 'none', 'important');
+            calcAnswerSection.classList.add('d-none');
+        }
+        
+        // Also hide any dynamically created calculation answer sections
+        const allCalcSections = document.querySelectorAll('.calculation-answer-input, [id*="calculation"], [class*="calculation"]');
+        allCalcSections.forEach((section) => {
+            section.style.display = 'none';
+            section.style.visibility = 'hidden';
+            section.style.setProperty('display', 'none', 'important');
+            section.classList.add('d-none');
+        });
+        
+        const chatInput = document.getElementById('generalChatInput');
+        if (chatInput) {
+            chatInput.style.display = 'block';
+        }
+        
+        // Show the existing Quick Actions panel (Revision Techniques) - exact same code as showQuickActions()
+        const revisionTechniques = document.getElementById('revisionTechniques');
+        if (revisionTechniques) {
+            revisionTechniques.style.display = 'block';
+            console.log('📝 ERROR HANDLER: Showed Revision Techniques panel');
+        } else {
+            console.warn('📝 ERROR HANDLER: Revision Techniques panel not found');
+        }
+    });
+}
+</script>
+<script>
+    let quizActive = {{ quiz_active | lower }};
+    let equationActive = {{ equation_active | lower }};
+    
+    // Define clearSession globally first
+    function clearSession() {
+        fetch('/clear_session', {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            }
+        })
+        .catch(error => {
+            console.error('Error clearing session:', error);
+        });
+    }
+    
+    // Silent clear session for file uploads - no confirmation dialog
+    function clearSessionSilent() {
+        // Clear chat messages from UI immediately
+        const messagesDiv = document.getElementById('messages');
+        if (messagesDiv) {
+            messagesDiv.innerHTML = '';
+        }
+        
+        // Hide welcome messages to prepare for new upload
+        const welcomeMessage = document.getElementById('welcomeMessage');
+        const benefitsSummary = document.getElementById('benefitsSummary');
+        if (welcomeMessage) {
+            welcomeMessage.style.display = 'none';
+        }
+        if (benefitsSummary) {
+            benefitsSummary.style.display = 'none';
+        }
+        
+        // Clear session on backend
+        fetch('/clear_session', {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log('Session cleared successfully for new upload');
+        })
+        .catch(error => {
+            console.error('Error clearing session:', error);
+        });
+    }
+    
+    // Make clearSession available globally for onclick handlers
+    window.clearSession = clearSession;
+    
+    // File upload handling
+    document.getElementById('fileInput').addEventListener('change', handleFileUpload);
+    document.getElementById('fileUploadArea').addEventListener('click', () => {
+        document.getElementById('fileInput').click();
+    });
+    
+    // Drag and drop handling
+    const uploadArea = document.getElementById('fileUploadArea');
+    uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadArea.classList.add('dragover');
+    });
+    
+    uploadArea.addEventListener('dragleave', () => {
+        uploadArea.classList.remove('dragover');
+    });
+    
+    uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleFileUpload({ target: { files: files } });
+        }
+    });
+    
+    // Load messages on page load - DISABLED to prevent content reloading
+    // document.addEventListener('DOMContentLoaded', function() {
+    //     loadChatMessages();
+    // });
+    
+    // COMPLETELY DISABLED: This function was causing content reloading issues
+    async function loadChatMessages() {
+        console.log('🔥 loadChatMessages DISABLED to prevent content reloading');
+        return;
+    }
+    
+    // Function that just handles the API call and processing for summary generation
+    async function generateSummaryContent() {
+        const existingProgressBar = document.getElementById('summaryProgressBar');
+        const messagesDiv = document.getElementById('messages');
+        
+        try {
+            console.log('SUMMARY POLLING: Starting summary generation request');
+            const response = await fetch('/start_summary_generation', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+            
+            console.log('SUMMARY POLLING: Response received, status:', response.status);
+            const taskData = await parseJSONResponse(response);
+            console.log('SUMMARY POLLING: Task data:', taskData);
+            
+            if (taskData.task_id) {
+                // Start polling for results
+                const maxAttempts = 45; // 90 seconds maximum
+                const pollInterval = 2000; // 2 second intervals
+                let attempts = 0;
+                
+                const poll = async () => {
+                    attempts++;
+                    console.log(`SUMMARY POLLING: Attempt ${attempts}/${maxAttempts}`);
+                    
+                    try {
+                        const statusResponse = await fetch(`/summary_status/${taskData.task_id}`);
+                        const statusData = await statusResponse.json();
+                        
+                        console.log('SUMMARY POLLING: Status data:', statusData);
+                        
+                        if (statusData.status === 'complete' && statusData.success) {
+                            // Stop progress bar immediately when response is received
+                            if (window.summaryProgressTimer) {
+                                clearInterval(window.summaryProgressTimer);
+                            }
+                            
+                            // Smoothly fade out and remove progress bar
+                            if (existingProgressBar) {
+                                existingProgressBar.style.transition = 'opacity 0.5s ease-out';
+                                existingProgressBar.style.opacity = '0';
+                                
+                                setTimeout(() => {
+                                    if (existingProgressBar.parentNode) {
+                                        messagesDiv.removeChild(existingProgressBar);
+                                    }
+                                }, 500);
+                            }
+                            
+                            // Add the summary message
+                            setTimeout(() => {
+                                console.log('Adding executive summary to chat');
+                                addMessage('assistant', statusData.data);
+                            }, 500);
+                            
+                            return; // Stop polling
+                        } else if (statusData.status === 'failed') {
+                            // Stop progress bar on error
+                            if (window.summaryProgressTimer) {
+                                clearInterval(window.summaryProgressTimer);
+                            }
+                            
+                            // Remove progress indicator
+                            if (existingProgressBar) {
+                                existingProgressBar.style.transition = 'opacity 0.5s ease-out';
+                                existingProgressBar.style.opacity = '0';
+                                
+                                setTimeout(() => {
+                                    if (existingProgressBar.parentNode) {
+                                        messagesDiv.removeChild(existingProgressBar);
+                                    }
+                                    addMessage('assistant', `❌ Error generating summary: ${statusData.error}`);
+                                }, 500);
+                            }
+                            
+                            return; // Stop polling
+                        } else if (attempts < maxAttempts) {
+                            // Continue polling if still pending
+                            setTimeout(poll, pollInterval);
+                        } else {
+                            // Timeout
+                            if (window.summaryProgressTimer) {
+                                clearInterval(window.summaryProgressTimer);
+                            }
+                            
+                            if (existingProgressBar) {
+                                existingProgressBar.style.transition = 'opacity 0.5s ease-out';
+                                existingProgressBar.style.opacity = '0';
+                                
+                                setTimeout(() => {
+                                    if (existingProgressBar.parentNode) {
+                                        messagesDiv.removeChild(existingProgressBar);
+                                    }
+                                    addMessage('assistant', '❌ Summary generation timed out. Please try again.');
+                                }, 500);
+                            }
+                            
+                            return; // Stop polling
+                        }
+                    } catch (pollError) {
+                        console.error('SUMMARY POLLING: Error during polling:', pollError);
+                        if (attempts < maxAttempts) {
+                            setTimeout(poll, pollInterval);
+                        } else {
+                            throw pollError;
+                        }
+                    }
+                };
+                
+                // Start polling
+                setTimeout(poll, pollInterval);
+            } else {
+                const errorMessage = taskData.error || 'No task ID returned from server';
+                console.error('SUMMARY POLLING: Error:', errorMessage);
+                throw new Error(errorMessage);
+            }
+        } catch (error) {
+            console.error('SUMMARY POLLING: Exception in summary generation:', error);
+            
+            // Stop progress bar on error
+            if (window.summaryProgressTimer) {
+                clearInterval(window.summaryProgressTimer);
+            }
+            
+            // Remove progress indicator
+            if (existingProgressBar) {
+                existingProgressBar.style.transition = 'opacity 0.5s ease-out';
+                existingProgressBar.style.opacity = '0';
+                
+                setTimeout(() => {
+                    if (existingProgressBar.parentNode) {
+                        messagesDiv.removeChild(existingProgressBar);
+                    }
+                    addMessage('assistant', `❌ Error generating summary: ${error.message}`);
+                }, 500);
+            }
+        }
+    }
+
+    // Legacy function maintained for compatibility (now just coordinates the new functions)
+    async function generateSummary() {
+        console.log('LEGACY: generateSummary called - delegating to new system');
+        
+        // Check if progress bar already exists
+        const existingProgressBar = document.getElementById('summaryProgressBar');
+        if (!existingProgressBar) {
+            showSummaryProgressBar();
+        }
+        
+        // Call the actual generation function
+        await generateSummaryContent();
+    }
+    
+    function handleFileUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        
+        // Immediately clear session and chat messages for new upload
+        clearSessionSilent();
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const statusDiv = document.getElementById('uploadStatus');
+        statusDiv.innerHTML = `
+            <div class="alert alert-light upload-progress">
+                <div class="d-flex align-items-center">
+                    <div class="me-3">
+                        <i class="fas fa-file-upload fa-2x"></i>
+                    </div>
+                    <div class="flex-grow-1">
+                        <h6 class="mb-2">📤 Processing ${file.name}...</h6>
+                        <div class="progress">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                                <span class="visually-hidden">Processing...</span>
+                            </div>
+                        </div>
+                        <small class="mt-1">
+                            <i class="fas fa-cog me-1"></i>
+                            Extracting text and preparing analysis...
+                        </small>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Start animated progress bar for file upload
+        const uploadProgressBar = statusDiv.querySelector('.progress-bar');
+        let progressTimer = animateProgressBar(uploadProgressBar, 90000); // 90 seconds max
+        
+        // Track upload completion and summary generation state
+        let uploadCompleted = false;
+        let summaryStarted = false;
+        
+        // Function to show summary progress bar immediately (separate from actual generation)
+        const showSummaryProgressBar = () => {
+            console.log('UPLOAD: Showing executive summary progress bar container');
+            
+            // Hide introductory content immediately when progress bar appears
+            const welcomeMessage = document.getElementById('welcomeMessage');
+            const benefitsSummary = document.getElementById('benefitsSummary');
+            if (welcomeMessage) {
+                welcomeMessage.style.display = 'none';
+            }
+            if (benefitsSummary) {
+                benefitsSummary.style.display = 'none';
+            }
+            
+            // Show chat container when progress bar loads
+            const chatContainer = document.getElementById('chatContainer');
+            if (chatContainer) {
+                chatContainer.style.display = 'block';
+            }
+            
+            // Show progress bar container but DON'T start animation yet
+            const messagesDiv = document.getElementById('messages');
+            const progressDiv = document.createElement('div');
+            progressDiv.className = 'message assistant';
+            progressDiv.id = 'summaryProgressBar'; // Add ID for later reference
+            progressDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="d-flex align-items-center">
+                        <div class="me-3">
+                            <i class="fas fa-robot fa-2x text-primary"></i>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-2">🔄 Preparing Executive Summary...</h6>
+                            <div class="progress">
+                                <div class="progress-bar progress-bar-striped" 
+                                     role="progressbar" style="width: 0%; background-color: #6c757d;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                                    <span class="visually-hidden">Waiting for upload...</span>
+                                </div>
+                            </div>
+                            <small class="text-muted mt-1">
+                                <i class="fas fa-cloud-upload-alt me-1"></i>
+                                Waiting for upload to complete...
+                            </small>
+                        </div>
+                    </div>
+                </div>
+            `;
+            messagesDiv.appendChild(progressDiv);
+            
+            // Store reference to progress bar but DON'T start animation yet
+            window.summaryProgressBar = progressDiv.querySelector('.progress-bar');
+            window.summaryProgressTimer = null; // Initialize as null
+        };
+        
+        // Show executive summary progress bar immediately when upload starts
+        console.log('UPLOAD: About to call showSummaryProgressBar');
+        try {
+            showSummaryProgressBar();
+            console.log('UPLOAD: showSummaryProgressBar called successfully');
+        } catch (error) {
+            console.error('UPLOAD: Error calling showSummaryProgressBar:', error);
+        }
+        
+        // Function to start summary generation (called either on upload completion or after 3 seconds)
+        const startSummaryGeneration = async () => {
+            if (summaryStarted) return; // Prevent duplicate calls
+            summaryStarted = true;
+            
+            console.log('UPLOAD: Starting executive summary generation');
+            
+            // Wait for upload to complete if it hasn't already
+            const waitForUpload = () => {
+                return new Promise((resolve) => {
+                    if (uploadCompleted) {
+                        resolve();
+                        return;
+                    }
+                    
+                    const checkUpload = setInterval(() => {
+                        if (uploadCompleted) {
+                            clearInterval(checkUpload);
+                            resolve();
+                        }
+                    }, 500); // Check every 500ms
+                });
+            };
+            
+            await waitForUpload();
+            console.log('UPLOAD: Upload completed, now generating summary');
+            
+            // Start progress bar animation if it hasn't started yet (this handles the case where 3-second timeout triggered before upload completed)
+            if (window.summaryProgressBar && !window.summaryProgressTimer) {
+                console.log('UPLOAD: Starting delayed progress bar animation after upload completion');
+                
+                // Update progress bar visual state to show it's now actively generating
+                window.summaryProgressBar.style.backgroundColor = '#FF6600'; // Orange color for active
+                window.summaryProgressBar.classList.add('progress-bar-animated');
+                
+                // Update the text to show we're now generating
+                const existingProgressBar = document.getElementById('summaryProgressBar');
+                if (existingProgressBar) {
+                    const smallText = existingProgressBar.querySelector('small');
+                    if (smallText) {
+                        smallText.innerHTML = '<i class="fas fa-robot me-1"></i>Generating executive summary...';
+                    }
+                }
+                
+                // Start the actual progress bar animation
+                window.summaryProgressTimer = animateProgressBar(window.summaryProgressBar, 45000); // 45 seconds for generation
+            }
+            
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            while (retryCount < maxRetries) {
+                try {
+                    await generateSummaryContent(); // Call the actual generation function
+                    // Show the quick actions and chat interface without reloading
+                    showQuickActions();
+                    break; // Success, exit retry loop
+                } catch (error) {
+                    retryCount++;
+                    console.warn(`Summary generation attempt ${retryCount} failed:`, error);
+                    
+                    if (retryCount < maxRetries) {
+                        // Wait before retrying (exponential backoff)
+                        await new Promise(resolve => setTimeout(resolve, 3000 * retryCount));
+                    } else {
+                        console.error('All summary generation attempts failed');
+                        // Show the quick actions anyway so user can try manually
+                        showQuickActions();
+                    }
+                }
+            }
+        };
+        
+        // NOTE: We no longer start summary generation based on timeout
+        // Summary generation will ONLY start after upload completion is confirmed
+        
+        fetch('/upload', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                throw new Error(data.error);
+            }
+            
+            // Start polling for upload processing status
+            const pollUploadStatus = () => {
+                fetch(`/upload_status/${data.task_id}`)
+                    .then(response => response.json())
+                    .then(statusData => {
+                        console.log('UPLOAD POLLING:', statusData);
+                        
+                        if (statusData.status === 'complete' && statusData.data && statusData.data.success) {
+                            uploadCompleted = true;
+                            
+                            // Stop progress bar animation
+                            clearInterval(progressTimer);
+                            uploadProgressBar.style.width = '100%';
+                            
+                            statusDiv.innerHTML = `
+                                <div class="alert alert-success upload-completed">
+                                    <div class="d-flex align-items-center">
+                                        <div class="me-3">
+                                            <i class="fas fa-check-circle fa-2x"></i>
+                                        </div>
+                                        <div class="flex-grow-1">
+                                            <h6 class="mb-1">✅ Successfully loaded: ${data.filename}</h6>
+                                            <small>
+                                                <i class="fas fa-robot me-1"></i>
+                                                Upload successful! Executive summary will be generated automatically.
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                            
+                            // Start summary progress bar animation NOW that upload is complete
+                            console.log('UPLOAD: Upload completed, starting summary progress bar animation');
+                            if (window.summaryProgressBar && !window.summaryProgressTimer) {
+                                // Update progress bar visual state to show it's now actively generating
+                                window.summaryProgressBar.style.backgroundColor = '#FF6600'; // Orange color for active
+                                window.summaryProgressBar.classList.add('progress-bar-animated');
+                                
+                                // Update the text to show we're now generating
+                                const existingProgressBar = document.getElementById('summaryProgressBar');
+                                if (existingProgressBar) {
+                                    const smallText = existingProgressBar.querySelector('small');
+                                    if (smallText) {
+                                        smallText.innerHTML = '<i class="fas fa-robot me-1"></i>Generating executive summary...';
+                                    }
+                                }
+                                
+                                // Start the actual progress bar animation
+                                window.summaryProgressTimer = animateProgressBar(window.summaryProgressBar, 45000); // 45 seconds for generation
+                            }
+                            
+                            // ALWAYS start summary generation now that upload is confirmed complete
+                            console.log('UPLOAD: Upload completed, starting summary generation immediately');
+                            setTimeout(() => {
+                                console.log('UPLOAD: Starting summary generation after upload confirmation');
+                                startSummaryGeneration();
+                            }, 2000);
+                            
+                        } else if (statusData.status === 'failed' || statusData.error) {
+                            uploadCompleted = true;
+                            clearInterval(progressTimer);
+                            
+                            const errorMsg = statusData.error || 'Upload processing failed';
+                            
+                            // Remove executive summary progress bar on upload failure
+                            const existingProgressBar = document.getElementById('summaryProgressBar');
+                            if (existingProgressBar) {
+                                existingProgressBar.remove();
+                                console.log('UPLOAD: Removed executive summary progress bar due to upload failure');
+                            }
+                            
+                            statusDiv.innerHTML = `
+                                <div class="alert alert-danger upload-completed">
+                                    <div class="d-flex align-items-center">
+                                        <div class="me-3">
+                                            <i class="fas fa-exclamation-triangle fa-2x"></i>
+                                        </div>
+                                        <div class="flex-grow-1">
+                                            <h6 class="mb-1">❌ Upload Failed</h6>
+                                            <small>${errorMsg}</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        } else {
+                            // Still processing, poll again
+                            setTimeout(pollUploadStatus, 1000);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error polling upload status:', error);
+                        setTimeout(pollUploadStatus, 1000); // Retry on error
+                    });
+            };
+            
+            // Start polling
+            pollUploadStatus();
+        })
+        .catch(error => {
+            // Stop progress bar animation
+            clearInterval(progressTimer);
+            uploadProgressBar.style.width = '100%';
+            
+            // Change alert box to completed state
+            const alertBox = statusDiv.querySelector('.alert');
+            alertBox.classList.remove('upload-progress');
+            alertBox.classList.add('upload-completed');
+            
+            // Remove executive summary progress bar on upload error
+            const existingProgressBar = document.getElementById('summaryProgressBar');
+            if (existingProgressBar) {
+                existingProgressBar.remove();
+                console.log('UPLOAD: Removed executive summary progress bar due to upload error');
+            }
+            
+            console.error('Upload error:', error);
+            statusDiv.innerHTML = `
+                <div class="alert alert-danger upload-completed">
+                    <div class="d-flex align-items-center">
+                        <div class="me-3">
+                            <i class="fas fa-exclamation-triangle fa-2x"></i>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">❌ Upload Error</h6>
+                            <small>Network error or file too large. Please try again with a smaller file.</small>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+    }
+    
+    // Old sendMessage function removed - now using enhanced aiTutor.sendMessage() class method with async polling
+    
+    let currentProgressTimer = null;
+    
+    function quickAction(action) {
+        console.log('quickAction called with:', action);
+        
+        // Reset calculation session flag when starting new calculation questions
+        if (action === 'Calculation questions') {
+            calculationSessionEnded = false;
+            console.log('📝 Reset calculation session flag for new session');
+        }
+        
+        addMessage('user', action);
+        
+        // Clear previous active states and set current button as active
+        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+            btn.classList.remove('processing', 'active');
+            // Remove any inline styles that might override CSS
+            btn.style.removeProperty('background-color');
+            btn.style.removeProperty('border-color');
+        });
+        
+        // Find and activate the clicked button based on onclick attribute
+        const clickedButton = Array.from(document.querySelectorAll('.btn-outline-primary')).find(btn => 
+            btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(action)
+        );
+        if (clickedButton) {
+            console.log('Adding processing class to button:', clickedButton.textContent.trim());
+            clickedButton.classList.add('processing');
+            console.log('Button classes after adding processing:', clickedButton.classList.toString());
+        } else {
+            console.log('Button not found for action:', action);
+        }
+        
+
+        
+        // Special handling for calculation questions - use polling pattern
+        if (action === 'Calculation questions') {
+            console.log('=== CALCULATION QUESTION POLLING ===');
+            console.log('Starting calculation question generation with polling...');
+            
+            // Load MathJax immediately for calculation questions
+            loadMathJax().then(() => {
+                console.log('MathJax loaded successfully for calculations');
+            }).catch(error => {
+                console.warn('MathJax loading failed, but continuing:', error);
+            });
+            
+            // Show progress bar for calculation questions
+            currentProgressTimer = showSpecificProgress(action);
+            
+            try {
+                // Start background task
+                fetch('/start_calculation_generation', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({})
+                })
+                .then(response => parseJSONResponse(response))
+                .then(data => {
+                    if (data.task_id) {
+                        console.log('✓ Background task started with ID:', data.task_id);
+                        // Start polling for results
+                        pollCalculationTask(data.task_id, clickedButton);
+                    } else if (data.error) {
+                        console.error('✗ Error starting background task:', data.error);
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        addMessage('assistant', data.error);
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('✗ Error starting calculation task:', error);
+                    // Stop progress bar
+                    if (currentProgressTimer) {
+                        clearInterval(currentProgressTimer);
+                        currentProgressTimer = null;
+                    }
+                    // Remove progress indicator
+                    const progressIndicator = document.getElementById('progress-indicator');
+                    if (progressIndicator) {
+                        progressIndicator.remove();
+                    }
+                    addMessage('assistant', '❌ Error starting calculation generation: ' + error.message);
+                    // Clear active state on error
+                    document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                        btn.classList.remove('processing', 'active');
+                    });
+                });
+            } catch (error) {
+                console.error('✗ Error starting calculation generation:', error);
+                
+                // Stop progress bar on error
+                if (currentProgressTimer) {
+                    clearInterval(currentProgressTimer);
+                    currentProgressTimer = null;
+                }
+                
+                // Remove progress indicator
+                const progressIndicator = document.getElementById('progress-indicator');
+                if (progressIndicator) {
+                    progressIndicator.remove();
+                }
+                
+                addMessage('assistant', '❌ Error: ' + error.message);
+                // Clear active state on error
+                document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                    btn.classList.remove('processing', 'active');
+                });
+            }
+            return;
+        }
+        
+        // Polling function for calculation task status
+        function pollCalculationTask(taskId, clickedButton) {
+            const pollInterval = 2000; // Poll every 2 seconds
+            const maxAttempts = 45; // Maximum 90 seconds
+            let attempts = 0;
+            
+            const poll = () => {
+                attempts++;
+                console.log(`Polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
+                
+                fetch(`/calculation_status/${taskId}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Poll response:', data);
+                    
+                    if (data.status === 'complete' && data.success) {
+                        console.log('✓ Task completed successfully');
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        // Add the calculation question to the chat
+                        console.log('📝 CALCULATION POLLING SUCCESS');
+                        console.log('📝 Adding calculation question to chat...');
+                        
+                        // Add the calculation question to chat
+                        addMessage('assistant', data.data);
+                        
+                        // Show calculation answer input instead of general chat
+                        console.log('📝 Switching to calculation answer input mode');
+                        if (typeof aiTutor !== 'undefined' && aiTutor.showCalculationAnswerInput) {
+                            aiTutor.showCalculationAnswerInput();
+                        } else {
+                            console.error('AITutor instance or showCalculationAnswerInput method not available');
+                        }
+                        
+                        // Set button to active state (green) to show success
+                        if (clickedButton) {
+                            clickedButton.classList.remove('processing');
+                            clickedButton.classList.add('active');
+                        }
+                        
+                    } else if (data.status === 'failed' || data.status === 'error') {
+                        console.error('✗ Task failed:', data.error);
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', data.error || 'Calculation generation failed');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                        
+                    } else if (data.status === 'pending') {
+                        // Task still running, continue polling
+                        if (attempts < maxAttempts) {
+                            setTimeout(poll, pollInterval);
+                        } else {
+                            console.error('✗ Polling timeout');
+                            
+                            // Stop progress bar
+                            if (currentProgressTimer) {
+                                clearInterval(currentProgressTimer);
+                                currentProgressTimer = null;
+                            }
+                            
+                            // Remove progress indicator
+                            const progressIndicator = document.getElementById('progress-indicator');
+                            if (progressIndicator) {
+                                progressIndicator.remove();
+                            }
+                            
+                            addMessage('assistant', 'Generation is taking longer than expected. Please try again.');
+                            
+                            // Clear active state on timeout
+                            document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                                btn.classList.remove('processing', 'active');
+                            });
+                        }
+                    } else {
+                        console.error('✗ Unknown task status:', data.status);
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', 'Unknown error occurred during generation');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('✗ Polling error:', error);
+                    
+                    if (attempts < maxAttempts) {
+                        // Retry on network error
+                        setTimeout(poll, pollInterval);
+                    } else {
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', 'Network error during generation. Please try again.');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                    }
+                });
+            };
+            
+            // Start polling immediately
+            poll();
+        }
+        
+        function startEssayPolling(taskId) {
+            console.log('📝 Starting essay polling for task:', taskId);
+            
+            const pollInterval = 2000; // 2 seconds between polls
+            const maxAttempts = 45; // Maximum 45 attempts (90 seconds)
+            let attempts = 0;
+            
+            const poll = () => {
+                attempts++;
+                console.log(`📝 Essay polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
+                
+                fetch(`/essay_status/${taskId}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log('📝 Essay poll response:', data);
+                    
+                    if (data.status === 'complete' && data.success) {
+                        console.log('✓ Essay generation completed');
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        // Add the essay question to the chat
+                        addMessage('assistant', data.data);
+                        
+                        // Set button to active state (green) to show success
+                        if (clickedButton) {
+                            clickedButton.classList.remove('processing');
+                            clickedButton.classList.add('active');
+                        }
+                        
+                    } else if (data.status === 'failed' || data.status === 'error') {
+                        console.error('✗ Essay generation failed:', data.error);
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', data.error || 'Essay generation failed');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                        
+                    } else if (data.status === 'pending') {
+                        // Task still running, continue polling
+                        if (attempts < maxAttempts) {
+                            setTimeout(poll, pollInterval);
+                        } else {
+                            console.error('✗ Essay polling timeout');
+                            
+                            // Stop progress bar
+                            if (currentProgressTimer) {
+                                clearInterval(currentProgressTimer);
+                                currentProgressTimer = null;
+                            }
+                            
+                            // Remove progress indicator
+                            const progressIndicator = document.getElementById('progress-indicator');
+                            if (progressIndicator) {
+                                progressIndicator.remove();
+                            }
+                            
+                            addMessage('assistant', 'Essay generation is taking longer than expected. Please try again.');
+                            
+                            // Clear active state on timeout
+                            document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                                btn.classList.remove('processing', 'active');
+                            });
+                        }
+                    } else {
+                        console.error('✗ Unknown essay status:', data.status);
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', 'Unknown error occurred during essay generation');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('✗ Essay polling error:', error);
+                    
+                    if (attempts < maxAttempts) {
+                        // Retry on network error
+                        setTimeout(poll, pollInterval);
+                    } else {
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', 'Network error during essay generation. Please try again.');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                    }
+                });
+            };
+            
+            // Start polling immediately
+            poll();
+        }
+        
+
+        
+        function startKeyConceptsPolling(taskId) {
+            console.log('🔑 Starting key concepts polling for task:', taskId);
+            
+            const pollInterval = 2000; // 2 seconds between polls
+            const maxAttempts = 45; // Maximum 45 attempts (90 seconds)
+            let attempts = 0;
+            
+            const poll = () => {
+                attempts++;
+                console.log(`🔑 Key concepts polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
+                
+                fetch(`/key_concepts_status/${taskId}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log('🔑 Key concepts poll response:', data);
+                    
+                    if (data.status === 'complete' && data.success) {
+                        console.log('✓ Key concepts generation completed');
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        // Add the key concepts explanation to the chat
+                        addMessage('assistant', data.data);
+                        
+                        // Set button to active state (green) to show success
+                        if (clickedButton) {
+                            clickedButton.classList.remove('processing');
+                            clickedButton.classList.add('active');
+                        }
+                        
+                    } else if (data.status === 'failed' || data.status === 'error') {
+                        console.error('✗ Key concepts generation failed:', data.error);
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', data.error || 'Key concepts generation failed');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                        
+                    } else if (data.status === 'pending') {
+                        // Task still running, continue polling
+                        if (attempts < maxAttempts) {
+                            setTimeout(poll, pollInterval);
+                        } else {
+                            console.error('✗ Key concepts polling timeout');
+                            
+                            // Stop progress bar
+                            if (currentProgressTimer) {
+                                clearInterval(currentProgressTimer);
+                                currentProgressTimer = null;
+                            }
+                            
+                            // Remove progress indicator
+                            const progressIndicator = document.getElementById('progress-indicator');
+                            if (progressIndicator) {
+                                progressIndicator.remove();
+                            }
+                            
+                            addMessage('assistant', 'Key concepts generation is taking longer than expected. Please try again.');
+                            
+                            // Clear active state on timeout
+                            document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                                btn.classList.remove('processing', 'active');
+                            });
+                        }
+                    } else {
+                        console.error('✗ Unknown key concepts status:', data.status);
+                        
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', 'Unknown error occurred during key concepts generation');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('✗ Key concepts polling error:', error);
+                    
+                    if (attempts < maxAttempts) {
+                        // Retry on network error
+                        setTimeout(poll, pollInterval);
+                    } else {
+                        // Stop progress bar
+                        if (currentProgressTimer) {
+                            clearInterval(currentProgressTimer);
+                            currentProgressTimer = null;
+                        }
+                        
+                        // Remove progress indicator
+                        const progressIndicator = document.getElementById('progress-indicator');
+                        if (progressIndicator) {
+                            progressIndicator.remove();
+                        }
+                        
+                        addMessage('assistant', 'Network error during key concepts generation. Please try again.');
+                        
+                        // Clear active state on error
+                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                            btn.classList.remove('processing', 'active');
+                        });
+                    }
+                });
+            };
+            
+            // Start polling immediately
+            poll();
+        }
+        
+        // Map actions to specific API endpoints
+        const actionMap = {
+            'Explanation of key concepts': '/start_key_concepts_generation',
+            'Essay question': '/start_essay_generation'
+        };
+        
+        const endpoint = actionMap[action];
+        if (!endpoint) {
+            // Fallback to general chat for unknown actions
+            generalChat(action);
+            return;
+        }
+        
+        // Show specific progress based on action type and store timer
+        currentProgressTimer = showSpecificProgress(action);
+        
+        fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        })
+        .then(response => {
+            // Check if response is OK and contains JSON
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            // Try to parse as JSON, but handle HTML responses gracefully
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                return response.json();
+            } else {
+                // If not JSON, treat as text and wrap in error structure
+                return response.text().then(text => ({
+                    success: false,
+                    error: 'I\'m having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments.'
+                }));
+            }
+        })
+        .then(data => {
+            // Check if this is a polling-based endpoint (essay generation, key concepts, or quiz generation)
+            if (data.task_id && action === 'Essay question') {
+                console.log('📝 Starting essay polling with task ID:', data.task_id);
+                startEssayPolling(data.task_id);
+                return;
+            }
+            
+            if (data.task_id && action === 'Explanation of key concepts') {
+                console.log('🔑 Starting key concepts polling with task ID:', data.task_id);
+                startKeyConceptsPolling(data.task_id);
+                return;
+            }
+            
+
+            
+            // Stop progress bar immediately when response is received
+            if (currentProgressTimer) {
+                clearInterval(currentProgressTimer);
+                currentProgressTimer = null;
+            }
+            
+            // Remove progress indicator
+            const progressIndicator = document.getElementById('progress-indicator');
+            if (progressIndicator) {
+                progressIndicator.remove();
+            }
+            
+            hideLoading();
+            // Keep the button active/green after completion - don't clear until new action
+            
+            if (data.success) {
+                if (data.response) {
+                    addMessage('assistant', data.response);
+                }
+            } else if (data.error) {
+                // Use the error message directly (centralized error handling already provides user-friendly messages)
+                addMessage('assistant', data.error);
+                // Only clear on error
+                document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                    btn.classList.remove('processing', 'active');
+                    // Remove any inline styles that might override CSS
+                    btn.style.removeProperty('background-color');
+                    btn.style.removeProperty('border-color');
+                });
+            }
+        })
+        .catch(error => {
+            // Stop progress bar on error
+            if (currentProgressTimer) {
+                clearInterval(currentProgressTimer);
+                currentProgressTimer = null;
+            }
+            
+            // Remove progress indicator
+            const progressIndicator = document.getElementById('progress-indicator');
+            if (progressIndicator) {
+                progressIndicator.remove();
+            }
+            
+            hideLoading();
+            // Clear active state on error
+            document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                btn.classList.remove('processing', 'active');
+                // Remove any inline styles that might override CSS
+                btn.style.removeProperty('background-color');
+                btn.style.removeProperty('border-color');
+            });
+            addMessage('assistant', `❌ Error: ${error.message}`);
+        });
+    }
+    
+    function showSpecificProgress(action) {
+        const messagesDiv = document.getElementById('messages');
+        const progressDiv = document.createElement('div');
+        progressDiv.className = 'message assistant';
+        progressDiv.id = 'progress-indicator';
+        
+        let progressContent = '';
+        switch(action) {
+            case 'Explanation of key concepts':
+                progressContent = `
+                    <div class="message-content">
+                        <div class="d-flex align-items-center">
+                            <div class="me-3">
+                                <i class="fas fa-lightbulb fa-2x text-warning"></i>
+                            </div>
+                            <div class="flex-grow-1">
+                                <h6 class="mb-2">💡 Analyzing Key Concepts...</h6>
+                                <div class="progress">
+                                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning" 
+                                         role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                                        <span class="visually-hidden">Processing...</span>
+                                    </div>
+                                </div>
+                                <small class="text-muted mt-1">
+                                    <i class="fas fa-search me-1"></i>
+                                    Identifying and explaining core concepts...
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                break;
+
+            case 'Essay question':
+                progressContent = `
+                    <div class="message-content">
+                        <div class="d-flex align-items-center">
+                            <div class="me-3">
+                                <i class="fas fa-pen fa-2x text-success"></i>
+                            </div>
+                            <div class="flex-grow-1">
+                                <h6 class="mb-2">📝 Creating Essay Question...</h6>
+                                <div class="progress">
+                                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" 
+                                         role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                                        <span class="visually-hidden">Processing...</span>
+                                    </div>
+                                </div>
+                                <small class="text-muted mt-1">
+                                    <i class="fas fa-edit me-1"></i>
+                                    Crafting analytical essay question...
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                break;
+            case 'Calculation questions':
+                progressContent = `
+                    <div class="message-content">
+                        <div class="d-flex align-items-center">
+                            <div class="me-3">
+                                <i class="fas fa-calculator fa-2x text-danger"></i>
+                            </div>
+                            <div class="flex-grow-1">
+                                <h6 class="mb-2">🔢 Analysing Formulas...</h6>
+                                <div class="progress">
+                                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-danger" 
+                                         role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                                        <span class="visually-hidden">Processing...</span>
+                                    </div>
+                                </div>
+                                <small class="text-muted mt-1">
+                                    Extracting key equations...
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                break;
+        }
+        
+        progressDiv.innerHTML = progressContent;
+        messagesDiv.appendChild(progressDiv);
+        
+        // Start animated progress bar for quick actions
+        const quickActionProgressBar = progressDiv.querySelector('.progress-bar');
+        return animateProgressBar(quickActionProgressBar, 45000);
+    }
+    
+
+    
+    function showInteractiveQuiz(quizData) {
+        // Hide chat container and show quiz container
+        document.getElementById('chatContainer').style.display = 'none';
+        const quizContainer = document.getElementById('quizContainer');
+        const quizContent = document.getElementById('quizContent');
+        
+        // Hide chat input and quick actions when quiz is active
+        const chatInput = document.querySelector('.chat-input');
+        const quickActions = document.querySelector('.quick-actions');
+        if (chatInput) {
+            chatInput.style.display = 'none';
+        }
+        if (quickActions) {
+            quickActions.style.display = 'none';
+        }
+        
+        if (quizContainer && quizContent) {
+            quizContainer.style.display = 'block';
+            
+            const progress = (quizData.question_number / quizData.total_questions) * 100;
+            const question = quizData.current_question;
+            
+            quizContent.innerHTML = `
+                <div class="progress-indicator">
+                    <div class="progress-text d-flex justify-content-between mb-2">
+                        <span>Question ${quizData.question_number} of ${quizData.total_questions}</span>
+                        <span>Score: 0</span>
+                    </div>
+                    <div class="progress">
+                        <div class="progress-bar" style="width: ${progress}%; background-color: ${progress >= 100 ? '#D6000D' : '#FF6600'}"></div>
+                    </div>
+                </div>
+                
+                <div class="quiz-question mt-3">
+                    <h5>${question.question}</h5>
+                    <div class="quiz-options">
+                        ${question.options.map((option, index) => `
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="radio" name="answer" value="${option}" id="option${index}">
+                                <label class="form-check-label" for="option${index}">${option}</label>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                
+                <div class="d-flex justify-content-between mt-3">
+                    <button class="btn btn-secondary" onclick="endQuiz()">End Quiz</button>
+                    <button class="btn btn-primary" onclick="submitQuizAnswer()">Submit Answer</button>
+                </div>
+            `;
+            
+            // Store current quiz data globally
+            window.currentQuizData = quizData;
+        }
+    }
+    
+    function generalChat(message) {
+        // Check if any progress bar is currently active
+        const progressBars = document.querySelectorAll('.progress-bar');
+        const hasActiveProgress = Array.from(progressBars).some(bar => 
+            bar.style.width !== '0%' && bar.style.width !== '' && bar.style.width !== '100%'
+        );
+        
+        // Only show loading if no progress bar is active
+        if (!hasActiveProgress) {
+            showLoading();
+        }
+        
+        fetch('/chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ message: message })
+        })
+        .then(response => {
+            // Check if response is OK and contains JSON
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            // Try to parse as JSON, but handle HTML responses gracefully
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                return response.json();
+            } else {
+                // If not JSON, treat as text and wrap in error structure
+                return response.text().then(text => ({
+                    success: false,
+                    error: 'I\'m having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments.'
+                }));
+            }
+        })
+        .then(data => {
+            if (!hasActiveProgress) {
+                hideLoading();
+            }
+            if (data.response) {
+                addMessage('assistant', data.response);
+            } else if (data.error) {
+                addMessage('assistant', data.error);
+            }
+        })
+        .catch(error => {
+            if (!hasActiveProgress) {
+                hideLoading();
+            }
+            addMessage('assistant', 'Error: ' + error.message);
+        });
+    }
+    
+    function displayQuizQuestions(questions) {
+        let content = "📚 **Retrieval Quiz Questions:**\n\n";
+        questions.forEach((q, index) => {
+            content += `**Question ${index + 1}:** ${q.question}\n\n`;
+            content += `**Answer:** ${q.answer}\n\n`;
+            content += `**Explanation:** ${q.explanation}\n\n---\n\n`;
+        });
+        addMessage('assistant', content);
+    }
+    
+    function displayCalculationQuestions(equations) {
+        let content = "🔢 **Practice Calculations:**\n\n";
+        equations.forEach((eq, index) => {
+            content += `**Problem ${index + 1}:**\n`;
+            content += `${eq.description}\n\n`;
+            content += `**Formula:** ${eq.equation}\n\n`;
+            if (eq.worked_example) {
+                content += `**Worked Example:**\n${eq.worked_example}\n\n`;
+            }
+            content += `**Your Turn:** Calculate using the given values\n`;
+            if (eq.variables) {
+                Object.entries(eq.variables).forEach(([key, value]) => {
+                    content += `• ${key} = ${value.value} (${value.description})\n`;
+                });
+            }
+        });
+        addMessage('assistant', content);
+    }
+    
+    // Removed old calculation quiz functions - now using simplified chat-based approach
+    
+
+
+
+    function formatMarkdownContent(content) {
+        // Return empty string if content is invalid
+        if (!content || typeof content !== 'string') return '';
+
+        // 1. Un-escape newlines: The AI often sends '\\n' instead of '\n'.
+        const processedContent = content.replace(/\\n/g, '\n');
+
+        // 2. Use the 'marked' library if it's available to parse full markdown.
+        //    'gfm: true' enables GitHub Flavored Markdown for better list support.
+        //    'breaks: true' turns single newlines into <br> tags.
+        if (typeof marked !== 'undefined') {
+            return marked.parse(processedContent, { gfm: true, breaks: true });
+        }
+
+        // 3. Simple fallback if 'marked' is not loaded for some reason.
+        return processedContent.replace(/\n/g, '<br>');
+    }
+
+
+
+
+
+
+
+    // REPLACE THE OLD ensureMathDelimiters FUNCTION WITH THIS NEW ONE
+
+    /**
+     * Aggressively cleans and ensures a string is properly wrapped in 
+     * display math delimiters ($$) for MathJax. It strips any existing
+     * delimiters before wrapping.
+     * @param {string} str The string to format.
+     * @returns {string} The formatted string ready for MathJax.
+     */
+    function ensureMathDelimiters(str) {
+        if (!str) return '';
+
+        // Start with the trimmed string
+        let equation = str.trim();
+
+        // 1. Aggressively strip ALL leading dollar signs
+        while (equation.startsWith('$')) {
+            equation = equation.substring(1);
+        }
+
+        // 2. Aggressively strip ALL trailing dollar signs
+        while (equation.endsWith('$')) {
+            equation = equation.substring(0, equation.length - 1);
+        }
+
+        // 3. Return the clean equation wrapped in a fresh, single pair of $$
+        //    An extra trim() is added for safety.
+        return `$$${equation.trim()}$$`;
+    }
+
+
+
+
+
+    // ADD THIS NEW HELPER FUNCTION TO YOUR <script> BLOCK
+
+    /**
+     * Parses a comma-separated string of variable descriptions into a neat HTML bullet list.
+     * @param {string} variablesString The string from the JSON response.
+     * @returns {string} An HTML <ul> element.
+     */
+    function formatVariableList(variablesString) {
+        // Return empty if the string is invalid or empty
+        if (!variablesString || typeof variablesString !== 'string') return '';
+
+        // 1. Split the string by the comma delimiter.
+        // 2. Map over each item to trim leading/trailing whitespace.
+        // 3. Filter out any empty items that might result from extra commas.
+        // 4. Map the clean items into <li> tags.
+        // 5. Join them into a single string.
+        const listItems = variablesString.split(',')
+            .map(item => item.trim())
+            .filter(item => item.length > 0)
+            .map(item => `<li>${item}</li>`)
+            .join('');
+
+        // Wrap the list items in a <ul> tag.
+        return `<ul>${listItems}</ul>`;
+    }
+
+
+    
+
+
+
+
+    
+
+    
+    // Removed old calculation quiz display functions - now using simplified chat-based approach
+    // Removed old calculation quiz error handling - now using simplified chat-based approach
+
+
+
+
+
+
+    
+    // Removed old calculation quiz feedback functions - now using simplified chat-based approach
+    
+    // Removed old calculation quiz start function - now using simplified chat-based approach
+        
+    // Removed old calculation quiz end functions - now using simplified chat-based approach
+    
+    // Simplified LaTeX formatting function - let MathJax handle everything natively
+    function formatMessageWithLatexIsolation(content) {
+        console.log('=== GLOBAL FORMATMESSAGE DEBUG START ===');
+        console.log('Raw input content (FULL):', content);
+        console.log('Input length:', content.length);
+        console.log('Contains \\\\\\\\[:', content.includes('\\\\['));
+        console.log('Contains \\\\\\\\(:', content.includes('\\\\('));
+        console.log('Contains \\\\[:', content.includes('\\\\['));
+        console.log('Contains \\\\(:', content.includes('\\\\('));
+        console.log('Contains \\[:', content.includes('\\['));
+        console.log('Contains \\(:', content.includes('\\('));
+        console.log('Contains underscores:', content.includes('_'));
+        console.log('Contains $:', content.includes('$'));
+        console.log('Contains align*:', content.includes('align*'));
+        console.log('Contains begin{:', content.includes('\\begin{'));
+        console.log('Contains \\\\\\\\begin{:', content.includes('\\\\begin{'));
+        
+        // STEP 1: ISOLATE & PROTECT - Extract all LaTeX expressions for safe storage
+        const latexBlocks = [];
+        let blockIndex = 0;
+        
+        // Protect LaTeX environments - check quadruple, double and single backslashes (from JSON escaping)
+        content = content.replace(/\\\\\\\\begin\{[^}]+\}[\s\S]*?\\\\\\\\end\{[^}]+\}/g, (match) => {
+            console.log('STEP 1A: Protected LaTeX environment (quadruple \\\\\\\\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        content = content.replace(/\\\\begin\{[^}]+\}[\s\S]*?\\\\end\{[^}]+\}/g, (match) => {
+            console.log('STEP 1B: Protected LaTeX environment (double \\\\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        content = content.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, (match) => {
+            console.log('STEP 1C: Protected LaTeX environment (single \\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        
+        // Protect display math blocks \[ ... \] - check quadruple, double and single backslashes
+        content = content.replace(/\\\\\\\\\[[\s\S]*?\\\\\\\\\]/g, (match) => {
+            console.log('STEP 1D: Protected display math (quadruple \\\\\\\\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        content = content.replace(/\\\\\[[\s\S]*?\\\\\]/g, (match) => {
+            console.log('STEP 1E: Protected display math (double \\\\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        content = content.replace(/\\\[[\s\S]*?\\\]/g, (match) => {
+            console.log('STEP 1F: Protected display math (single \\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        
+        // Protect inline math blocks \( ... \) - check quadruple, double and single backslashes
+        content = content.replace(/\\\\\\\\\([\s\S]*?\\\\\\\\\)/g, (match) => {
+            console.log('STEP 1G: Protected inline math (quadruple \\\\\\\\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        content = content.replace(/\\\\\([\s\S]*?\\\\\)/g, (match) => {
+            console.log('STEP 1H: Protected inline math (double \\\\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        content = content.replace(/\\\([\s\S]*?\\\)/g, (match) => {
+            console.log('STEP 1I: Protected inline math (single \\):', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        
+        // Protect dollar sign math (legacy support)
+        content = content.replace(/\$\$[\s\S]*?\$\$/g, (match) => {
+            console.log('STEP 1J: Protected display dollar math:', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        
+        content = content.replace(/\$[^$\n]+\$/g, (match) => {
+            console.log('STEP 1K: Protected inline dollar math:', match);
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIndex++}__`;
+        });
+        
+        console.log('STEP 1 COMPLETE: LaTeX blocks isolated:', latexBlocks.length);
+        console.log('ALL ISOLATED BLOCKS:', latexBlocks);
+        console.log('Content after isolation (FULL):', content);
+        
+        // STEP 2: PROCESS MARKDOWN - Apply markdown formatting to non-LaTeX content
+        let processedContent;
+        if (typeof marked !== 'undefined') {
+            processedContent = content.replace(/\\n/g, '\n');
+            processedContent = marked.parse(processedContent);
+        } else {
+            // Manual markdown processing as fallback
+            processedContent = content.replace(/\\n/g, '\n');
+            processedContent = processedContent.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            processedContent = processedContent.replace(/\*((?!\*)[^*]+)\*/g, '<em>$1</em>');
+            processedContent = processedContent.replace(/`([^`]+)`/g, '<code>$1</code>');
+            processedContent = processedContent.replace(/\n/g, '<br>');
+        }
+        
+        console.log('STEP 2 COMPLETE: Markdown processed');
+        console.log('Processed content after markdown (FULL):', processedContent);
+        
+        // STEP 3: RESTORE - Put pristine LaTeX back into the processed HTML
+        console.log('STEP 3: Starting restoration...');
+        for (let i = 0; i < latexBlocks.length; i++) {
+            let latexBlock = latexBlocks[i];
+            
+            console.log(`STEP 3.${i}: Restoring block ${i}`);
+            console.log(`  Original: ${latexBlock}`);
+            
+            // Convert double-escaped backslashes back to single backslashes for MathJax
+            latexBlock = latexBlock.replace(/\\\\/g, '\\');
+            console.log(`  After delimiter fix: ${latexBlock}`);
+            
+            // Use global replace to handle all occurrences
+            const placeholder = `__LATEX_BLOCK_${i}__`;
+            console.log(`  Looking for placeholder: ${placeholder}`);
+            console.log(`  Content contains placeholder: ${processedContent.includes(placeholder)}`);
+            
+            // Check if placeholder exists in HTML tags or as bold text
+            const htmlTagMatch = processedContent.match(new RegExp(`<[^>]*${placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^>]*>`, 'g'));
+            if (htmlTagMatch) {
+                console.log(`  ⚠️  Placeholder found inside HTML tag: ${htmlTagMatch}`);
+            }
+            
+            // Check if markdown converted placeholder to bold, italic, or underscore+italic
+            const boldPlaceholderPattern = `<strong>LATEX_BLOCK_${i}</strong>`;
+            const italicPlaceholderPattern = `<em>LATEX_BLOCK_${i}</em>`;
+            const underscoreItalicPattern = `_<em>LATEX_BLOCK_${i}</em>_`;
+            const hasBoldPlaceholder = processedContent.includes(boldPlaceholderPattern);
+            const hasItalicPlaceholder = processedContent.includes(italicPlaceholderPattern);
+            const hasUnderscoreItalic = processedContent.includes(underscoreItalicPattern);
+            console.log(`  Bold placeholder ${boldPlaceholderPattern} exists: ${hasBoldPlaceholder}`);
+            console.log(`  Italic placeholder ${italicPlaceholderPattern} exists: ${hasItalicPlaceholder}`);
+            console.log(`  Underscore+Italic placeholder ${underscoreItalicPattern} exists: ${hasUnderscoreItalic}`);
+            
+            // Count occurrences of all formats
+            const plainOccurrences = (processedContent.match(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            const boldOccurrences = (processedContent.match(new RegExp(boldPlaceholderPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            const italicOccurrences = (processedContent.match(new RegExp(italicPlaceholderPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            const underscoreItalicOccurrences = (processedContent.match(new RegExp(underscoreItalicPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            console.log(`  Plain placeholder occurs ${plainOccurrences} times`);
+            console.log(`  Bold placeholder occurs ${boldOccurrences} times`);
+            console.log(`  Italic placeholder occurs ${italicOccurrences} times`);
+            console.log(`  Underscore+Italic placeholder occurs ${underscoreItalicOccurrences} times`);
+            
+            // Replace all formats
+            processedContent = processedContent.split(placeholder).join(latexBlock);
+            processedContent = processedContent.split(boldPlaceholderPattern).join(latexBlock);
+            processedContent = processedContent.split(italicPlaceholderPattern).join(latexBlock);
+            processedContent = processedContent.split(underscoreItalicPattern).join(latexBlock);
+            
+            console.log(`  Content after replacement (first 500 chars): ${processedContent.substring(0, 500)}`);
+            
+            // Verify replacement worked
+            const remainingPlain = (processedContent.match(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            const remainingBold = (processedContent.match(new RegExp(boldPlaceholderPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            const remainingItalic = (processedContent.match(new RegExp(italicPlaceholderPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            const remainingUnderscoreItalic = (processedContent.match(new RegExp(underscoreItalicPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            console.log(`  Remaining plain placeholders: ${remainingPlain}`);
+            console.log(`  Remaining bold placeholders: ${remainingBold}`);
+            console.log(`  Remaining italic placeholders: ${remainingItalic}`);
+            console.log(`  Remaining underscore+italic placeholders: ${remainingUnderscoreItalic}`);
+        }
+        
+        console.log('STEP 3 COMPLETE: LaTeX blocks restored');
+        console.log('Final output content (FULL):', processedContent);
+        
+        // Final verification - check for any remaining placeholders
+        let remainingPlaceholders = 0;
+        for (let i = 0; i < 20; i++) {
+            const placeholder = `__LATEX_BLOCK_${i}__`;
+            if (processedContent.includes(placeholder)) {
+                console.log(`⚠️ REMAINING PLACEHOLDER: ${placeholder}`);
+                remainingPlaceholders++;
+            }
+        }
+        console.log('Total remaining placeholders:', remainingPlaceholders);
+        
+        console.log('=== GLOBAL FORMATMESSAGE DEBUG END ===');
+        
+        return processedContent;
+    }
+
+    // NEW SIMPLIFIED LATEX FUNCTION - bypasses complex placeholder system
+    function formatMessageSimplified(content) {
+        console.log('🔥🔥🔥 FORMATMESSAGESIMPLIFIED DEBUG START 🔥🔥🔥');
+        if (!content) {
+            console.log('🔥 EMPTY CONTENT - RETURNING EMPTY STRING');
+            return '';
+        }
+        
+        console.log('🔥 INPUT CONTENT LENGTH:', content.length);
+        console.log('🔥 INPUT CONTENT (FIRST 800 CHARS):', content.substring(0, 800));
+        
+        // Fix backslash escaping from JSON
+        let result = content.replace(/\\\\\[/g, '\\[');
+        result = result.replace(/\\\\\]/g, '\\]');
+        result = result.replace(/\\\\\(/g, '\\(');
+        result = result.replace(/\\\\\)/g, '\\)');
+        
+        // Enhanced markdown processing with bullet points
+        result = result.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        result = result.replace(/\*((?!\*)[^*\n]+)\*/g, '<em>$1</em>');  // Handle italics
+        result = result.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+        
+        console.log('🔥 AFTER MARKDOWN PROCESSING (BEFORE BULLETS):', result.substring(0, 800));
+        
+        // Show raw lines to see exact formatting
+        const lines = result.split(/\r?\n/);
+        console.log('🔥 FIRST 20 LINES OF CONTENT:');
+        for (let i = 0; i < Math.min(20, lines.length); i++) {
+            console.log(`Line ${i}: "${lines[i]}"`);
+        }
+        
+        // Check for bullet point patterns in input - including indented ones
+        const bulletRegex = /^\s*[-*•]\s+(.+)$/gm;
+        const bulletMatches = result.match(bulletRegex);
+        console.log('🔥 BULLET POINT PATTERNS FOUND:', bulletMatches ? bulletMatches.length : 0);
+        if (bulletMatches) {
+            console.log('🔥 BULLET EXAMPLES:', bulletMatches.slice(0, 3));
+        }
+        
+        // Try different patterns to see what we're dealing with
+        const dashPattern = /^\s*-\s/gm;
+        const asteriskPattern = /^\s*\*\s/gm;
+        const bulletPattern = /^\s*•\s/gm;
+        console.log('🔥 DASH PATTERN MATCHES:', (result.match(dashPattern) || []).length);
+        console.log('🔥 ASTERISK PATTERN MATCHES:', (result.match(asteriskPattern) || []).length);
+        console.log('🔥 BULLET PATTERN MATCHES:', (result.match(bulletPattern) || []).length);
+        
+        // Handle bullet points - more comprehensive patterns including indented ones
+        const beforeBulletConversion = result;
+        result = result.replace(/^\s*[-*•]\s+(.+)$/gm, '<li>$1</li>');
+        result = result.replace(/^\s*(\d+\.)\s+(.+)$/gm, '<li>$2</li>'); // numbered lists
+        
+        console.log('🔥 BULLET CONVERSION CHANGED CONTENT:', beforeBulletConversion !== result);
+        console.log('🔥 AFTER BULLET CONVERSION:', result.substring(0, 800));
+        
+        // Wrap consecutive list items in ul tags - handle multiline and spacing
+        const beforeUlWrapping = result;
+        result = result.replace(/(<li>.*?<\/li>)(\s*<li>.*?<\/li>)*/gs, '<ul>$&</ul>');
+        // Clean up any extra whitespace around lists
+        result = result.replace(/<br>\s*<ul>/g, '<ul>');
+        result = result.replace(/<\/ul>\s*<br>/g, '</ul><br>');
+        
+        console.log('🔥 UL WRAPPING CHANGED CONTENT:', beforeUlWrapping !== result);
+        console.log('🔥 AFTER UL WRAPPING:', result.substring(0, 800));
+        
+        // Check final HTML structure
+        const finalUlRegex = /<ul>.*?<\/ul>/gs;
+        const finalLiRegex = /<li>.*?<\/li>/g;
+        const finalUlMatches = result.match(finalUlRegex);
+        const finalLiMatches = result.match(finalLiRegex);
+        
+        console.log('🔥 FINAL UL ELEMENTS:', finalUlMatches ? finalUlMatches.length : 0);
+        console.log('🔥 FINAL LI ELEMENTS:', finalLiMatches ? finalLiMatches.length : 0);
+        if (finalUlMatches) {
+            console.log('🔥 FIRST FINAL UL:', finalUlMatches[0]);
+        }
+        
+        result = result.replace(/\n/g, '<br>');
+        
+        console.log('🔥 FINAL RESULT LENGTH:', result.length);
+        console.log('🔥🔥🔥 FORMATMESSAGESIMPLIFIED DEBUG END 🔥🔥🔥');
+        
+        return result;
+    }
+
+    function addMessage(role, content) {
+        console.log('🔥🔥🔥 GLOBAL ADDMESSAGE DEBUG START 🔥🔥🔥');
+        console.log('🔥 Role:', role);
+        console.log('🔥 Content type:', typeof content);
+        console.log('🔥 Content length:', content ? content.length : 'null/undefined');
+        console.log('🔥 IS THIS CALCULATION QUESTION?', content && content.includes('CALCULATION QUESTION'));
+        console.log('🔥 IS THIS EXECUTIVE SUMMARY?', content && content.includes('Executive Summary'));
+        console.log('🔥🔥🔥 FULL RAW CONTENT (COMPLETE):');
+        console.log(content);
+        console.log('🔥🔥🔥 END FULL RAW CONTENT 🔥🔥🔥');
+        console.log('Contains LaTeX delimiters:');
+        console.log('  \\\\[:', content ? content.includes('\\\\[') : false);
+        console.log('  \\\\(:', content ? content.includes('\\\\(') : false);
+        console.log('  \\[:', content ? content.includes('\\[') : false);
+        console.log('  \\(:', content ? content.includes('\\(') : false);
+        console.log('  $:', content ? content.includes('$') : false);
+        console.log('  _:', content ? content.includes('_') : false);
+        
+        const messagesDiv = document.getElementById('messages');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${role} chat-message entering`;
+        console.log('🔥 MESSAGE DIV CLASSES:', messageDiv.className);
+        
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        
+        // Use simplified LaTeX formatting to fix multi-line rendering
+        console.log('🔥 ADDMESSAGE: Calling formatMessageSimplified...');
+        console.log('🔥 ADDMESSAGE: Input content sample:', content ? content.substring(0, 500) : 'null/undefined');
+        const formattedContent = formatMessageSimplified(content);
+        console.log('🔥 ADDMESSAGE: formatMessageSimplified returned (first 500 chars):', formattedContent ? formattedContent.substring(0, 500) : 'null/undefined');
+        console.log('Final formatted content contains placeholders:');
+        for (let i = 0; i < 10; i++) {
+            const placeholder = `__LATEX_BLOCK_${i}__`;
+            if (formattedContent && formattedContent.includes(placeholder)) {
+                console.log(`  🔍 FOUND PLACEHOLDER: ${placeholder}`);
+            }
+        }
+        
+        console.log('🔥 ADDMESSAGE: SETTING contentDiv.innerHTML...');
+        contentDiv.innerHTML = formattedContent;
+        console.log('🔥 ADDMESSAGE: contentDiv.innerHTML SET COMPLETE');
+        console.log('🔥 ADDMESSAGE: contentDiv.innerHTML ACTUAL CONTENT:', contentDiv.innerHTML.substring(0, 500));
+        
+        // Check if HTML lists were created
+        const ulElements = contentDiv.querySelectorAll('ul');
+        const liElements = contentDiv.querySelectorAll('li');
+        console.log('🔥 ADDMESSAGE: UL elements in DOM:', ulElements.length);
+        console.log('🔥 ADDMESSAGE: LI elements in DOM:', liElements.length);
+        if (ulElements.length > 0) {
+            console.log('🔥 ADDMESSAGE: First UL element HTML:', ulElements[0].outerHTML.substring(0, 200));
+            
+            // DEBUG UL SPACING - Check computed styles after DOM insertion
+            setTimeout(() => {
+                const firstUL = document.querySelector('.message ul, .message-content ul');
+                if (firstUL) {
+                    const computedStyle = window.getComputedStyle(firstUL);
+                    console.log('🔥 DEBUG UL SPACING: margin-top:', computedStyle.marginTop);
+                    console.log('🔥 DEBUG UL SPACING: margin-bottom:', computedStyle.marginBottom);
+                    console.log('🔥 DEBUG UL SPACING: background-color:', computedStyle.backgroundColor);
+                    console.log('🔥 DEBUG UL SPACING: border:', computedStyle.border);
+                    console.log('🔥 DEBUG UL SPACING: UL classList:', firstUL.classList.toString());
+                    console.log('🔥 DEBUG UL SPACING: UL parent classList:', firstUL.parentElement?.classList.toString());
+                } else {
+                    console.log('🔥 DEBUG UL SPACING: No UL found with .message or .message-content class');
+                }
+            }, 100);
+        }
+        
+        messageDiv.appendChild(contentDiv);
+        messagesDiv.appendChild(messageDiv);
+        
+        console.log('🔥 MESSAGE DIV FINAL HTML:', messageDiv.outerHTML);
+        console.log('🔥 MESSAGE DIV FINAL CLASSES:', messageDiv.className);
+        console.log('🔥 CONTENT DIV FINAL HTML:', contentDiv.outerHTML);
+        
+        // Trigger smooth entrance animation
+        requestAnimationFrame(() => {
+            messageDiv.classList.remove('entering');
+            messageDiv.classList.add('entered');
+            console.log('🔥 MESSAGE DIV CLASSES AFTER ANIMATION:', messageDiv.className);
+        });
+        
+        // Check for math expressions
+        const hasMath = content.includes('$') || content.includes('\\(') || content.includes('\\[');
+        console.log('Has math expressions:', hasMath);
+        
+        // Only render MathJax if content contains math expressions
+        if (hasMath) {
+            console.log('Math detected, ensuring MathJax is loaded...');
+            // Ensure MathJax is loaded before rendering
+            loadMathJax().then(() => {
+                console.log('MathJax loaded, rendering math content...');
+                return renderMathInElement(messageDiv);
+            }).then(() => {
+                console.log('MathJax rendered for message');
+                console.log('Final messageDiv content after MathJax:', messageDiv.innerHTML);
+            }).catch((err) => {
+                console.error('MathJax loading or rendering failed:', err);
+                // Try to render anyway in case MathJax was already available
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    renderMathInElement(messageDiv).catch(console.error);
+                }
+            });
+        } else {
+            console.log('No math expressions detected, skipping MathJax');
+        }
+        
+        console.log('=== GLOBAL ADDMESSAGE DEBUG END ===');
+    }
+    
+    function showLoading() {
+        document.getElementById('loadingIndicator').style.display = 'block';
+    }
+    
+    function showInChatLoading() {
+        // Create loading message within chat
+        const messagesDiv = document.getElementById('messages');
+        const loadingDiv = document.createElement('div');
+        loadingDiv.className = 'message assistant';
+        loadingDiv.id = 'chatLoadingIndicator';
+        loadingDiv.innerHTML = `
+            <div class="message-content">
+                <div style="text-align: center; padding: 1rem; display: block;">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        `;
+        messagesDiv.appendChild(loadingDiv);
+        
+        // Scroll to show the loading indicator
+        window.scrollTo({
+            top: document.body.scrollHeight,
+            behavior: 'smooth'
+        });
+    }
+    
+    function hideInChatLoading() {
+        const loadingDiv = document.getElementById('chatLoadingIndicator');
+        if (loadingDiv) {
+            loadingDiv.remove();
+        }
+    }
+    
+    function showQuickActions() {
+        // Show the chat container if it's hidden
+        const chatContainer = document.getElementById('chatContainer');
+        if (chatContainer) {
+            chatContainer.style.display = 'block';
+        }
+        
+        // Show the chat input panel now that Executive Summary is generated
+        const chatInput = document.getElementById('generalChatInput');
+        if (chatInput) {
+            chatInput.style.display = 'block';
+        }
+        
+        // Show the existing Quick Actions panel (Revision Techniques)
+        const revisionTechniques = document.getElementById('revisionTechniques');
+        if (revisionTechniques) {
+            revisionTechniques.style.display = 'block';
+            console.log('📝 DEBUG: Showed Revision Techniques panel');
+        } else {
+            console.warn('📝 DEBUG: Revision Techniques panel not found');
+        }
+    }
+    
+    function hideLoading() {
+        document.getElementById('loadingIndicator').style.display = 'none';
+        // Also remove any progress indicator
+        const progressIndicator = document.getElementById('progress-indicator');
+        if (progressIndicator) {
+            progressIndicator.remove();
+        }
+    }
+    
+    // Auto-scroll removed - users start at top of messages
+    
+    function scrollToBottom() {
+        // Scroll to bottom of page
+        window.scrollTo({
+            top: document.body.scrollHeight,
+            behavior: 'smooth'
+        });
+    }
+    
+    function animateProgressBar(progressBar, duration, startWidth = 0) {
+        let width = startWidth;
+        const increment = 2;
+        const remainingWidth = 100 - startWidth;
+        const interval = duration / (remainingWidth / increment);
+        
+        const timer = setInterval(() => {
+            width += increment;
+            progressBar.style.width = width + '%';
+            
+            if (width >= 100) {
+                clearInterval(timer);
+                // Keep the progress bar blue - no color change
+            }
+        }, interval);
+        
+        return timer;
+    }
+    
+    function handleKeyPress(event) {
+        if (event.key === 'Enter') {
+            aiTutor.sendMessage();
+        }
+    }
+    
+    // Quiz interaction functions
+    function submitQuizAnswer() {
+        const selectedAnswer = document.querySelector('input[name="answer"]:checked');
+        if (!selectedAnswer) {
+            alert('Please select an answer.');
+            return;
+        }
+        
+        fetch('/submit_answer', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ answer: selectedAnswer.value })
+        })
+        .then(response => parseJSONResponse(response))
+        .then(data => {
+            // Check for API errors
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            
+            // Validate response structure
+            if (typeof data.correct === 'undefined' || !data.explanation) {
+                alert('Invalid response from server. Please try again.');
+                return;
+            }
+            
+            if (data.correct) {
+                window.currentQuizData.score = (window.currentQuizData.score || 0) + 1;
+            }
+            
+            // Show result with explanation
+            const quizContent = document.getElementById('quizContent');
+            quizContent.innerHTML += `
+                <div class="alert ${data.correct ? 'alert-success' : 'alert-danger'} mt-3">
+                    <strong>${data.explanation}</strong>
+                </div>
+            `;
+            
+            if (data.quiz_complete) {
+                // Show final score
+                quizContent.innerHTML += `
+                    <div class="alert alert-info mt-3">
+                        <strong>Quiz Complete!</strong><br>
+                        Final Score: ${data.final_score}/${data.total_questions}
+                    </div>
+                    <div class="text-center mt-3">
+                        <button class="btn btn-primary" onclick="endQuiz()">Back to Chat</button>
+                    </div>
+                `;
+            } else {
+                // Show next question button
+                quizContent.innerHTML += `
+                    <div class="text-center mt-3">
+                        <button class="btn btn-primary" onclick="nextQuestion()">Next Question</button>
+                    </div>
+                `;
+                
+                // Store next question data
+                window.currentQuizData.current_question = data.next_question;
+                window.currentQuizData.question_number = data.question_number;
+            }
+        })
+        .catch(error => {
+            alert('Error submitting answer: ' + error.message);
+        });
+    }
+    
+    function nextQuestion() {
+        const quizData = window.currentQuizData;
+        showInteractiveQuiz(quizData);
+    }
+    
+    function endQuiz() {
+        console.log('📝 DEBUG: Legacy endQuiz() function called');
+        
+        // Hide quiz container and show chat container
+        document.getElementById('quizContainer').style.display = 'none';
+        document.getElementById('chatContainer').style.display = 'block';
+        
+        // FORCE QUICK ACTIONS TO SHOW - BRUTE FORCE APPROACH
+        const quickActions = document.getElementById('revisionTechniques');
+        console.log('📝 DEBUG: Found Quick Actions element:', !!quickActions);
+        
+        if (quickActions) {
+            // Remove all potential hiding styles
+            quickActions.style.display = 'block';
+            quickActions.style.visibility = 'visible';
+            quickActions.style.opacity = '1';
+            quickActions.style.height = 'auto';
+            quickActions.style.overflow = 'visible';
+            quickActions.classList.remove('d-none', 'hidden');
+            
+            // Force important display
+            quickActions.style.cssText = 'display: block !important; visibility: visible !important; opacity: 1 !important;';
+            
+            console.log('📝 DEBUG: FORCED Quick Actions panel visible with brute force (legacy function)');
+            console.log('📝 DEBUG: Quick Actions computed style:', window.getComputedStyle(quickActions).display);
+        } else {
+            console.error('📝 ERROR: Quick Actions element not found!');
+        }
+        
+        // Show chat input
+        const chatInput = document.querySelector('.chat-input');
+        if (chatInput) {
+            chatInput.style.display = 'block';
+            console.log('📝 DEBUG: Showed chat input');
+        }
+        
+        // Clear quiz data
+        window.currentQuizData = null;
+        
+        // Add completion message
+        addMessage('assistant', '🎯 Quiz completed! You can start another quiz or ask me any questions about your lecture notes.');
+    }
+    
+    // Centralized JSON response parsing function
+    function parseJSONResponse(response) {
+        // Check if response is OK and contains JSON
+        if (!response.ok) {
+            // For server errors (500, 502, 503, 504), provide user-friendly message
+            if (response.status >= 500 && response.status < 600) {
+                return Promise.resolve({
+                    success: false,
+                    error: 'I\'m experiencing server issues right now. Please try again in a few seconds.'
+                });
+            } else {
+                return Promise.resolve({
+                    success: false,
+                    error: `HTTP error! status: ${response.status}`
+                });
+            }
+        }
+        
+        // Try to parse as JSON, but handle HTML responses gracefully
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            return response.json();
+        } else {
+            // If not JSON, treat as text and wrap in error structure
+            return response.text().then(text => {
+                // Check if it's HTML (common when OpenAI API returns error pages)
+                if (text.includes('<html>') || text.includes('<!DOCTYPE')) {
+                    return {
+                        success: false,
+                        error: 'I\'m having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments.'
+                    };
+                } else {
+                    return {
+                        success: false,
+                        error: text || 'An unexpected error occurred. Please try again.'
+                    };
+                }
+            });
+        }
+    }
+    
+    // Global function for calculation answer polling
+    function pollCalculationAnswerTask(taskId) {
+        console.log('🔢 Starting calculation answer check polling for task:', taskId);
+        
+        const pollInterval = 2000; // 2 seconds between polls
+        const maxAttempts = 45; // Maximum 45 attempts (90 seconds)
+        let attempts = 0;
+        
+        const poll = () => {
+            attempts++;
+            console.log(`🔢 Calculation answer polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
+            
+            fetch(`/calculation_answer_status/${taskId}`)
+            .then(response => response.json())
+            .then(data => {
+                console.log('🔢 Calculation answer poll response:', data);
+                
+                if (data.status === 'complete' && data.success) {
+                    console.log('✓ Calculation answer evaluation completed');
+                    
+                    hideInChatLoading();
+                    
+                    // Add the evaluation response to the chat
+                    addMessage('assistant', data.data);
+                    
+                } else if (data.status === 'failed' || data.status === 'error') {
+                    console.error('✗ Calculation answer evaluation failed:', data.error);
+                    
+                    hideInChatLoading();
+                    addMessage('assistant', '❌ Error evaluating answer: ' + (data.error || 'Evaluation failed'));
+                    
+                } else if (data.status === 'pending') {
+                    // Task still running, continue polling
+                    if (attempts < maxAttempts) {
+                        setTimeout(poll, pollInterval);
+                    } else {
+                        console.error('✗ Calculation answer polling timeout');
+                        
+                        hideInChatLoading();
+                        addMessage('assistant', '⏰ Answer evaluation is taking longer than expected. Please try again.');
+                    }
+                } else {
+                    console.error('✗ Unknown calculation answer status:', data.status);
+                    
+                    hideInChatLoading();
+                    addMessage('assistant', '❌ Unknown error occurred during answer evaluation');
+                }
+            })
+            .catch(error => {
+                console.error('✗ Calculation answer polling error:', error);
+                
+                if (attempts < maxAttempts) {
+                    // Retry on network error
+                    setTimeout(poll, pollInterval);
+                } else {
+                    hideInChatLoading();
+                    addMessage('assistant', 'Network error during answer evaluation. Please try again.');
+                }
+            });
+        };
+        
+        // Start polling immediately
+        poll();
+    }
+    
+    // Initialize aiTutor when the page loads
+    let aiTutor = null;
+    
+    function initializeAITutor() {
+        console.log('🔧 Checking for AITutor class...');
+        if (typeof AITutor !== 'undefined') {
+            console.log('✅ AITutor class found, initializing...');
+            aiTutor = new AITutor();
+            window.aiTutor = aiTutor; // Make it globally available
+            console.log('✅ AITutor initialized successfully');
+        } else {
+            console.error('❌ AITutor class not found! Will retry in 1 second...');
+            // Retry after a short delay to allow JavaScript to load
+            setTimeout(() => {
+                console.log('🔧 Retrying AITutor initialization...');
+                if (typeof AITutor !== 'undefined') {
+                    console.log('✅ AITutor class found on retry, initializing...');
+                    aiTutor = new AITutor();
+                    window.aiTutor = aiTutor;
+                    console.log('✅ AITutor initialized successfully on retry');
+                } else {
+                    console.error('❌ AITutor class still not found after retry');
+                }
+            }, 1000);
+        }
+    }
+    
+    // Handle Enter key press in chat input
+    function handleKeyPress(event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            sendMessageHandler();
+        }
+    }
+    
+    // Make handleKeyPress globally available
+    window.handleKeyPress = handleKeyPress;
+    
+    // Simple send message handler for button clicks
+    window.sendMessageHandler = function() {
+        console.log('🔥 sendMessageHandler called');
+        console.log('🔥 window.aiTutor exists:', !!window.aiTutor);
+        console.log('🔥 window.aiTutor.sendMessage exists:', !!(window.aiTutor && window.aiTutor.sendMessage));
+        
+        if(window.aiTutor && window.aiTutor.sendMessage) { 
+            console.log('🔥 Using aiTutor.sendMessage');
+            window.aiTutor.sendMessage(); 
+        } else { 
+            console.log('🔥 Using fallback sendMessage');
+            
+            // Set loading state manually since fallback doesn't have loading management
+            const sendBtn = document.getElementById('sendBtn');
+            const chatInput = document.getElementById('chatInput');
+            if (sendBtn) {
+                sendBtn.disabled = true;
+                sendBtn.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div>';
+            }
+            if (chatInput) {
+                chatInput.disabled = true;
+            }
+            
+            window.fallbackSendMessage().finally(() => {
+                // Clear loading state after fallback completes
+                if (sendBtn) {
+                    sendBtn.disabled = false;
+                    sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
+                }
+                if (chatInput) {
+                    chatInput.disabled = false;
+                }
+            });
+        }
+    };
+
+    // Fallback sendMessage function in case aiTutor isn't initialized
+    window.fallbackSendMessage = async function() {
+        console.log('🔥 Using fallback sendMessage function');
+        const chatInput = document.getElementById('chatInput');
+        const message = chatInput.value.trim();
+        if (!message) return;
+        
+        chatInput.value = '';
+        addMessage('user', message);
+        
+        try {
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ message: message })
+            });
+            
+            let data;
+            try {
+                data = await response.json();
+            } catch (parseError) {
+                console.error('🔥 Failed to parse JSON response:', parseError);
+                throw new Error('Load failed');
+            }
+            
+            if (response.ok) {
+                if (data.start_async_chat) {
+                    addMessage('assistant', data.response);
+                    // Start chat polling
+                    if (window.aiTutor && window.aiTutor.startChatPolling) {
+                        window.aiTutor.startChatPolling(data.user_message);
+                    } else {
+                        // Fallback: create a simple implementation
+                        console.log('🔥 FALLBACK: No aiTutor.startChatPolling found, using basic fallback');
+                        addMessage('assistant', 'Chat processing completed. The AI response system is currently initializing.');
+                    }
+                } else if (data.start_answer_check) {
+                    addMessage('assistant', data.response);
+                    // Start answer check polling
+                    if (window.aiTutor && window.aiTutor.pollCalculationAnswerTask) {
+                        window.aiTutor.pollCalculationAnswerTask(data.challenge_question, data.user_answer);
+                    } else {
+                        pollCalculationAnswerTask(data.challenge_question, data.user_answer);
+                    }
+                } else {
+                    addMessage('assistant', data.response);
+                }
+            } else {
+                addMessage('assistant', `Error: ${data.error}`);
+            }
+        } catch (error) {
+            console.error('Error in fallback sendMessage:', error);
+            addMessage('assistant', `Error: ${error.message}`);
+        }
+    };
+
+    // Make functions globally available
+    window.addMessage = addMessage;
+    window.pollCalculationAnswerTask = pollCalculationAnswerTask;
+    
+    // Try to initialize immediately if DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeAITutor);
+    } else {
+        initializeAITutor();
+    }
+</script>
+{% endblock %}

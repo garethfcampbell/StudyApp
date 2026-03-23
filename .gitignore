@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Environment variables and secrets
+.env.local
+.env.production
+*.env
+
+# Replit-specific
+.pythonlibs/
+.cache/
+.config/
+.upm/
+.local/
+.agents/
+.replit
+replit.nix
+replit.md
+
+# User data - NEVER commit these
+session_storage/
+uploads/
+
+# Development artifacts
+attached_assets/
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Lock files (optional - keep uv.lock for reproducibility)
+# uv.lock

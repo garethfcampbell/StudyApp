@@ -1,0 +1,571 @@
+/* Custom styles for AI Tutor */
+
+/* Homepage panel styling - matches message styling */
+.homepage-panel {
+    margin-bottom: 1rem;
+    padding: 1rem;
+    border-radius: 10px;
+    background-color: #f5f5f5;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.03), 0 2px 4px rgba(0, 0, 0, 0.08);
+    color: inherit;
+}
+
+/* Chat interface styling - enhanced for page-level flow */
+.chat-message {
+    margin-bottom: 1.5rem;
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--bs-border-color);
+    background-color: var(--bs-body-bg);
+}
+
+.chat-message.user {
+    background-color: var(--bs-primary);
+    color: white;
+    margin-left: 2rem;
+}
+
+.chat-message.assistant {
+    background-color: var(--bs-secondary);
+    color: white;
+    margin-right: 2rem;
+}
+
+.message-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+.message-text {
+    flex: 1;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.message-text h1, .message-text h2, .message-text h3 {
+    margin-top: 0;
+    margin-bottom: 0.5rem;
+}
+
+.message-text p {
+    margin-bottom: 0.5rem;
+}
+
+.message-text ul, .message-text ol {
+    margin-bottom: 0.5rem;
+    padding-left: 1.5rem;
+}
+
+.message-text code {
+    background-color: rgba(0,0,0,0.1);
+    padding: 0.2rem 0.4rem;
+    border-radius: 0.25rem;
+    font-family: monospace;
+}
+
+.message-text pre {
+    background-color: rgba(0,0,0,0.1);
+    padding: 1rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    margin-bottom: 0.5rem;
+}
+
+/* Quiz Result Styling - Color-coded feedback boxes */
+.quiz-result {
+    margin: 1rem 0 !important;
+    padding: 1rem !important;
+    border-radius: 8px !important;
+    border: 2px solid !important;
+    display: block !important;
+    width: 100% !important;
+}
+
+.quiz-result.correct {
+    background-color: #d4edda !important;
+    border-color: #28a745 !important;
+    color: #155724 !important;
+}
+
+.quiz-result.incorrect {
+    background-color: #f8d7da !important;
+    border-color: #dc3545 !important;
+    color: #721c24 !important;
+}
+
+/* More specific selectors for quiz container */
+.quiz-container .quiz-result.correct {
+    background-color: #d4edda !important;
+    border-color: #28a745 !important;
+    color: #155724 !important;
+}
+
+.quiz-container .quiz-result.incorrect {
+    background-color: #f8d7da !important;
+    border-color: #dc3545 !important;
+    color: #721c24 !important;
+}
+
+#quizContent .quiz-result.correct {
+    background-color: #d4edda !important;
+    border-color: #28a745 !important;
+    color: #155724 !important;
+}
+
+#quizContent .quiz-result.incorrect {
+    background-color: #f8d7da !important;
+    border-color: #dc3545 !important;
+    color: #721c24 !important;
+}
+
+.quiz-feedback {
+    margin: 0 0 0.5rem 0;
+    font-size: 1.1rem;
+}
+
+.quiz-feedback strong {
+    font-weight: bold;
+}
+
+.quiz-explanation {
+    margin: 0.5rem 0 0 0;
+    font-style: italic;
+    opacity: 0.9;
+}
+
+/* Calculation Answer Input - Now uses quick-actions class */
+
+/* Calculation sections now use quick-actions class for consistent styling */
+
+/* Calculation feedback actions now use quick-actions class */
+
+/* Removed calculation-feedback-actions button styling - now using quick-actions class */
+
+/* Progress bar transitions and animations */
+.progress-bar {
+    transition: width 0.3s ease-in-out;
+}
+
+.message {
+    transition: opacity 0.5s ease-in-out;
+}
+
+/* Message styling for assistant responses */
+.message.assistant {
+    margin-bottom: 1rem;
+    padding: 1rem;
+    border-radius: 10px;
+    background-color: #f5f5f5;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.03), 0 2px 4px rgba(0, 0, 0, 0.08);
+    color: inherit;
+    max-width: 85%;
+}
+
+.message.fade-out {
+    opacity: 0;
+}
+
+.message.fade-in {
+    opacity: 1;
+    animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Enhanced progress bar styling */
+.progress {
+    height: 20px;
+    background-color: rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.progress-bar {
+    background: linear-gradient(45deg, #FF6600, #FF8533);
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    transition: all 0.3s ease-in-out;
+}
+
+.progress-bar-animated {
+    animation: progress-bar-stripes 1s linear infinite;
+}
+
+/* Smooth message transitions */
+.chat-message {
+    transition: all 0.3s ease-in-out;
+}
+
+.chat-message.entering {
+    opacity: 0;
+    transform: translateY(20px);
+}
+
+.chat-message.entered {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* Professional loading states */
+.loading-state {
+    opacity: 0.7;
+    transition: opacity 0.3s ease-in-out;
+}
+
+.loading-state.complete {
+    opacity: 1;
+}
+
+/* Calculation quiz professional styling */
+.quiz-question .question-content h3 {
+    color: #D6000D;
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    border-bottom: 2px solid #D6000D;
+    padding-bottom: 0.5rem;
+}
+
+.quiz-question .question-content strong {
+    color: #333;
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+.quiz-question .question-content em {
+    color: #666;
+    font-style: italic;
+}
+
+.quiz-question .question-content ul {
+    list-style-type: none;
+    padding-left: 0;
+    margin-bottom: 1rem;
+}
+
+.quiz-question .question-content li {
+    padding: 0.3rem 0;
+    border-left: 3px solid #FF6600;
+    padding-left: 1rem;
+    margin-bottom: 0.5rem;
+    background-color: #f8f9fa;
+}
+
+.explanation-content h3 {
+    color: #D6000D;
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 0.8rem;
+}
+
+.explanation-content strong {
+    color: #333;
+    font-weight: 600;
+}
+
+.explanation-content ul {
+    list-style-type: none;
+    padding-left: 0;
+}
+
+.explanation-content li {
+    padding: 0.2rem 0;
+    border-left: 2px solid #28a745;
+    padding-left: 0.8rem;
+    margin-bottom: 0.3rem;
+    background-color: #f8f9fa;
+}
+
+.solution-content {
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin-top: 1rem;
+}
+
+.solution-content strong {
+    color: #D6000D;
+    font-weight: 600;
+}
+
+/* Calculation quiz feedback styling */
+.quiz-options .form-check-input:disabled + .form-check-label {
+    opacity: 0.8;
+}
+
+.quiz-options .form-check-input:disabled:checked + .form-check-label {
+    background-color: #d4edda;
+    border-radius: 0.25rem;
+    padding: 0.5rem;
+    margin: -0.5rem;
+    border: 2px solid #28a745;
+}
+
+.alert-success {
+    background-color: #d4edda;
+    border-color: #c3e6cb;
+    color: #155724;
+}
+
+.alert-danger {
+    background-color: #f8d7da;
+    border-color: #f5c6cb;
+    color: #721c24;
+}
+
+/* Chat container - no panel, just content flow */
+#chatContainer {
+    width: 100%;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: none;
+    overflow: visible;
+}
+
+/* Messages container with full width, no constraints */
+#messages {
+    width: 100%;
+    padding: 0;
+    margin: 0;
+}
+
+/* Quiz and equation styling */
+.quiz-question {
+    margin-bottom: 1.5rem;
+}
+
+/* Equation display styling */
+.equation-display {
+    font-size: 1.5em;
+    text-align: center;
+    padding: 20px;
+    margin: 15px 0;
+    background-color: #f8f9fa;
+    border-radius: 8px;
+    border: 2px solid #dee2e6;
+}
+
+.equation-description {
+    font-size: 0.9em;
+    color: #666;
+    margin-bottom: 15px;
+}
+
+.worked-example {
+    background-color: #e8f4f8;
+    padding: 15px;
+    border-radius: 8px;
+    border-left: 4px solid #17a2b8;
+    margin: 15px 0;
+}
+
+.worked-example pre {
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: inherit;
+}
+
+.equation-input {
+    font-size: 1.1em;
+    padding: 10px;
+    text-align: center;
+}
+
+.quiz-options {
+    margin-left: 1rem;
+}
+
+.quiz-option {
+    margin-bottom: 0.5rem;
+}
+
+
+
+.equation-problem {
+    font-size: 1.2rem;
+    margin-bottom: 1rem;
+    padding: 1rem;
+    background-color: var(--bs-light);
+    border-radius: 0.5rem;
+    text-align: center;
+}
+
+.equation-input {
+    font-size: 1.1rem;
+    text-align: center;
+}
+
+/* Loading states */
+.loading {
+    display: none;
+    justify-content: center;
+    align-items: center;
+    padding: 1rem;
+    text-align: center;
+}
+
+.loading.show {
+    display: flex;
+}
+
+#loadingIndicator {
+    margin: 1rem 0;
+    padding: 1rem;
+    text-align: center;
+    display: none;
+}
+
+#loadingIndicator.show {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* File upload area */
+.upload-area {
+    border: 2px dashed var(--bs-border-color);
+    border-radius: 0.5rem;
+    padding: 2rem;
+    text-align: center;
+    transition: all 0.3s ease;
+}
+
+.upload-area:hover {
+    border-color: var(--bs-primary);
+    background-color: rgba(var(--bs-primary-rgb), 0.1);
+}
+
+.upload-area.dragover {
+    border-color: var(--bs-primary);
+    background-color: rgba(var(--bs-primary-rgb), 0.1);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .chat-message.user {
+        margin-left: 0;
+    }
+    
+    .chat-message.assistant {
+        margin-right: 0;
+    }
+    
+    .message-content {
+        flex-direction: column;
+    }
+}
+
+/* Animation classes */
+.fade-in {
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.slide-in {
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from { transform: translateX(-100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+/* Score display */
+.score-display {
+    font-size: 1.5rem;
+    font-weight: bold;
+    text-align: center;
+    padding: 1rem;
+    margin: 1rem 0;
+    border-radius: 0.5rem;
+    background-color: var(--bs-info);
+    color: white;
+}
+
+/* Progress indicators */
+.progress-indicator {
+    margin-bottom: 1rem;
+}
+
+/* Upload progress bar styling */
+.upload-progress .progress {
+    background-color: #e9ecef !important;
+}
+
+/* Remove duplicate calculation answer input styling - using the first definition above */
+
+/* Removed duplicate CSS rules - using the main definition above */
+
+.calculation-answer-input .btn-outline-danger {
+    border-color: #dc3545;
+    color: #dc3545;
+    transition: all 0.3s ease;
+}
+
+.upload-progress .progress-bar {
+    background-color: #6c757d !important;
+}
+
+.progress-text {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--bs-secondary);
+}
+
+/* Error states */
+.error-message {
+    color: var(--bs-danger);
+    font-weight: 500;
+}
+
+.success-message {
+    color: var(--bs-success);
+    font-weight: 500;
+}
+
+/* Button states */
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Page-level scrolling styles */
+body {
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+/* Ensure main content area can expand naturally */
+.main-content {
+    min-height: 100vh;
+}
+
+/* Remove any height constraints that might cause internal scrolling */
+.col-md-8 {
+    padding: 1rem;
+}
+
+/* Ensure no containers have height limits that cause scrolling */
+.chat-container, .quiz-container, .equations-container {
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+}
+
+/* Remove custom scrollbar styles since we're using page-level scrolling */

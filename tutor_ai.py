@@ -1,7 +1,7 @@
 
 import os
 import asyncio
-from openai import OpenAI, AsyncOpenAI, DefaultAioHttpClient
+from openai import OpenAI, AsyncOpenAI
 import json
 import logging
 
@@ -15,12 +15,13 @@ class TutorAI:
             raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
 
         self.openai_client = OpenAI(
-            api_key=self.openai_api_key
+            api_key=self.openai_api_key,
+            max_retries=0
         )
-        # Async client with aiohttp for better concurrent performance
+        # Async client using default httpx transport (thread-safe across background threads)
         self.async_openai_client = AsyncOpenAI(
             api_key=self.openai_api_key,
-            http_client=DefaultAioHttpClient()
+            max_retries=0
         )
             
         self.context = None

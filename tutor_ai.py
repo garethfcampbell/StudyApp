@@ -549,59 +549,62 @@ You MUST use the following structure and formatting precisely.
             # Truncate context to 80,000 characters for async API calls
             truncated_context = self.context[:80000] if len(self.context) > 80000 else self.context
             
-            # Try async Gemini as primary
-            try:
-                logging.info("ASYNC ESSAY: Trying gpt-5.4-mini for essay question generation...")
-                logging.info(f"ASYNC ESSAY: Context length: {len(truncated_context)} characters")
-                
-                result = await self._make_async_openai_fallback_call(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": f"You are an expert at creating analytical essay questions from academic content.\n\nLecture Notes:\n{truncated_context}"
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    model="gpt-5.4-mini",
-                    temperature=0.4,
-                    max_tokens=15000,
-                    timeout=60
-                )
-                
-                logging.info("ASYNC ESSAY: gpt-5.4-mini succeeded")
-                return _strip_code_fences(result)
-                
-            except Exception as openai_error:
-                logging.error(f"ASYNC ESSAY: gpt-5.4-mini failed: {openai_error}")
-                # Fallback to gpt-5.4-nano
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"You are an expert at creating analytical essay questions from academic content.\n\nLecture Notes:\n{truncated_context}"
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+
+            logging.info(f"ASYNC ESSAY: Context length: {len(truncated_context)} characters")
+
+            # Try Gemini as primary
+            if self.async_gemini_client:
                 try:
-                    logging.info("ASYNC ESSAY: Trying gpt-5.4-nano fallback...")
-                    fallback_result = await self._make_async_openai_fallback_call(
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": f"You are an expert at creating analytical essay questions from academic content.\n\nLecture Notes:\n{truncated_context}"
-                            },
-                            {
-                                "role": "user",
-                                "content": prompt
-                            }
-                        ],
-                        model="gpt-5.4-nano",
-                        temperature=0.4,
-                        max_tokens=15000,
+                    logging.info("ASYNC ESSAY: Trying gemini-3.1-flash-lite-preview for essay generation...")
+                    gemini_response = await asyncio.wait_for(
+                        self.async_gemini_client.chat.completions.create(
+                            model="gemini-3.1-flash-lite-preview",
+                            messages=messages,
+                            temperature=0.4,
+                            max_tokens=15000,
+                        ),
                         timeout=60
                     )
-                    
-                    logging.info("ASYNC ESSAY: gpt-5.4-nano fallback succeeded")
-                    return _strip_code_fences(fallback_result)
-                    
-                except Exception as nano_error:
-                    logging.error(f"ASYNC ESSAY: Both gpt-5.4-mini and gpt-5.4-nano failed: {nano_error}")
-                    return "I'm having trouble generating an essay question right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
+                    result = gemini_response.choices[0].message.content
+                    if result and result.strip():
+                        logging.info("ASYNC ESSAY: gemini-3.1-flash-lite-preview succeeded")
+                        return _strip_code_fences(result)
+                    raise ValueError("Gemini returned an empty response")
+                except Exception as gemini_error:
+                    logging.error(f"ASYNC ESSAY: gemini-3.1-flash-lite-preview failed: {gemini_error}")
+
+            # Fallback to gpt-5.4-mini
+            try:
+                logging.info("ASYNC ESSAY: Trying gpt-5.4-mini fallback...")
+                result = await self._make_async_openai_fallback_call(
+                    messages=messages, model="gpt-5.4-mini", temperature=0.4, max_tokens=15000, timeout=60
+                )
+                logging.info("ASYNC ESSAY: gpt-5.4-mini fallback succeeded")
+                return _strip_code_fences(result)
+            except Exception as mini_error:
+                logging.error(f"ASYNC ESSAY: gpt-5.4-mini failed: {mini_error}")
+
+            # Last resort: gpt-5.4-nano
+            try:
+                logging.info("ASYNC ESSAY: Trying gpt-5.4-nano last resort...")
+                result = await self._make_async_openai_fallback_call(
+                    messages=messages, model="gpt-5.4-nano", temperature=0.4, max_tokens=15000, timeout=60
+                )
+                logging.info("ASYNC ESSAY: gpt-5.4-nano last resort succeeded")
+                return _strip_code_fences(result)
+            except Exception as nano_error:
+                logging.error(f"ASYNC ESSAY: All models failed: {nano_error}")
+                return "I'm having trouble generating an essay question right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
 
         except Exception as e:
             logging.error(f"ASYNC ESSAY: Critical error in async essay generation: {e}")

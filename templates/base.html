@@ -488,11 +488,12 @@
             padding-left: 1.5rem !important; /* Only for bullet positioning */
         }
 
-        /* MathJax display block spacing — gives calculation steps more breathing room */
-        mjx-container[jax="SVG"][display="true"],
-        mjx-container[jax="CHTML"][display="true"] {
-            margin-top: 0.6em !important;
-            margin-bottom: 0.6em !important;
+        /* MathJax display block spacing — gives calculation steps more breathing room.
+           Custom elements default to inline; display:block is required for margins to apply. */
+        mjx-container[display="true"] {
+            display: block !important;
+            margin-top: 0.75em !important;
+            margin-bottom: 0.75em !important;
         }
         
     </style>

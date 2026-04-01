@@ -2439,8 +2439,14 @@ function endCalculationSession() {
         console.log('🔥 INPUT CONTENT LENGTH:', content.length);
         console.log('🔥 INPUT CONTENT (FIRST 800 CHARS):', content.substring(0, 800));
         
+        // Replace LaTeX currency commands with Unicode equivalents before any other processing
+        // \pounds appears literally when MathJax can't resolve it; £ renders correctly in all contexts
+        let result = content.replace(/\\pounds\b/g, '£');
+        result = result.replace(/\\euro\b/g, '€');
+        result = result.replace(/\\dollar\b/g, '$');
+
         // Fix backslash escaping from JSON
-        let result = content.replace(/\\\\\[/g, '\\[');
+        result = result.replace(/\\\\\[/g, '\\[');
         result = result.replace(/\\\\\]/g, '\\]');
         result = result.replace(/\\\\\(/g, '\\(');
         result = result.replace(/\\\\\)/g, '\\)');

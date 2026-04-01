@@ -358,10 +358,10 @@ End your response with: "Would you like to explore any of these topics in more d
             # Try Gemini Flash Lite as primary
             if self.async_gemini_client:
                 try:
-                    logging.info("ASYNC SUMMARY: Trying gemini-flash-lite-latest for executive summary generation...")
+                    logging.info("ASYNC SUMMARY: Trying gemini-3.1-flash-lite-preview for executive summary generation...")
                     gemini_response = await asyncio.wait_for(
                         self.async_gemini_client.chat.completions.create(
-                            model="gemini-flash-lite-latest",
+                            model="gemini-3.1-flash-lite-preview",
                             messages=messages,
                             temperature=0.2,
                             max_tokens=15000,
@@ -370,11 +370,11 @@ End your response with: "Would you like to explore any of these topics in more d
                     )
                     result = gemini_response.choices[0].message.content
                     if result and result.strip():
-                        logging.info("ASYNC SUMMARY: gemini-flash-lite-latest succeeded")
+                        logging.info("ASYNC SUMMARY: gemini-3.1-flash-lite-preview succeeded")
                         return _strip_code_fences(result)
                     raise ValueError("Gemini returned an empty response")
                 except Exception as gemini_error:
-                    logging.error(f"ASYNC SUMMARY: gemini-flash-lite-latest failed: {gemini_error}")
+                    logging.error(f"ASYNC SUMMARY: gemini-3.1-flash-lite-preview failed: {gemini_error}")
 
             # Fallback to gpt-5.4-nano
             try:

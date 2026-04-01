@@ -1970,7 +1970,7 @@ function nextCalculationQuestion() {
     }
 }
 
-function submitCalculationAnswer() {
+async function submitCalculationAnswer() {
     console.log('📝 GLOBAL DEBUG: submitCalculationAnswer called');
     
     const calcInput = document.getElementById('calcAnswerInput');
@@ -1984,24 +1984,37 @@ function submitCalculationAnswer() {
         alert('Please enter an answer before submitting.');
         return;
     }
-    
+
+    // Show spinner inside the calculation section and disable button
+    const loadingDiv = document.getElementById('calcAnswerLoading');
+    const submitBtn = document.getElementById('calcSubmitBtn');
+    if (loadingDiv) loadingDiv.style.display = 'block';
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div>';
+    }
+
     console.log('📝 GLOBAL DEBUG: Submitting answer through newSendMessage:', answer);
     
     // Use the new chat system to send the answer
     const chatInput = document.getElementById('newChatInput');
     if (chatInput) {
         chatInput.value = answer;
-        newSendMessage();
-        
-        // Clear the calculation input
         calcInput.value = '';
-        
+        await newSendMessage();
         console.log('📝 GLOBAL DEBUG: Answer submitted through chat system');
     } else {
         console.log('📝 GLOBAL DEBUG: newChatInput not found, falling back to AITutor method');
         if (window.aiTutor) {
             window.aiTutor.submitCalculationAnswer();
         }
+    }
+
+    // Hide spinner and restore button
+    if (loadingDiv) loadingDiv.style.display = 'none';
+    if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="fas fa-check"></i> Check Answer';
     }
 }
 

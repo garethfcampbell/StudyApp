@@ -569,3 +569,10 @@ body {
 }
 
 /* Remove custom scrollbar styles since we're using page-level scrolling */
+
+/* MathJax display block spacing — gives calculation steps more breathing room */
+mjx-container[jax="SVG"][display="true"],
+mjx-container[jax="CHTML"][display="true"] {
+    margin-top: 0.6em !important;
+    margin-bottom: 0.6em !important;
+}

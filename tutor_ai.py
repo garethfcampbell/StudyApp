@@ -23,7 +23,18 @@ class TutorAI:
             api_key=self.openai_api_key,
             max_retries=0
         )
-            
+
+        # Async Gemini client via OpenAI-compatible endpoint (used for executive summary)
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        if self.gemini_api_key:
+            self.async_gemini_client = AsyncOpenAI(
+                api_key=self.gemini_api_key,
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                max_retries=0
+            )
+        else:
+            self.async_gemini_client = None
+
         self.context = None
         self.conversation_history = []
 
@@ -77,7 +88,7 @@ class TutorAI:
         """
 
     # All AI calls go through _make_async_openai_fallback_call
-    # Summary: gpt-5.4-nano primary, gpt-5.4-mini fallback
+    # Summary: Gemini Flash Lite primary, gpt-5.4-nano fallback, gpt-5.4-mini last resort
     # All other features: gpt-5.4-mini primary, gpt-5.4-nano fallback
 
     async def _make_async_openai_fallback_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, response_format=None, timeout=50):
@@ -320,59 +331,70 @@ End your response with: "Would you like to explore any of these topics in more d
             # Truncate context to 80,000 characters for async API calls
             truncated_context = self.context[:80000] if len(self.context) > 80000 else self.context
             
-            # Try gpt-5.4-nano as primary
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"You are an expert at creating study aids and revision sheets from academic content.\n\nLecture Notes:\n{truncated_context}"
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+
+            logging.info(f"ASYNC SUMMARY: Context length: {len(truncated_context)} characters")
+
+            # Try Gemini Flash Lite as primary
+            if self.async_gemini_client:
+                try:
+                    logging.info("ASYNC SUMMARY: Trying gemini-flash-lite-latest for executive summary generation...")
+                    gemini_response = await asyncio.wait_for(
+                        self.async_gemini_client.chat.completions.create(
+                            model="gemini-flash-lite-latest",
+                            messages=messages,
+                            temperature=0.2,
+                            max_tokens=15000,
+                        ),
+                        timeout=60
+                    )
+                    result = gemini_response.choices[0].message.content
+                    if result and result.strip():
+                        logging.info("ASYNC SUMMARY: gemini-flash-lite-latest succeeded")
+                        return result
+                    raise ValueError("Gemini returned an empty response")
+                except Exception as gemini_error:
+                    logging.error(f"ASYNC SUMMARY: gemini-flash-lite-latest failed: {gemini_error}")
+
+            # Fallback to gpt-5.4-nano
             try:
-                logging.info("ASYNC SUMMARY: Trying gpt-5.4-nano for executive summary generation...")
-                logging.info(f"ASYNC SUMMARY: Context length: {len(truncated_context)} characters")
-                
+                logging.info("ASYNC SUMMARY: Trying gpt-5.4-nano fallback...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": f"You are an expert at creating study aids and revision sheets from academic content.\n\nLecture Notes:\n{truncated_context}"
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
+                    messages=messages,
                     model="gpt-5.4-nano",
                     temperature=0.2,
                     max_tokens=15000,
                     timeout=60
                 )
-                
-                logging.info("ASYNC SUMMARY: gpt-5.4-nano succeeded")
+                logging.info("ASYNC SUMMARY: gpt-5.4-nano fallback succeeded")
                 return result
-                
             except Exception as nano_error:
                 logging.error(f"ASYNC SUMMARY: gpt-5.4-nano failed: {nano_error}")
-                # Fallback to gpt-5.4-mini
-                try:
-                    logging.info("ASYNC SUMMARY: Trying gpt-5.4-mini fallback...")
-                    fallback_result = await self._make_async_openai_fallback_call(
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": f"You are an expert at creating study aids and revision sheets from academic content.\n\nLecture Notes:\n{truncated_context}"
-                            },
-                            {
-                                "role": "user",
-                                "content": prompt
-                            }
-                        ],
-                        model="gpt-5.4-mini",
-                        temperature=0.7,
-                        max_tokens=15000,
-                        timeout=60
-                    )
-                    
-                    logging.info("ASYNC SUMMARY: gpt-5.4-mini fallback succeeded")
-                    return fallback_result
-                    
-                except Exception as mini_error:
-                    logging.error(f"ASYNC SUMMARY: Both gpt-5.4-nano and gpt-5.4-mini failed: {nano_error} | {mini_error}")
-                    return "I'm having trouble generating a summary right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
+
+            # Last resort: gpt-5.4-mini
+            try:
+                logging.info("ASYNC SUMMARY: Trying gpt-5.4-mini last resort...")
+                result = await self._make_async_openai_fallback_call(
+                    messages=messages,
+                    model="gpt-5.4-mini",
+                    temperature=0.7,
+                    max_tokens=15000,
+                    timeout=60
+                )
+                logging.info("ASYNC SUMMARY: gpt-5.4-mini last resort succeeded")
+                return result
+            except Exception as mini_error:
+                logging.error(f"ASYNC SUMMARY: All models failed: {mini_error}")
+                return "I'm having trouble generating a summary right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
 
         except Exception as e:
             logging.error(f"ASYNC SUMMARY: Critical error in async summary generation: {e}")

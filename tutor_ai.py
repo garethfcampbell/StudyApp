@@ -76,7 +76,9 @@ class TutorAI:
     
         """
 
-    # All AI calls go through _make_async_openai_fallback_call (gpt-5.4-mini primary, gpt-5.4-nano fallback)
+    # All AI calls go through _make_async_openai_fallback_call
+    # Summary: gpt-5.4-nano primary, gpt-5.4-mini fallback
+    # All other features: gpt-5.4-mini primary, gpt-5.4-nano fallback
 
     async def _make_async_openai_fallback_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, response_format=None, timeout=50):
 
@@ -318,9 +320,9 @@ End your response with: "Would you like to explore any of these topics in more d
             # Truncate context to 80,000 characters for async API calls
             truncated_context = self.context[:80000] if len(self.context) > 80000 else self.context
             
-            # Try async Gemini as primary
+            # Try gpt-5.4-nano as primary
             try:
-                logging.info("ASYNC SUMMARY: Trying gpt-5.4-mini for executive summary generation...")
+                logging.info("ASYNC SUMMARY: Trying gpt-5.4-nano for executive summary generation...")
                 logging.info(f"ASYNC SUMMARY: Context length: {len(truncated_context)} characters")
                 
                 result = await self._make_async_openai_fallback_call(
@@ -334,20 +336,20 @@ End your response with: "Would you like to explore any of these topics in more d
                             "content": prompt
                         }
                     ],
-                    model="gpt-5.4-mini",
+                    model="gpt-5.4-nano",
                     temperature=0.2,
                     max_tokens=15000,
                     timeout=60
                 )
                 
-                logging.info("ASYNC SUMMARY: gpt-5.4-mini succeeded")
+                logging.info("ASYNC SUMMARY: gpt-5.4-nano succeeded")
                 return result
                 
-            except Exception as openai_error:
-                logging.error(f"ASYNC SUMMARY: gpt-5.4-mini failed: {openai_error}")
-                # Fallback to gpt-5.4-nano
+            except Exception as nano_error:
+                logging.error(f"ASYNC SUMMARY: gpt-5.4-nano failed: {nano_error}")
+                # Fallback to gpt-5.4-mini
                 try:
-                    logging.info("ASYNC SUMMARY: Trying gpt-5.4-nano fallback...")
+                    logging.info("ASYNC SUMMARY: Trying gpt-5.4-mini fallback...")
                     fallback_result = await self._make_async_openai_fallback_call(
                         messages=[
                             {
@@ -359,17 +361,17 @@ End your response with: "Would you like to explore any of these topics in more d
                                 "content": prompt
                             }
                         ],
-                        model="gpt-5.4-nano",
+                        model="gpt-5.4-mini",
                         temperature=0.7,
                         max_tokens=15000,
                         timeout=60
                     )
                     
-                    logging.info("ASYNC SUMMARY: gpt-5.4-nano fallback succeeded")
+                    logging.info("ASYNC SUMMARY: gpt-5.4-mini fallback succeeded")
                     return fallback_result
                     
-                except Exception as nano_error:
-                    logging.error(f"ASYNC SUMMARY: Both gpt-5.4-mini and gpt-5.4-nano failed: {nano_error}")
+                except Exception as mini_error:
+                    logging.error(f"ASYNC SUMMARY: Both gpt-5.4-nano and gpt-5.4-mini failed: {nano_error} | {mini_error}")
                     return "I'm having trouble generating a summary right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
 
         except Exception as e:

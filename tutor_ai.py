@@ -9,29 +9,19 @@ class TutorAI:
 
     def __init__(self):
 
-        self.api_key = os.getenv("GEMINI_API_KEY", "")
-        if not self.api_key:
-            raise ValueError("Gemini API key not found. Please set GEMINI_API_KEY environment variable.")
-
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-        )
-        
-        # Initialize OpenAI clients for fallbacks (both sync and async)
+        # Initialize OpenAI clients (primary and async)
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
-        if self.openai_api_key:
-            self.openai_client = OpenAI(
-                api_key=self.openai_api_key
-            )
-            # Initialize async OpenAI client with aiohttp for better performance
-            self.async_openai_client = AsyncOpenAI(
-                api_key=self.openai_api_key,
-                http_client=DefaultAioHttpClient()
-            )
-        else:
-            self.openai_client = None
-            self.async_openai_client = None
+        if not self.openai_api_key:
+            raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
+
+        self.openai_client = OpenAI(
+            api_key=self.openai_api_key
+        )
+        # Async client with aiohttp for better concurrent performance
+        self.async_openai_client = AsyncOpenAI(
+            api_key=self.openai_api_key,
+            http_client=DefaultAioHttpClient()
+        )
             
         self.context = None
         self.conversation_history = []
@@ -85,7 +75,7 @@ class TutorAI:
     
         """
 
-    # Legacy sync method removed - use _make_async_api_call() instead
+    # All AI calls go through _make_async_openai_fallback_call (gpt-5.4-mini primary, gpt-5.4-nano fallback)
 
     async def _make_async_openai_fallback_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, response_format=None, timeout=50):
 
@@ -186,99 +176,6 @@ class TutorAI:
             logging.error(f"Async OpenAI fallback call failed: {e}")
             raise e
 
-    async def _make_async_api_call(self, messages, model="gemini-flash-lite-latest", temperature=0.7, max_tokens=20000, timeout=50):
-
-        if not self.api_key:
-            raise Exception("Gemini API key not configured.")
-        
-        try:
-            # Reduced retries to fail faster in async context
-            max_retries = 2
-            
-            for attempt in range(max_retries + 1):
-                try:
-                    # Use async HTTP client with aiohttp for Gemini
-                    import aiohttp
-                    import json
-                    
-                    # Prepare the request payload for Gemini via OpenAI-compatible endpoint
-                    api_args = {
-                        "model": model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    }
-                    
-                    # Make the actual async API call to Gemini
-                    async with aiohttp.ClientSession() as session:
-                        headers = {
-                            "Authorization": f"Bearer {self.api_key}",
-                            "Content-Type": "application/json"
-                        }
-                        
-                        async with session.post(
-                            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-                            headers=headers,
-                            json=api_args,
-                            timeout=aiohttp.ClientTimeout(total=timeout)
-                        ) as response:
-                            response.raise_for_status()
-                            result = await response.json()
-
-                    # Extract the content from the response
-                    content = result["choices"][0]["message"]["content"]
-
-                    # Debug: Log response details
-                    logging.debug(f"Async Gemini response: finish_reason={result['choices'][0].get('finish_reason', 'unknown')}, content_length={len(content) if content else 0}")
-                    
-                    # Check for empty response
-                    if not content or not content.strip():
-                        finish_reason = result["choices"][0].get("finish_reason", "unknown")
-                        logging.error(f"Async Gemini returned an empty response. Finish reason: {finish_reason}")
-                        
-                        # Handle different finish reasons
-                        if finish_reason == "content_filter":
-                            raise ValueError("Content was filtered by AI safety systems. Please try generating different content.")
-                        elif finish_reason == "length":
-                            raise ValueError("Response was truncated due to length limits. Please try again.")
-                        else:
-                            raise ValueError("Async Gemini service returned an empty response.")
-
-                    return content
-
-                except asyncio.TimeoutError:
-                    logging.error(f"Async Gemini API call timed out after {timeout} seconds (attempt {attempt + 1}/{max_retries + 1})")
-                    if attempt < max_retries:
-                        await asyncio.sleep(1)  # Brief delay before retry
-                        continue
-                    else:
-                        raise Exception("The AI service is taking longer than expected to respond. Please try again.")
-
-                except Exception as e:
-                    # Log the detailed error for debugging purposes
-                    logging.error(f"Async Gemini API call failed (attempt {attempt + 1}/{max_retries + 1}). Error: {type(e).__name__} - {e}")
-                    
-                    # For HTTP/connection errors, fail immediately to prevent worker kill
-                    error_str = str(e).lower()
-                    if any(pattern in error_str for pattern in ['ssl', 'sock', 'recv', 'read', 'connection', 'aiohttp', 'clienterror']):
-                        logging.error("Async Gemini connection error detected, failing immediately")
-                        raise Exception("Connection to Gemini AI service failed. Please try again in a few moments.")
-                    
-                    # Check if this is a server error that we should retry
-                    should_retry = any(pattern in error_str for pattern in ['500', '502', '503', '504', 'timeout', 'rate limit'])
-                    
-                    if should_retry and attempt < max_retries:
-                        logging.info(f"Retrying async Gemini call in 1 second... (attempt {attempt + 1}/{max_retries + 1})")
-                        await asyncio.sleep(1)
-                        continue
-                    
-                    # If we've exhausted retries or it's not a retryable error, raise the exception
-                    raise Exception("I'm having trouble connecting to the Gemini AI service right now. This is likely a temporary issue. Please try again in a few moments.")
-                    
-        except Exception as e:
-            logging.error(f"Async Gemini API call failed: {e}")
-            raise e
-
     def set_context(self, pdf_content):
 
         self.context = pdf_content
@@ -336,11 +233,11 @@ class TutorAI:
             return ai_response
             
         except Exception as openai_error:
-            # Fallback to Gemini if OpenAI fails
+            # Fallback to gpt-5.4-nano if gpt-5.4-mini fails
             try:
-                ai_response = await self._make_async_api_call(
+                ai_response = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model="gemini-flash-lite-latest",
+                    model="gpt-5.4-nano",
                     temperature=0.7,
                     max_tokens=15000,
                     timeout=60
@@ -352,8 +249,8 @@ class TutorAI:
                 
                 return ai_response
                 
-            except Exception as gemini_error:
-                logging.error(f"Both async OpenAI and Gemini failed for general chat: {openai_error} | {gemini_error}")
+            except Exception as nano_error:
+                logging.error(f"Both gpt-5.4-mini and gpt-5.4-nano failed for general chat: {openai_error} | {nano_error}")
                 return "I'm having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments."
 
     
@@ -422,10 +319,10 @@ End your response with: "Would you like to explore any of these topics in more d
             
             # Try async Gemini as primary
             try:
-                logging.info("ASYNC SUMMARY: Trying async Gemini for executive summary generation...")
+                logging.info("ASYNC SUMMARY: Trying gpt-5.4-mini for executive summary generation...")
                 logging.info(f"ASYNC SUMMARY: Context length: {len(truncated_context)} characters")
                 
-                result = await self._make_async_api_call(
+                result = await self._make_async_openai_fallback_call(
                     messages=[
                         {
                             "role": "system",
@@ -436,20 +333,20 @@ End your response with: "Would you like to explore any of these topics in more d
                             "content": prompt
                         }
                     ],
-                    model="gemini-flash-lite-latest",
+                    model="gpt-5.4-mini",
                     temperature=0.2,
                     max_tokens=15000,
-                    timeout=60  # Extended timeout for summary generation
+                    timeout=60
                 )
                 
-                logging.info("ASYNC SUMMARY: Async Gemini succeeded")
+                logging.info("ASYNC SUMMARY: gpt-5.4-mini succeeded")
                 return result
                 
-            except Exception as gemini_error:
-                logging.error(f"ASYNC SUMMARY: Async Gemini failed: {gemini_error}")
-                # Fallback to async OpenAI
+            except Exception as openai_error:
+                logging.error(f"ASYNC SUMMARY: gpt-5.4-mini failed: {openai_error}")
+                # Fallback to gpt-5.4-nano
                 try:
-                    logging.info("ASYNC SUMMARY: Trying async OpenAI fallback...")
+                    logging.info("ASYNC SUMMARY: Trying gpt-5.4-nano fallback...")
                     fallback_result = await self._make_async_openai_fallback_call(
                         messages=[
                             {
@@ -467,11 +364,11 @@ End your response with: "Would you like to explore any of these topics in more d
                         timeout=60
                     )
                     
-                    logging.info("ASYNC SUMMARY: Async OpenAI fallback succeeded")
+                    logging.info("ASYNC SUMMARY: gpt-5.4-nano fallback succeeded")
                     return fallback_result
                     
-                except Exception as openai_error:
-                    logging.error(f"ASYNC SUMMARY: Both async methods failed: {openai_error}")
+                except Exception as nano_error:
+                    logging.error(f"ASYNC SUMMARY: Both gpt-5.4-mini and gpt-5.4-nano failed: {nano_error}")
                     return "I'm having trouble generating a summary right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
 
         except Exception as e:
@@ -618,10 +515,10 @@ You MUST use the following structure and formatting precisely.
             
             # Try async Gemini as primary
             try:
-                logging.info("ASYNC ESSAY: Trying async Gemini for essay question generation...")
+                logging.info("ASYNC ESSAY: Trying gpt-5.4-mini for essay question generation...")
                 logging.info(f"ASYNC ESSAY: Context length: {len(truncated_context)} characters")
                 
-                result = await self._make_async_api_call(
+                result = await self._make_async_openai_fallback_call(
                     messages=[
                         {
                             "role": "system",
@@ -632,20 +529,20 @@ You MUST use the following structure and formatting precisely.
                             "content": prompt
                         }
                     ],
-                    model="gemini-flash-lite-latest",
+                    model="gpt-5.4-mini",
                     temperature=0.4,
                     max_tokens=15000,
-                    timeout=60  # Extended timeout for essay generation
+                    timeout=60
                 )
                 
-                logging.info("ASYNC ESSAY: Async Gemini succeeded")
+                logging.info("ASYNC ESSAY: gpt-5.4-mini succeeded")
                 return result
                 
-            except Exception as gemini_error:
-                logging.error(f"ASYNC ESSAY: Async Gemini failed: {gemini_error}")
-                # Fallback to async OpenAI
+            except Exception as openai_error:
+                logging.error(f"ASYNC ESSAY: gpt-5.4-mini failed: {openai_error}")
+                # Fallback to gpt-5.4-nano
                 try:
-                    logging.info("ASYNC ESSAY: Trying async OpenAI fallback...")
+                    logging.info("ASYNC ESSAY: Trying gpt-5.4-nano fallback...")
                     fallback_result = await self._make_async_openai_fallback_call(
                         messages=[
                             {
@@ -663,11 +560,11 @@ You MUST use the following structure and formatting precisely.
                         timeout=60
                     )
                     
-                    logging.info("ASYNC ESSAY: Async OpenAI fallback succeeded")
+                    logging.info("ASYNC ESSAY: gpt-5.4-nano fallback succeeded")
                     return fallback_result
                     
-                except Exception as openai_error:
-                    logging.error(f"ASYNC ESSAY: Both async methods failed: {openai_error}")
+                except Exception as nano_error:
+                    logging.error(f"ASYNC ESSAY: Both gpt-5.4-mini and gpt-5.4-nano failed: {nano_error}")
                     return "I'm having trouble generating an essay question right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
 
         except Exception as e:
@@ -751,10 +648,10 @@ End the overall response with: "Would you like to explore any of these topics in
             
             # Try async Gemini as primary
             try:
-                logging.info("ASYNC KEY CONCEPTS: Trying async Gemini for key concepts explanation...")
+                logging.info("ASYNC KEY CONCEPTS: Trying gpt-5.4-mini for key concepts explanation...")
                 logging.info(f"ASYNC KEY CONCEPTS: Context length: {len(truncated_context)} characters")
                 
-                result = await self._make_async_api_call(
+                result = await self._make_async_openai_fallback_call(
                     messages=[
                         {
                             "role": "system",
@@ -765,21 +662,21 @@ End the overall response with: "Would you like to explore any of these topics in
                             "content": prompt
                         }
                     ],
-                    model="gemini-flash-lite-latest",
+                    model="gpt-5.4-mini",
                     temperature=0.4,
                     max_tokens=15000,
-                    timeout=60  # Extended timeout for key concepts explanation
+                    timeout=60
                 )
                 
-                logging.info("ASYNC KEY CONCEPTS: Async Gemini succeeded")
+                logging.info("ASYNC KEY CONCEPTS: gpt-5.4-mini succeeded")
                 # Return raw result without LaTeX preprocessing
                 return result
                 
-            except Exception as gemini_error:
-                logging.error(f"ASYNC KEY CONCEPTS: Async Gemini failed: {gemini_error}")
-                # Fallback to async OpenAI
+            except Exception as openai_error:
+                logging.error(f"ASYNC KEY CONCEPTS: gpt-5.4-mini failed: {openai_error}")
+                # Fallback to gpt-5.4-nano
                 try:
-                    logging.info("ASYNC KEY CONCEPTS: Trying async OpenAI fallback...")
+                    logging.info("ASYNC KEY CONCEPTS: Trying gpt-5.4-nano fallback...")
                     fallback_result = await self._make_async_openai_fallback_call(
                         messages=[
                             {
@@ -797,12 +694,12 @@ End the overall response with: "Would you like to explore any of these topics in
                         timeout=60
                     )
                     
-                    logging.info("ASYNC KEY CONCEPTS: Async OpenAI fallback succeeded")
+                    logging.info("ASYNC KEY CONCEPTS: gpt-5.4-nano fallback succeeded")
                     # Return raw result without LaTeX preprocessing
                     return fallback_result
                     
-                except Exception as openai_error:
-                    logging.error(f"ASYNC KEY CONCEPTS: Both async methods failed: {openai_error}")
+                except Exception as nano_error:
+                    logging.error(f"ASYNC KEY CONCEPTS: Both gpt-5.4-mini and gpt-5.4-nano failed: {nano_error}")
                     return "I'm having trouble explaining the key concepts right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
 
         except Exception as e:
@@ -861,22 +758,23 @@ CRITICAL FORMATTING RULES:
 
 RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no text, no code blocks."""
 
-            # Try async Gemini as primary
+            # Try gpt-5.4-mini as primary
             try:
-                logging.info("ASYNC QUIZ: Trying async Gemini for retrieval quiz generation...")
+                logging.info("ASYNC QUIZ: Trying gpt-5.4-mini for retrieval quiz generation...")
                 logging.info(f"ASYNC QUIZ: Context length: {len(context_truncated)} characters")
                 
-                result = await self._make_async_api_call(
+                result = await self._make_async_openai_fallback_call(
                     messages=[
                         {"role": "user", "content": prompt}
                     ],
-                    model="gemini-flash-lite-latest",
+                    model="gpt-5.4-mini",
+                    response_format={"type": "json_object"},
                     temperature=0.3,
                     max_tokens=15000,
-                    timeout=60  # Extended timeout for quiz generation
+                    timeout=60
                 )
                 
-                logging.info("ASYNC QUIZ: Async Gemini succeeded")
+                logging.info("ASYNC QUIZ: gpt-5.4-mini succeeded")
                 
                 # Parse and validate the JSON response
                 import json
@@ -949,11 +847,11 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
                 
                 return []
                 
-            except Exception as gemini_error:
-                logging.error(f"ASYNC QUIZ: Async Gemini failed: {gemini_error}")
-                # Fallback to async OpenAI
+            except Exception as openai_error:
+                logging.error(f"ASYNC QUIZ: gpt-5.4-mini failed: {openai_error}")
+                # Fallback to gpt-5.4-nano
                 try:
-                    logging.info("ASYNC QUIZ: Trying async OpenAI fallback...")
+                    logging.info("ASYNC QUIZ: Trying gpt-5.4-nano fallback...")
                     fallback_result = await self._make_async_openai_fallback_call(
                         messages=[
                             {"role": "user", "content": prompt}
@@ -1250,28 +1148,23 @@ CORRECT:
             
         except Exception as o4_error:
             logging.error(f"gpt-5.4-mini failed for calculation answer check: {o4_error}")
-            # Fallback to Gemini async
+            # Fallback to gpt-5.4-nano
             try:
-                logging.info("CHECK_CALC_ANSWER: Falling back to Gemini async...")
-                gemini_response = await self._make_async_api_call(
+                logging.info("CHECK_CALC_ANSWER: Falling back to gpt-5.4-nano...")
+                nano_response = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model="gemini-flash-lite-latest",
+                    model="gpt-5.4-nano",
                     max_tokens=5000,
                     timeout=45
                 )
                 
-                logging.info("CHECK_CALC_ANSWER: RAW API RESPONSE from Gemini fallback:")
-                logging.info(f"---START GEMINI FALLBACK RESPONSE---")
-                logging.info(gemini_response)
-                logging.info(f"---END GEMINI FALLBACK RESPONSE---")
-                
                 # No LaTeX formatting - let MathJax handle delimiters directly
-                logging.info("CHECK_CALC_ANSWER: Gemini fallback success - returning raw response")
+                logging.debug("CHECK_CALC_ANSWER: gpt-5.4-nano fallback success")
                 
-                return gemini_response
+                return nano_response
                 
-            except Exception as gemini_error:
-                logging.error(f"Both gpt-5.4-mini and Gemini failed for calculation answer check: gpt-5.4-mini={o4_error}, gemini={gemini_error}")
+            except Exception as nano_error:
+                logging.error(f"Both gpt-5.4-mini and gpt-5.4-nano failed for calculation answer check: {o4_error} | {nano_error}")
                 return f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing calculation evaluations right now. Please try again in a moment, or click the Calculation questions button to get a new question."
 
     

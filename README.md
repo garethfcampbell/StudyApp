@@ -22,8 +22,8 @@ An interactive self-study web application for Queen's University Belfast Finance
 | Layer | Technology |
 |---|---|
 | Backend | Python / Flask / Gunicorn |
-| AI (primary) | Google Gemini (`gemini-flash-lite-latest`) |
-| AI (fallback) | OpenAI (`gpt-5.4-mini` / `gpt-5.4-nano`) |
+| AI (primary) | OpenAI (`gpt-5.4-mini`) |
+| AI (fallback) | OpenAI (`gpt-5.4-nano`) |
 | Database | PostgreSQL (Replit managed) |
 | Frontend | Bootstrap 5 / Vanilla JS / MathJax |
 | File parsing | PyPDF2, python-pptx |
@@ -36,8 +36,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 
 - Python 3.11+
 - PostgreSQL database
-- Google Gemini API key
-- OpenAI API key (optional fallback)
+- OpenAI API key
 
 ### Environment Variables
 
@@ -45,8 +44,7 @@ Create the following secrets/environment variables before running:
 
 | Variable | Required | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | Yes | Google Gemini API key |
-| `OPENAI_API_KEY` | No | OpenAI API key (used as fallback) |
+| `OPENAI_API_KEY` | Yes | OpenAI API key |
 | `SESSION_SECRET` | Yes | Random secret string for Flask sessions |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 
@@ -102,12 +100,12 @@ The application uses a **session-based architecture** — no user accounts requi
 
 | Feature | Primary | Fallback |
 |---|---|---|
-| Chat / tutoring | `gpt-5.4-mini` | `gemini-flash-lite-latest` |
-| Calculation questions | `gpt-5.4-mini` | `gemini-flash-lite-latest` |
-| Quiz generation | `gemini-flash-lite-latest` | `gpt-5.4-nano` |
-| Executive summary | `gemini-flash-lite-latest` | `gpt-5.4-nano` |
-| Essay questions | `gemini-flash-lite-latest` | `gpt-5.4-nano` |
-| Key concepts | `gemini-flash-lite-latest` | `gpt-5.4-nano` |
+| Chat / tutoring | `gpt-5.4-mini` | `gpt-5.4-nano` |
+| Calculation questions | `gpt-5.4-mini` | `gpt-5.4-nano` |
+| Quiz generation | `gpt-5.4-mini` | `gpt-5.4-nano` |
+| Executive summary | `gpt-5.4-mini` | `gpt-5.4-nano` |
+| Essay questions | `gpt-5.4-mini` | `gpt-5.4-nano` |
+| Key concepts | `gpt-5.4-mini` | `gpt-5.4-nano` |
 
 ### Storage
 

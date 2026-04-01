@@ -951,7 +951,7 @@ IMPORTANT: Generate a NEW question that uses a DIFFERENT equation/formula from t
 
             REQUIRED LAYOUT PATTERN:
             1) Choose ONE equation from the lecture notes and display it using LaTeX formatting. 
-            2) IMPORTANT — work through equations strictly in the order they appear in the lecture notes, from top to bottom. If there are no previously used questions, start with the very first equation in the notes. If there are previously used questions, move to the next equation that follows in the lecture notes. Never skip ahead or jump to a later equation out of order.
+            2) IMPORTANT — work through equations strictly in the order they appear in the lecture notes, from top to bottom. If there are no previously used questions, start with the very first equation in the notes. If there are previously used questions, move to the next equation that follows in the lecture notes. Never skip ahead or jump to a later equation out of order. Each equation must only be used once — never repeat an equation that has already been used in a previous question.
             3) Explain the variable definitions clearly
             4) Provide an explanation of what the equation means and its purpose
             5) Show a worked example using specific input values with step-by-step LaTeX calculations
@@ -961,6 +961,7 @@ IMPORTANT: Generate a NEW question that uses a DIFFERENT equation/formula from t
             CONTENT REQUIREMENTS:
             - Use ONLY mathematical formulas/equations that appear DIRECTLY in the lecture notes above
             - Select equations in the order they appear in the lecture notes — do not skip or reorder them
+            - Each equation may only be used once — if an equation has already appeared in a previous question, skip it and move to the next one
             - For worked examples, you may use values from the lecture notes if available
             - For challenge problems, you MUST create NEW and DIFFERENT numerical values
             - Show complete step-by-step calculations in LaTeX format

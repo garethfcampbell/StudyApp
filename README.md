@@ -9,7 +9,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 - **Document Upload** — Drag and drop PDF or PowerPoint files; text is extracted automatically
 - **AI Chat Tutor** — Ask questions about your notes and get clear, context-aware explanations
 - **Key Concepts** — Generate a structured summary of the main ideas in your document
-- **Executive Summary** — Get a concise overview of the lecture content
+- **Executive Summary** — Get a concise revision sheet of the lecture content
 - **Retrieval Quiz** — Auto-generated multiple-choice questions to test your recall
 - **Essay Questions** — Practice longer-form answers with model responses
 - **Calculation Practice** — Step-by-step worked examples with interactive answer checking
@@ -22,8 +22,8 @@ An interactive self-study web application for Queen's University Belfast Finance
 | Layer | Technology |
 |---|---|
 | Backend | Python / Flask / Gunicorn |
-| AI (primary) | OpenAI (`gpt-5.4-mini`) |
-| AI (fallback) | OpenAI (`gpt-5.4-nano`) |
+| AI (Gemini) | Google Gemini (`gemini-3.1-flash-lite-preview`) |
+| AI (OpenAI) | OpenAI (`gpt-5.4-mini`, `gpt-5.4-nano`) |
 | Database | PostgreSQL (Replit managed) |
 | Frontend | Bootstrap 5 / Vanilla JS / MathJax |
 | File parsing | PyPDF2, python-pptx |
@@ -36,6 +36,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 
 - Python 3.11+
 - PostgreSQL database
+- Google Gemini API key
 - OpenAI API key
 
 ### Environment Variables
@@ -44,17 +45,15 @@ Create the following secrets/environment variables before running:
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | Yes | OpenAI API key |
+| `GEMINI_API_KEY` | Yes | Google Gemini API key |
+| `OPENAI_API_KEY` | Yes | OpenAI API key (used as fallback) |
 | `SESSION_SECRET` | Yes | Random secret string for Flask sessions |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 
 ### Installation
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-# or with uv:
-uv sync
 ```
 
 ### Running Locally
@@ -100,12 +99,12 @@ The application uses a **session-based architecture** — no user accounts requi
 
 | Feature | Primary | Fallback |
 |---|---|---|
+| Executive summary | `gemini-3.1-flash-lite-preview` | `gpt-5.4-nano` → `gpt-5.4-mini` |
+| Essay questions | `gemini-3.1-flash-lite-preview` | `gpt-5.4-mini` → `gpt-5.4-nano` |
 | Chat / tutoring | `gpt-5.4-mini` | `gpt-5.4-nano` |
-| Calculation questions | `gpt-5.4-mini` | `gpt-5.4-nano` |
 | Quiz generation | `gpt-5.4-mini` | `gpt-5.4-nano` |
-| Executive summary | `gpt-5.4-mini` | `gpt-5.4-nano` |
-| Essay questions | `gpt-5.4-mini` | `gpt-5.4-nano` |
 | Key concepts | `gpt-5.4-mini` | `gpt-5.4-nano` |
+| Calculation questions | `gpt-5.4-mini` | `gpt-5.4-nano` |
 
 ### Storage
 

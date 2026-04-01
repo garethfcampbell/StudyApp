@@ -951,32 +951,18 @@ Example output format:
             messages = [{"role": "user", "content": prompt}]
             import json as _json
 
-            try:
-                response = await self.async_openai_client.chat.completions.create(
-                    model="gpt-5.4-mini",
-                    messages=messages,
-                    max_tokens=2000
-                )
-                content = _strip_code_fences(response.choices[0].message.content.strip())
-                equations = _json.loads(content)
-                if isinstance(equations, list):
-                    logging.info(f"Extracted {len(equations)} equations from lecture notes")
-                    return equations
-            except Exception as e:
-                logging.error(f"Primary model failed for equation extraction: {e}")
-
-            try:
-                response = await self.async_fallback_client.chat.completions.create(
-                    model="gpt-5.4-nano",
-                    messages=messages,
-                    max_tokens=2000
-                )
-                content = _strip_code_fences(response.choices[0].message.content.strip())
-                equations = _json.loads(content)
-                if isinstance(equations, list):
-                    return equations
-            except Exception as e:
-                logging.error(f"Fallback model failed for equation extraction: {e}")
+            for model in ("gpt-5.4-mini", "gpt-5.4-nano"):
+                try:
+                    content = await self._make_async_openai_fallback_call(
+                        messages, model=model, max_tokens=2000, timeout=60
+                    )
+                    content = _strip_code_fences(content.strip())
+                    equations = _json.loads(content)
+                    if isinstance(equations, list) and len(equations) > 0:
+                        logging.info(f"Extracted {len(equations)} equations using {model}")
+                        return equations
+                except Exception as e:
+                    logging.error(f"Equation extraction failed with {model}: {e}")
 
             return []
 

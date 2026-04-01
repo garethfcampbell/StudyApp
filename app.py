@@ -121,9 +121,11 @@ def init_session():
     if 'practice_equations' not in existing_data or not existing_data.get('practice_equations'):
         batch_operations = [
             (session_id, 'practice_equations', []),
-            (session_id, 'current_equation_index', 0),
             (session_id, 'equation_score', 0)
         ]
+        # Only reset the equation index if it has never been set — never overwrite an in-progress value
+        if existing_data.get('current_equation_index') is None:
+            batch_operations.append((session_id, 'current_equation_index', 0))
         primary_storage.batch_store(batch_operations)
 
 def get_pdf_content():

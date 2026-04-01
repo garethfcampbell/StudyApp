@@ -4,6 +4,17 @@ import asyncio
 from openai import OpenAI, AsyncOpenAI
 import json
 import logging
+import re
+
+
+def _strip_code_fences(text):
+    """Remove wrapping markdown code fences (e.g. ```markdown ... ```) that models occasionally add."""
+    if not text:
+        return text
+    # Remove opening fence with optional language tag and closing fence
+    text = re.sub(r'^```[a-zA-Z]*\n', '', text.strip())
+    text = re.sub(r'\n?```$', '', text.strip())
+    return text.strip()
 
 class TutorAI:
 
@@ -360,7 +371,7 @@ End your response with: "Would you like to explore any of these topics in more d
                     result = gemini_response.choices[0].message.content
                     if result and result.strip():
                         logging.info("ASYNC SUMMARY: gemini-flash-lite-latest succeeded")
-                        return result
+                        return _strip_code_fences(result)
                     raise ValueError("Gemini returned an empty response")
                 except Exception as gemini_error:
                     logging.error(f"ASYNC SUMMARY: gemini-flash-lite-latest failed: {gemini_error}")
@@ -376,7 +387,7 @@ End your response with: "Would you like to explore any of these topics in more d
                     timeout=60
                 )
                 logging.info("ASYNC SUMMARY: gpt-5.4-nano fallback succeeded")
-                return result
+                return _strip_code_fences(result)
             except Exception as nano_error:
                 logging.error(f"ASYNC SUMMARY: gpt-5.4-nano failed: {nano_error}")
 
@@ -391,7 +402,7 @@ End your response with: "Would you like to explore any of these topics in more d
                     timeout=60
                 )
                 logging.info("ASYNC SUMMARY: gpt-5.4-mini last resort succeeded")
-                return result
+                return _strip_code_fences(result)
             except Exception as mini_error:
                 logging.error(f"ASYNC SUMMARY: All models failed: {mini_error}")
                 return "I'm having trouble generating a summary right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
@@ -561,7 +572,7 @@ You MUST use the following structure and formatting precisely.
                 )
                 
                 logging.info("ASYNC ESSAY: gpt-5.4-mini succeeded")
-                return result
+                return _strip_code_fences(result)
                 
             except Exception as openai_error:
                 logging.error(f"ASYNC ESSAY: gpt-5.4-mini failed: {openai_error}")
@@ -586,7 +597,7 @@ You MUST use the following structure and formatting precisely.
                     )
                     
                     logging.info("ASYNC ESSAY: gpt-5.4-nano fallback succeeded")
-                    return fallback_result
+                    return _strip_code_fences(fallback_result)
                     
                 except Exception as nano_error:
                     logging.error(f"ASYNC ESSAY: Both gpt-5.4-mini and gpt-5.4-nano failed: {nano_error}")
@@ -694,8 +705,7 @@ End the overall response with: "Would you like to explore any of these topics in
                 )
                 
                 logging.info("ASYNC KEY CONCEPTS: gpt-5.4-mini succeeded")
-                # Return raw result without LaTeX preprocessing
-                return result
+                return _strip_code_fences(result)
                 
             except Exception as openai_error:
                 logging.error(f"ASYNC KEY CONCEPTS: gpt-5.4-mini failed: {openai_error}")
@@ -720,8 +730,7 @@ End the overall response with: "Would you like to explore any of these topics in
                     )
                     
                     logging.info("ASYNC KEY CONCEPTS: gpt-5.4-nano fallback succeeded")
-                    # Return raw result without LaTeX preprocessing
-                    return fallback_result
+                    return _strip_code_fences(fallback_result)
                     
                 except Exception as nano_error:
                     logging.error(f"ASYNC KEY CONCEPTS: Both gpt-5.4-mini and gpt-5.4-nano failed: {nano_error}")

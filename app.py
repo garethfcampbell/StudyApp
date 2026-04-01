@@ -257,49 +257,57 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
     On first call, extracts an ordered equation list from the notes and stores it in the
     session. Subsequent calls use the stored list and advance the index.
     """
-    try:
-        logging.info(f"BACKGROUND TASK: Starting calculation generation for task {task_id}")
+    with app.app_context():
+        try:
+            logging.info(f"BACKGROUND TASK: Starting calculation generation for task {task_id}")
 
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+            tutor_ai = TutorAI()
+            tutor_ai.set_context(pdf_content)
 
-        import asyncio
+            # Access storage inside app context (before entering async)
+            _storage = StorageManager()
+            equation_list = _storage.retrieve_content(session_id, 'equation_list')
+            current_index = _storage.retrieve_content(session_id, 'current_equation_index') or 0
 
-        async def async_generation():
-            storage = StorageManager()
+            import asyncio
 
-            # --- Equation list: extract on first use ---
-            equation_list = storage.retrieve_content(session_id, 'equation_list')
-            if not equation_list:
-                logging.info("BACKGROUND TASK: No equation list found — extracting from notes")
-                equation_list = await tutor_ai.extract_equation_list_async()
+            async def async_generation():
+                nonlocal equation_list, current_index
+
+                # --- Equation list: extract on first use ---
                 if not equation_list:
-                    return "I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas."
-                storage.store_content(session_id, 'equation_list', equation_list)
-                storage.store_content(session_id, 'current_equation_index', 0)
-                logging.info(f"BACKGROUND TASK: Stored {len(equation_list)} equations")
+                    logging.info("BACKGROUND TASK: No equation list found — extracting from notes")
+                    equation_list = await tutor_ai.extract_equation_list_async()
+                    logging.info(f"BACKGROUND TASK: Extraction returned {len(equation_list) if equation_list else 0} equations")
+                    if not equation_list:
+                        return "I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas."
+                    _storage.store_content(session_id, 'equation_list', equation_list)
+                    _storage.store_content(session_id, 'current_equation_index', 0)
+                    current_index = 0
+                    logging.info(f"BACKGROUND TASK: Stored {len(equation_list)} equations")
 
-            # --- Pick the current equation ---
-            current_index = storage.retrieve_content(session_id, 'current_equation_index') or 0
-            if current_index >= len(equation_list):
-                return f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising."
+                # --- Pick the current equation ---
+                if current_index >= len(equation_list):
+                    return f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising."
 
-            specific_equation = equation_list[current_index]
-            logging.info(f"BACKGROUND TASK: Generating question for equation {current_index + 1}/{len(equation_list)}: {specific_equation[:80]}")
+                specific_equation = equation_list[current_index]
+                logging.info(f"BACKGROUND TASK: Generating question for equation {current_index + 1}/{len(equation_list)}: {specific_equation[:80]}")
 
-            return await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
+                return await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(async_generation())
-        loop.close()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(async_generation())
+            loop.close()
 
-        logging.info(f"BACKGROUND TASK: Generation completed for task {task_id}")
-        update_task_complete(task_id, success=True, data=result)
+            logging.info(f"BACKGROUND TASK: Generation completed for task {task_id}")
+            update_task_complete(task_id, success=True, data=result)
 
-    except Exception as e:
-        logging.error(f"BACKGROUND TASK: Error in task {task_id}: {e}")
-        update_task_failed(task_id, str(e))
+        except Exception as e:
+            logging.error(f"BACKGROUND TASK: Error in task {task_id}: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            update_task_failed(task_id, str(e))
 
 def run_calculation_answer_check_background(task_id, challenge_question, user_answer, pdf_content):
     """

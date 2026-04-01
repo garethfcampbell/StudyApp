@@ -344,32 +344,28 @@ class AITutor {
     
     nextCalculationQuestion() {
         console.log('Generating next calculation question');
-        
-        // Hide the feedback actions section
+
+        // Hide feedback actions
         const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
-        if (feedbackActionsSection) {
-            feedbackActionsSection.style.display = 'none';
-        }
-        
-        // Show the calculation answer input section again
+        if (feedbackActionsSection) feedbackActionsSection.style.display = 'none';
+
+        // Restore answer input and clear it
         const calcAnswerSection = document.getElementById('calculationAnswerInput');
-        if (calcAnswerSection) {
-            calcAnswerSection.style.display = 'block';
-            console.log('📝 DEBUG: Restored calculation answer input section for new question');
-        }
-        
-        // Clear the current input
+        if (calcAnswerSection) calcAnswerSection.style.display = 'block';
         const calcInput = document.getElementById('calcAnswerInput');
-        if (calcInput) {
-            calcInput.value = '';
-        }
-        
-        // Generate a new calculation question using the global quickAction function
-        if (typeof quickAction === 'function') {
-            quickAction('Calculation questions');
-        } else {
-            console.error('quickAction function not found');
-        }
+        if (calcInput) calcInput.value = '';
+
+        // Advance the equation index on the server, then generate the next question
+        fetch('/increment_equation_index', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+            .then(r => r.json())
+            .then(data => {
+                console.log('📝 Equation index advanced to', data.index, 'of', data.total);
+                if (typeof quickAction === 'function') quickAction('Calculation questions');
+            })
+            .catch(error => {
+                console.error('Failed to increment equation index:', error);
+                if (typeof quickAction === 'function') quickAction('Calculation questions');
+            });
     }
     
     setupDragAndDrop() {

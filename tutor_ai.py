@@ -923,7 +923,68 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
 
     # Legacy sync method removed - all quiz operations now use async polling
 
-    async def generate_calculation_question_async(self, used_questions=None):
+    async def extract_equation_list_async(self):
+        """Extract all calculable equations from the lecture notes in order, returning a list of LaTeX strings."""
+        if not self.context:
+            return []
+
+        try:
+            context_truncated = self.context[:80000] if len(self.context) > 80000 else self.context
+
+            prompt = f"""You are analysing lecture notes to extract every mathematical equation and formula that a student could practise as a calculation.
+
+LECTURE NOTES:
+{context_truncated}
+
+TASK: List ALL mathematical equations and formulas from the notes above, in the EXACT ORDER they appear from top to bottom.
+
+Rules:
+- Only include equations that contain computable quantities (i.e. a student could substitute in numbers and calculate an answer).
+- Exclude purely conceptual definitions that have no numerical calculation involved.
+- Preserve the original order — do not reorder or group them.
+- Express each equation in standard LaTeX notation.
+- Return ONLY a valid JSON array of strings, with no surrounding text, no markdown, no code fences.
+
+Example output format:
+["\\\\hat{{\\\\mu}}_{{12}} = \\\\frac{{n_1 \\\\hat{{\\\\mu}}_1 + n_2 \\\\hat{{\\\\mu}}_2}}{{n_1 + n_2}}", "\\\\sigma^2 = \\\\frac{{\\\\sum(x_i - \\\\bar{{x}})^2}}{{n-1}}"]"""
+
+            messages = [{"role": "user", "content": prompt}]
+            import json as _json
+
+            try:
+                response = await self.async_openai_client.chat.completions.create(
+                    model="gpt-5.4-mini",
+                    messages=messages,
+                    max_tokens=2000
+                )
+                content = _strip_code_fences(response.choices[0].message.content.strip())
+                equations = _json.loads(content)
+                if isinstance(equations, list):
+                    logging.info(f"Extracted {len(equations)} equations from lecture notes")
+                    return equations
+            except Exception as e:
+                logging.error(f"Primary model failed for equation extraction: {e}")
+
+            try:
+                response = await self.async_fallback_client.chat.completions.create(
+                    model="gpt-5.4-nano",
+                    messages=messages,
+                    max_tokens=2000
+                )
+                content = _strip_code_fences(response.choices[0].message.content.strip())
+                equations = _json.loads(content)
+                if isinstance(equations, list):
+                    return equations
+            except Exception as e:
+                logging.error(f"Fallback model failed for equation extraction: {e}")
+
+            return []
+
+        except Exception as e:
+            logging.error(f"extract_equation_list_async failed: {e}")
+            return []
+
+    async def generate_calculation_question_async(self, used_questions=None, specific_equation=None):
 
         if not self.context:
             return "No document context available. Please upload a document first."
@@ -932,36 +993,43 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
             # Truncate context for gpt-5.4-mini with increased limit for better mathematical context
             context_truncated = self.context[:80000] if len(self.context) > 80000 else self.context
 
-            # Build used questions context
-            used_questions_context = ""
-            if used_questions and len(used_questions) > 0:
-                used_questions_context = f"""
+            # Build the equation instruction — use pinned equation if provided, otherwise fall back
+            if specific_equation:
+                equation_instruction = f"""
+EQUATION TO USE:
+You MUST base this question on the following specific equation from the lecture notes:
+
+    {specific_equation}
+
+Do not choose a different equation — this is the equation for this question."""
+            else:
+                used_questions_context = ""
+                if used_questions and len(used_questions) > 0:
+                    used_questions_context = f"""
 PREVIOUSLY USED QUESTIONS (DO NOT REPEAT):
 {chr(10).join([f"{i+1}. {q[:150]}..." for i, q in enumerate(used_questions)])}
-
-IMPORTANT: Generate a NEW question that uses a DIFFERENT equation/formula from the ones already used above. Ensure variety in topics and mathematical concepts.
 """
+                equation_instruction = f"""
+{used_questions_context}
+Choose ONE equation from the lecture notes that has not been used before."""
 
             prompt = f"""Based on the following lecture notes, generate ONE calculation question that follows this specific 6-part layout pattern:
 
             LECTURE NOTES:
             {context_truncated}
 
-            {used_questions_context}
+            {equation_instruction}
 
             REQUIRED LAYOUT PATTERN:
-            1) Choose ONE equation from the lecture notes and display it using LaTeX formatting. 
-            2) IMPORTANT — work through equations strictly in the order they appear in the lecture notes, from top to bottom. If there are no previously used questions, start with the very first equation in the notes. If there are previously used questions, move to the next equation that follows in the lecture notes. Never skip ahead or jump to a later equation out of order. Each equation must only be used once — never repeat an equation that has already been used in a previous question.
-            3) Explain the variable definitions clearly
-            4) Provide an explanation of what the equation means and its purpose
-            5) Show a worked example using specific input values with step-by-step LaTeX calculations
-            6) Set a challenge for the user using different input values
-            7) Ask the user to input their answer in the chat
+            1) Display the equation you are using in LaTeX formatting.
+            2) Explain the variable definitions clearly
+            3) Provide an explanation of what the equation means and its purpose
+            4) Show a worked example using specific input values with step-by-step LaTeX calculations
+            5) Set a challenge for the user using different input values
+            6) Ask the user to input their answer in the chat
 
             CONTENT REQUIREMENTS:
-            - Use ONLY mathematical formulas/equations that appear DIRECTLY in the lecture notes above
-            - Select equations in the order they appear in the lecture notes — do not skip or reorder them
-            - Each equation may only be used once — if an equation has already appeared in a previous question, skip it and move to the next one
+            - Use ONLY the equation specified above — do not substitute a different one
             - For worked examples, you may use values from the lecture notes if available
             - For challenge problems, you MUST create NEW and DIFFERENT numerical values
             - Show complete step-by-step calculations in LaTeX format

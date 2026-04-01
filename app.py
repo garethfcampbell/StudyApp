@@ -251,36 +251,52 @@ def cleanup_task(task_id):
             postgres_db.session.rollback()
             logging.error(f"Error cleaning up task {task_id}: {e}")
 
-def run_calculation_generation_background(task_id, used_questions, pdf_content):
+def run_calculation_generation_background(task_id, session_id, pdf_content):
     """
     Background function to generate calculation questions using async gpt-5.4-mini.
-    This runs in a separate thread to avoid blocking the web server.
+    On first call, extracts an ordered equation list from the notes and stores it in the
+    session. Subsequent calls use the stored list and advance the index.
     """
     try:
         logging.info(f"BACKGROUND TASK: Starting calculation generation for task {task_id}")
-        
-        # Initialize TutorAI and set context
+
         tutor_ai = TutorAI()
         tutor_ai.set_context(pdf_content)
-        
-        # Generate calculation question using async method with gpt-5.4-mini
-        # We need to run the async method in this thread
+
         import asyncio
-        
+
         async def async_generation():
-            return await tutor_ai.generate_calculation_question_async(used_questions)
-        
-        # Run the async function in this thread
+            storage = StorageManager()
+
+            # --- Equation list: extract on first use ---
+            equation_list = storage.retrieve_content(session_id, 'equation_list')
+            if not equation_list:
+                logging.info("BACKGROUND TASK: No equation list found — extracting from notes")
+                equation_list = await tutor_ai.extract_equation_list_async()
+                if not equation_list:
+                    return "I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas."
+                storage.store_content(session_id, 'equation_list', equation_list)
+                storage.store_content(session_id, 'current_equation_index', 0)
+                logging.info(f"BACKGROUND TASK: Stored {len(equation_list)} equations")
+
+            # --- Pick the current equation ---
+            current_index = storage.retrieve_content(session_id, 'current_equation_index') or 0
+            if current_index >= len(equation_list):
+                return f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising."
+
+            specific_equation = equation_list[current_index]
+            logging.info(f"BACKGROUND TASK: Generating question for equation {current_index + 1}/{len(equation_list)}: {specific_equation[:80]}")
+
+            return await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(async_generation())
         loop.close()
-        
+
         logging.info(f"BACKGROUND TASK: Generation completed for task {task_id}")
-        
-        # Store the final result in PostgreSQL Database
         update_task_complete(task_id, success=True, data=result)
-        
+
     except Exception as e:
         logging.error(f"BACKGROUND TASK: Error in task {task_id}: {e}")
         update_task_failed(task_id, str(e))
@@ -1018,14 +1034,6 @@ def start_calculation_generation():
             logging.error("POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
         
-        # Get previously used questions from storage
-        storage_manager = StorageManager()
-        used_questions = storage_manager.retrieve_content(session_id, 'used_calculation_questions')
-        if not used_questions:
-            used_questions = []
-        
-        logging.info(f"POLLING: Used questions count: {len(used_questions)}")
-        
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
         
@@ -1034,8 +1042,8 @@ def start_calculation_generation():
         
         # Start background task in separate thread
         thread = threading.Thread(
-            target=run_calculation_generation_background, 
-            args=(task_id, used_questions, pdf_content)
+            target=run_calculation_generation_background,
+            args=(task_id, session_id, pdf_content)
         )
         thread.start()
         
@@ -1062,36 +1070,52 @@ def get_calculation_status(task_id):
         # Convert ObservedDict to regular dict for JSON serialization
         result_dict = dict(task_result)
         
-        # If task is complete, also update session storage
+        # If task is complete, update session storage
         if result_dict.get("status") == "complete" and result_dict.get("success"):
             session_id = session.get('session_id')
             if session_id:
                 storage_manager = StorageManager()
                 question_text = result_dict["data"]
-                
-                # Store current question and update used questions
+
                 storage_manager.store_content(session_id, 'current_calculation_question', question_text)
-                
-                # Set flag that user is in calculation mode
                 storage_manager.store_content(session_id, 'calculation_mode_active', True)
-                
-                used_questions = storage_manager.retrieve_content(session_id, 'used_calculation_questions') or []
-                used_questions.append(question_text)
-                storage_manager.store_content(session_id, 'used_calculation_questions', used_questions)
-                
-                # Calculation mode activated
-                
-                # Clean up the task from database after successful completion
+
                 try:
                     cleanup_task(task_id)
                 except:
                     pass
-        
+
         return jsonify(result_dict)
-        
+
     except Exception as e:
         logging.error(f"Error checking calculation task status: {e}")
         return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@app.route('/increment_equation_index', methods=['POST'])
+@csrf.exempt
+def increment_equation_index():
+    """Advance to the next equation in the session's equation list."""
+    try:
+        init_session()
+        session_id = session.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'No session'}), 400
+
+        storage_manager = StorageManager()
+        current_index = storage_manager.retrieve_content(session_id, 'current_equation_index') or 0
+        new_index = current_index + 1
+        storage_manager.store_content(session_id, 'current_equation_index', new_index)
+
+        equation_list = storage_manager.retrieve_content(session_id, 'equation_list') or []
+        total = len(equation_list)
+        logging.info(f"INCREMENT: index {current_index} → {new_index} (total {total})")
+
+        return jsonify({'index': new_index, 'total': total})
+
+    except Exception as e:
+        logging.error(f"Error incrementing equation index: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/start_calculation_answer_check', methods=['POST'])
 @csrf.exempt
@@ -1231,7 +1255,11 @@ def process_upload_background(task_id, file_data, filename, session_id):
             if success:
                 storage_manager.store_content(session_id, 'pdf_content', pdf_text)
                 primary_storage.store_content(session_id, 'pdf_content', pdf_text)
-                
+
+                # Reset equation list so fresh notes start from equation 1
+                storage_manager.store_content(session_id, 'equation_list', None)
+                storage_manager.store_content(session_id, 'current_equation_index', 0)
+
                 update_task_complete(task_id, success=True, data={
                     'success': True,
                     'filename': filename,

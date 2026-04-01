@@ -2446,7 +2446,8 @@ function endCalculationSession() {
         result = result.replace(/\\dollar\b/g, '$');
 
         // Fix backslash escaping from JSON
-        result = result.replace(/\\\\\[/g, '\\[');
+        // Use negative lookahead so \\[Npt] line-spacing commands are preserved for MathJax
+        result = result.replace(/\\\\\[(?!\d+pt\])/g, '\\[');
         result = result.replace(/\\\\\]/g, '\\]');
         result = result.replace(/\\\\\(/g, '\\(');
         result = result.replace(/\\\\\)/g, '\\)');

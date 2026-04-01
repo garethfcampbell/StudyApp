@@ -1032,8 +1032,8 @@ Choose ONE equation from the lecture notes that has not been used before."""
             - For combined: \\hat{{\\mu}}_{{12}} or \\sigma_{{1}}^{{2}} (always use proper braces)
             - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
             - For the worked examples, you MUST use \\begin{{align*}} with proper alignment for each step so that the calculations are clear and easy to follow.
-            - For matrices: \\begin{{bmatrix}} a & b \\\\ c & d \\end{{bmatrix}}. 
-            - CRITICAL: NEVER use \\\\[6pt] or \\\\[4pt] or \\\\[3pt] or any other \\\\[pt], just use backslashes \\\\ for new lines and rows. For example, do NOT use \\begin{{bmatrix}} 14 & -5 \\\\ -8 & 10 \\end{{bmatrix}} \\\\[6pt], instead use \\begin{{bmatrix}} 14 & -5 \\\\ -8 & 10 \\end{{bmatrix}} and start the next line normally.
+            - For matrices: \\begin{{bmatrix}} a & b \\\\ c & d \\end{{bmatrix}}.
+            - For line spacing in align* environments use \\\\[6pt] between lines.
             - For worked examples: Use **Step N:** Description followed by calculation
             - Use **bold** for section headers and step descriptions
 
@@ -1061,13 +1061,13 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
             **Step 1:** Calculate the sum
             \\begin{{align*}}
-            x + y + z &= 10 + 5 + 2\\\\
+            x + y + z &= 10 + 5 + 2\\\\[6pt]
             &= 17
             \\end{{align*}}
 
             **Step 2:** Multiply by 2
             \\begin{{align*}}
-            \\text{{result}} \\times 2 &= 17 \\times 2 \\\\
+            \\text{{result}} \\times 2 &= 17 \\times 2 \\\\[6pt]
             &= 34
             \\end{{align*}}
 
@@ -1170,7 +1170,7 @@ CRITICAL FORMATTING REQUIREMENTS:
 - For combined: \\hat{{\\mu}}_{{12}} or \\sigma_{{1}}^{{2}} (always use proper braces)
 - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
 - For matrices: \\begin{{bmatrix}} a & b \\\\ c & d \\end{{bmatrix}}
-- CRITICAL: NEVER use \\\\[6pt] or \\\\[4pt] or \\\\[3pt] or any other \\\\[pt], just use backslashes \\\\ for new lines and rows. For example, do NOT use \\begin{{bmatrix}} 14 & -5 \\\\ -8 & 10 \\end{{bmatrix}} \\\\[6pt], instead use \\begin{{bmatrix}} 14 & -5 \\\\ -8 & 10 \\end{{bmatrix}} and start the next line normally.
+- For line spacing in align* environments use \\\\[6pt] between lines.
 - Use **bold** for section headers and step descriptions
 - Each step must be in its own align* environment for proper formatting
 

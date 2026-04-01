@@ -366,6 +366,17 @@
     margin: 15px 0;
 }
 
+/* Increase spacing between MathJax display math blocks in messages */
+.message-content mjx-container[display="true"] {
+    margin: 0.6em 0 !important;
+}
+
+/* Add breathing room between lines within MathJax SVG output */
+.message-content mjx-container svg {
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
+
 .worked-example pre {
     background: none;
     border: none;

@@ -99,8 +99,8 @@ The application uses a **session-based architecture** — no user accounts requi
 
 | Feature | Primary | Fallback |
 |---|---|---|
-| Executive summary | `gemini-3.1-flash-lite-preview` | `gpt-5.4-nano` → `gpt-5.4-mini` |
-| Essay questions | `gemini-3.1-flash-lite-preview` | `gpt-5.4-mini` → `gpt-5.4-nano` |
+| Executive summary | `gemini-3.1-flash-lite-preview` | `gpt-5.4-nano` |
+| Essay questions | `gemini-3.1-flash-lite-preview` | `gpt-5.4-nano` |
 | Chat / tutoring | `gpt-5.4-mini` | `gpt-5.4-nano` |
 | Quiz generation | `gpt-5.4-mini` | `gpt-5.4-nano` |
 | Key concepts | `gpt-5.4-mini` | `gpt-5.4-nano` |

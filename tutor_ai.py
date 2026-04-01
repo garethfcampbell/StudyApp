@@ -389,22 +389,7 @@ End your response with: "Would you like to explore any of these topics in more d
                 logging.info("ASYNC SUMMARY: gpt-5.4-nano fallback succeeded")
                 return _strip_code_fences(result)
             except Exception as nano_error:
-                logging.error(f"ASYNC SUMMARY: gpt-5.4-nano failed: {nano_error}")
-
-            # Last resort: gpt-5.4-mini
-            try:
-                logging.info("ASYNC SUMMARY: Trying gpt-5.4-mini last resort...")
-                result = await self._make_async_openai_fallback_call(
-                    messages=messages,
-                    model="gpt-5.4-mini",
-                    temperature=0.7,
-                    max_tokens=15000,
-                    timeout=60
-                )
-                logging.info("ASYNC SUMMARY: gpt-5.4-mini last resort succeeded")
-                return _strip_code_fences(result)
-            except Exception as mini_error:
-                logging.error(f"ASYNC SUMMARY: All models failed: {mini_error}")
+                logging.error(f"ASYNC SUMMARY: All models failed: {nano_error}")
                 return "I'm having trouble generating a summary right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
 
         except Exception as e:
@@ -583,24 +568,13 @@ You MUST use the following structure and formatting precisely.
                 except Exception as gemini_error:
                     logging.error(f"ASYNC ESSAY: gemini-3.1-flash-lite-preview failed: {gemini_error}")
 
-            # Fallback to gpt-5.4-mini
+            # Fallback to gpt-5.4-nano
             try:
-                logging.info("ASYNC ESSAY: Trying gpt-5.4-mini fallback...")
-                result = await self._make_async_openai_fallback_call(
-                    messages=messages, model="gpt-5.4-mini", temperature=0.4, max_tokens=15000, timeout=60
-                )
-                logging.info("ASYNC ESSAY: gpt-5.4-mini fallback succeeded")
-                return _strip_code_fences(result)
-            except Exception as mini_error:
-                logging.error(f"ASYNC ESSAY: gpt-5.4-mini failed: {mini_error}")
-
-            # Last resort: gpt-5.4-nano
-            try:
-                logging.info("ASYNC ESSAY: Trying gpt-5.4-nano last resort...")
+                logging.info("ASYNC ESSAY: Trying gpt-5.4-nano fallback...")
                 result = await self._make_async_openai_fallback_call(
                     messages=messages, model="gpt-5.4-nano", temperature=0.4, max_tokens=15000, timeout=60
                 )
-                logging.info("ASYNC ESSAY: gpt-5.4-nano last resort succeeded")
+                logging.info("ASYNC ESSAY: gpt-5.4-nano fallback succeeded")
                 return _strip_code_fences(result)
             except Exception as nano_error:
                 logging.error(f"ASYNC ESSAY: All models failed: {nano_error}")

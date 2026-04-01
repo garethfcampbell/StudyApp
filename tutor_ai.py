@@ -931,16 +931,19 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
         try:
             context_truncated = self.context[:80000] if len(self.context) > 80000 else self.context
 
-            prompt = f"""You are analysing lecture notes to extract every mathematical equation and formula that a student could practise as a calculation.
+            prompt = f"""You are analysing lecture notes to identify the key mathematical equations a student should practise.
 
 LECTURE NOTES:
 {context_truncated}
 
-TASK: List ALL mathematical equations and formulas from the notes above, in the EXACT ORDER they appear from top to bottom.
+TASK: List the MAIN equations and formulas from the notes above, in the EXACT ORDER they appear from top to bottom.
 
 Rules:
+- Focus on the principal, named equations that are central to the topic — the ones a student would be expected to know and apply in an exam.
+- Omit minor rearrangements, trivial sub-steps, or worked-example intermediate lines that are just applications of a main equation already listed.
 - Only include equations that contain computable quantities (i.e. a student could substitute in numbers and calculate an answer).
 - Exclude purely conceptual definitions that have no numerical calculation involved.
+- If the same equation appears in multiple forms, include only the most general or most useful form once.
 - Preserve the original order — do not reorder or group them.
 - Express each equation in standard LaTeX notation.
 - Return ONLY a valid JSON array of strings, with no surrounding text, no markdown, no code fences.

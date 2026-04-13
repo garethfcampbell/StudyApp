@@ -500,7 +500,7 @@ End your response with: "Would you like to explore any of these topics in more d
                 {"role": "user", "content": prompt}
             ]
 
-            # Try gpt-5.4-mini streaming (primary)
+            # Try gpt-5.4-mini streaming first (reliable token-by-token streaming)
             try:
                 logging.info("STREAM SUMMARY: Trying gpt-5.4-mini streaming...")
                 async for chunk in self._make_async_openai_streaming_call(
@@ -511,16 +511,16 @@ End your response with: "Would you like to explore any of these topics in more d
             except Exception as mini_error:
                 logging.error(f"STREAM SUMMARY: gpt-5.4-mini streaming failed: {mini_error}")
 
-            # Fallback to gpt-5.4-mini retry
+            # Fallback to gpt-5.4-nano streaming
             try:
-                logging.info("STREAM SUMMARY: Retrying gpt-5.4-mini streaming fallback...")
+                logging.info("STREAM SUMMARY: Trying gpt-5.4-nano streaming fallback...")
                 async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-mini", temperature=0.2, max_tokens=15000, timeout=90
+                    messages=messages, model="gpt-5.4-nano", temperature=0.2, max_tokens=15000, timeout=90
                 ):
                     yield chunk
                 return
-            except Exception as fallback_error:
-                logging.error(f"STREAM SUMMARY: gpt-5.4-mini fallback also failed: {fallback_error}")
+            except Exception as nano_error:
+                logging.error(f"STREAM SUMMARY: gpt-5.4-nano streaming also failed: {nano_error}")
 
             yield "I'm having trouble generating a summary right now. Please try again in a moment."
         except Exception as e:

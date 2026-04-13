@@ -234,6 +234,7 @@ async function newSendMessage() {
         // If the server returned JSON (error or calc-mode fallback), handle it
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
+            loadingDiv.style.display = 'none';
             const data = await response.json();
             if (data.success) {
                 addNewMessage('assistant', data.response);
@@ -264,6 +265,7 @@ async function newSendMessage() {
 
         let fullText = '';
         let mathRenderTimer = null;
+        let loadingHidden = false;
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -286,6 +288,13 @@ async function newSendMessage() {
                 try {
                     const chunk = JSON.parse(payload);
                     fullText += chunk;
+
+                    // Hide loading indicator as soon as first chunk arrives
+                    if (!loadingHidden) {
+                        loadingDiv.style.display = 'none';
+                        loadingHidden = true;
+                    }
+
                     // Update the displayed content with the accumulated text
                     messageContent.innerHTML = formatMessageSimplified(fullText);
                     messagesDiv.scrollTop = messagesDiv.scrollHeight;

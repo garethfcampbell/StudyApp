@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, Response
 from flask_compress import Compress
 from werkzeug.middleware.proxy_fix import ProxyFix
 from database import postgres_db
@@ -708,6 +708,92 @@ def simple_chat():
             'success': False,
             'error': f'Async processing error: {str(e)}'
         }), 500
+
+@app.route('/simple_chat_stream', methods=['POST'])
+@csrf.exempt
+@rate_limit(calls_per_minute=30, use_session=True)
+def simple_chat_stream():
+    """Streaming chat endpoint using Server-Sent Events."""
+    import asyncio
+    import queue
+
+    init_session()
+
+    data = request.get_json()
+    if not data or 'message' not in data:
+        return jsonify({'success': False, 'error': 'No message provided'}), 400
+
+    user_message = data['message']
+    if not isinstance(user_message, str) or len(user_message.strip()) == 0:
+        return jsonify({'success': False, 'error': 'Message must be non-empty text'}), 400
+    if len(user_message) > MAX_MESSAGE_LENGTH:
+        return jsonify({'success': False, 'error': f'Message too long (max {MAX_MESSAGE_LENGTH} characters)'}), 400
+
+    user_message = user_message.strip()
+    session_id = session.get('session_id')
+    storage_manager = StorageManager()
+
+    # Check calculation mode — fall back to non-streaming simple_chat for calc answers
+    calculation_mode = storage_manager.retrieve_content(session_id, 'calculation_mode_active')
+    current_calculation = storage_manager.retrieve_content(session_id, 'current_calculation_question')
+    if calculation_mode and current_calculation:
+        # Delegate to the non-streaming endpoint for calculation answers
+        return simple_chat()
+
+    pdf_content = get_pdf_content_with_fallback()
+    if not pdf_content:
+        return jsonify({'success': False, 'error': 'I need you to upload your lecture notes first before I can help you study! 📚'}), 400
+
+    tutor_ai = TutorAI()
+    tutor_ai.set_context(pdf_content)
+
+    stored_messages = storage_manager.retrieve_content(session_id, 'messages') or []
+    for msg in stored_messages:
+        tutor_ai.conversation_history.append({'role': msg['role'], 'content': msg['content']})
+
+    # Use a thread to run the async generator and push chunks into a queue
+    q = queue.Queue()
+
+    def _run_stream():
+        async def _consume():
+            full_response = ""
+            try:
+                async for chunk in tutor_ai.get_response_stream_async(user_message):
+                    full_response += chunk
+                    q.put(chunk)
+            except Exception as e:
+                logging.error(f"STREAM: Error during streaming: {e}")
+                if not full_response:
+                    q.put("I'm having trouble connecting to the AI service right now. Please try again.")
+            finally:
+                # Store complete conversation after streaming finishes
+                try:
+                    msgs = storage_manager.retrieve_content(session_id, 'messages') or []
+                    msgs.append({'role': 'user', 'content': user_message})
+                    msgs.append({'role': 'assistant', 'content': full_response})
+                    storage_manager.store_content(session_id, 'messages', msgs)
+                except Exception as e:
+                    logging.error(f"STREAM: Error storing messages: {e}")
+                q.put(None)  # sentinel
+
+        asyncio.run(_consume())
+
+    thread = threading.Thread(target=_run_stream, daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                # Send final event so the client knows we're done
+                yield f"data: [DONE]\n\n"
+                break
+            # Escape newlines for SSE (each data line must not contain raw newlines)
+            escaped = json.dumps(chunk)
+            yield f"data: {escaped}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 def generate_summary_with_fallback(tutor_ai, pdf_content, max_retries=3):
     """

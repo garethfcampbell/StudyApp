@@ -871,20 +871,20 @@ def summary_stream():
     """Streaming SSE endpoint for executive summary generation."""
     import asyncio
     import queue as queue_mod
-    import time
 
     init_session()
 
     session_id = session.get('session_id')
 
-    # Same race-condition handling as start_summary_generation
-    time.sleep(2.0)
+    # Try to retrieve PDF content (should already be stored from upload)
     pdf_content = get_pdf_content_with_fallback()
     if not pdf_content:
-        storage_manager = StorageManager()
-        pdf_content = storage_manager.retrieve_content(session_id, 'pdf_content')
+        storage_manager_local = StorageManager()
+        pdf_content = storage_manager_local.retrieve_content(session_id, 'pdf_content')
     if not pdf_content:
-        time.sleep(5.0)
+        # Brief retry in case of storage propagation delay
+        import time as time_mod
+        time_mod.sleep(1.0)
         pdf_content = get_pdf_content_with_fallback()
     if not pdf_content:
         return jsonify({'success': False, 'error': 'Document content not available. Please try uploading your file again.'}), 400

@@ -500,10 +500,21 @@ End your response with: "Would you like to explore any of these topics in more d
                 {"role": "user", "content": prompt}
             ]
 
-            # Try Gemini streaming as primary
+            # Try OpenAI streaming first (reliable token-by-token streaming)
+            try:
+                logging.info("STREAM SUMMARY: Trying gpt-5.4-nano streaming...")
+                async for chunk in self._make_async_openai_streaming_call(
+                    messages=messages, model="gpt-5.4-nano", temperature=0.2, max_tokens=15000, timeout=90
+                ):
+                    yield chunk
+                return
+            except Exception as nano_error:
+                logging.error(f"STREAM SUMMARY: gpt-5.4-nano streaming failed: {nano_error}")
+
+            # Fallback to Gemini streaming
             if self.async_gemini_client:
                 try:
-                    logging.info("STREAM SUMMARY: Trying gemini-3.1-flash-lite-preview streaming...")
+                    logging.info("STREAM SUMMARY: Trying gemini-3.1-flash-lite-preview streaming fallback...")
                     stream = await asyncio.wait_for(
                         self.async_gemini_client.chat.completions.create(
                             model="gemini-3.1-flash-lite-preview",
@@ -519,19 +530,9 @@ End your response with: "Would you like to explore any of these topics in more d
                             yield chunk.choices[0].delta.content
                     return
                 except Exception as gemini_error:
-                    logging.error(f"STREAM SUMMARY: Gemini streaming failed: {gemini_error}")
+                    logging.error(f"STREAM SUMMARY: Gemini streaming also failed: {gemini_error}")
 
-            # Fallback to gpt-5.4-nano streaming
-            try:
-                logging.info("STREAM SUMMARY: Trying gpt-5.4-nano streaming fallback...")
-                async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-nano", temperature=0.2, max_tokens=15000, timeout=60
-                ):
-                    yield chunk
-                return
-            except Exception as nano_error:
-                logging.error(f"STREAM SUMMARY: All streaming models failed: {nano_error}")
-                yield "I'm having trouble generating a summary right now. Please try again in a moment."
+            yield "I'm having trouble generating a summary right now. Please try again in a moment."
         except Exception as e:
             logging.error(f"STREAM SUMMARY: Critical error: {e}")
             yield f"Critical error in summary generation: {str(e)}"

@@ -211,35 +211,32 @@ class TutorAI:
         self.context = None
         self.conversation_history = []
 
-    async def get_response_async(self, user_message):
-
+    def _build_chat_messages(self, user_message):
+        """Build the messages list for a chat API call."""
         if not self.context:
-            return "I need you to upload your lecture notes first before I can help you study! 📚"
+            return None
 
-        # Truncate context for optimal performance
         truncated_context = self.context[:80000] if len(self.context) > 80000 else self.context
-        
-        # Prepare the messages for the Gemini API
         system_content = f"{self.system_prompt}\n\nLecture Notes Context:\n{truncated_context}"
-        
-        # Add conversation history context if available
+
         if self.conversation_history:
-            recent_history = self.conversation_history[-10:]  # Last 10 messages
+            recent_history = self.conversation_history[-10:]
             system_content += f"\n\nPrevious Conversation Context:\nThe following are the most recent messages from our ongoing conversation. Please build on this context when responding to the user's latest query. Use this history to maintain continuity and reference previous topics discussed:\n"
             for i, msg in enumerate(recent_history):
                 role_label = "Student" if msg["role"] == "user" else "AI Tutor"
                 system_content += f"{role_label}: {msg['content']}\n"
             system_content += "\nPlease use this conversation history to provide a contextually relevant response to the user's new message below."
-        
-        messages = [
-            {
-                "role": "system",
-                "content": system_content
-            }
-        ]
 
-        # Add current user message
+        messages = [{"role": "system", "content": system_content}]
         messages.append({"role": "user", "content": user_message})
+        return messages
+
+    async def get_response_async(self, user_message):
+
+        if not self.context:
+            return "I need you to upload your lecture notes first before I can help you study! 📚"
+
+        messages = self._build_chat_messages(user_message)
 
         try:
             # Use OpenAI gpt-5.4-mini as primary for general chat
@@ -277,6 +274,64 @@ class TutorAI:
             except Exception as nano_error:
                 logging.error(f"Both gpt-5.4-mini and gpt-5.4-nano failed for general chat: {openai_error} | {nano_error}")
                 return "I'm having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments."
+
+    async def get_response_stream_async(self, user_message):
+        """Stream chat response chunks via an async generator."""
+        if not self.context:
+            yield "I need you to upload your lecture notes first before I can help you study! 📚"
+            return
+
+        messages = self._build_chat_messages(user_message)
+
+        async def _try_stream(model, timeout):
+            # Build API args same way as _make_async_openai_fallback_call
+            if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano"):
+                combined_content = ""
+                for message in messages:
+                    if message["role"] == "system":
+                        combined_content += f"System: {message['content']}\n\n"
+                    else:
+                        combined_content += f"{message['content']}\n\n"
+                api_args = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": combined_content.strip()}],
+                    "max_completion_tokens": 15000,
+                    "stream": True,
+                }
+            else:
+                api_args = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 15000,
+                    "stream": True,
+                }
+
+            stream = await asyncio.wait_for(
+                self.async_openai_client.chat.completions.create(**api_args),
+                timeout=timeout
+            )
+            full_response = ""
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    text = chunk.choices[0].delta.content
+                    full_response += text
+                    yield text
+            # Update conversation history with the complete response
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": full_response})
+
+        try:
+            async for chunk in _try_stream("gpt-5.4-mini", 60):
+                yield chunk
+        except Exception as openai_error:
+            logging.error(f"Streaming gpt-5.4-mini failed: {openai_error}, falling back to gpt-5.4-nano")
+            try:
+                async for chunk in _try_stream("gpt-5.4-nano", 60):
+                    yield chunk
+            except Exception as nano_error:
+                logging.error(f"Both streaming models failed: {openai_error} | {nano_error}")
+                yield "I'm having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments."
 
     
 

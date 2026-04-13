@@ -205,7 +205,7 @@
 
 {% block scripts %}
 <script>
-// NEW SIMPLE CHAT SYSTEM - Direct Gemini calls without polling
+// NEW SIMPLE CHAT SYSTEM - Streaming via Server-Sent Events
 async function newSendMessage() {
     const input = document.getElementById('newChatInput');
     const loadingDiv = document.getElementById('newChatLoading');
@@ -222,52 +222,86 @@ async function newSendMessage() {
     addNewMessage('user', userMessage);
     
     try {
-        // Call new simple backend endpoint
-        const response = await fetch('/simple_chat', {
+        // Try the streaming endpoint first
+        const response = await fetch('/simple_chat_stream', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ message: userMessage })
         });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            // Add AI response to chat
-            console.log('🔥 CALC ANSWER FRONTEND: Received response from backend:');
-            console.log('🔥 Response type:', typeof data.response);
-            console.log('🔥 Response length:', data.response ? data.response.length : 'null/undefined');
-            console.log('🔥 FULL RESPONSE CONTENT:');
-            console.log(data.response);
-            console.log('🔥 END FULL RESPONSE');
-            addNewMessage('assistant', data.response);
-            
-            // Check if this was a calculation answer and hide input if so
-            if (data.calculation_mode || data.response.includes('CORRECT') || data.response.includes('INCORRECT')) {
-                console.log('🔥 CALC MODE DETECTED: This appears to be a calculation answer response');
-                
-                // Hide the input form part but keep the section visible
-                const calcAnswerInputGroup = document.querySelector('#calculationAnswerInput .input-group');
-                console.log('🔥 CALC MODE: Found input group element:', calcAnswerInputGroup);
-                if (calcAnswerInputGroup) {
-                    calcAnswerInputGroup.style.display = 'none';
-                    console.log('🔥 CALC MODE: Hidden calculation answer input form after submission');
-                } else {
-                    console.log('🔥 CALC MODE: Could not find input group element to hide');
+
+        // If the server returned JSON (error or calc-mode fallback), handle it
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            const data = await response.json();
+            if (data.success) {
+                addNewMessage('assistant', data.response);
+                // Handle calculation mode UI
+                if (data.calculation_mode || (data.response && (data.response.includes('CORRECT') || data.response.includes('INCORRECT')))) {
+                    const calcAnswerInputGroup = document.querySelector('#calculationAnswerInput .input-group');
+                    if (calcAnswerInputGroup) calcAnswerInputGroup.style.display = 'none';
+                    const calcButtonSection = document.querySelector('#calculationAnswerInput .mt-2');
+                    if (calcButtonSection) calcButtonSection.style.display = 'block';
                 }
-                
-                // Show only the Next Question and End Practice buttons (they should already be visible)
-                const calcButtonSection = document.querySelector('#calculationAnswerInput .mt-2');
-                console.log('🔥 CALC MODE: Found button section element:', calcButtonSection);
-                if (calcButtonSection) {
-                    calcButtonSection.style.display = 'block';
-                    console.log('🔥 CALC MODE: Ensured buttons are visible');
+            } else {
+                addNewMessage('assistant', data.error || 'Sorry, I encountered an error. Please try again.');
+            }
+            return;
+        }
+
+        // SSE streaming response — build the message progressively
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message assistant chat-message entering';
+        const messageContent = document.createElement('div');
+        messageContent.className = 'message-content';
+        messageDiv.appendChild(messageContent);
+        messagesDiv.appendChild(messageDiv);
+        requestAnimationFrame(() => {
+            messageDiv.classList.remove('entering');
+            messageDiv.classList.add('entered');
+        });
+
+        let fullText = '';
+        let mathRenderTimer = null;
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete SSE lines
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line in buffer
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6);
+                if (payload === '[DONE]') continue;
+                try {
+                    const chunk = JSON.parse(payload);
+                    fullText += chunk;
+                    // Update the displayed content with the accumulated text
+                    messageContent.innerHTML = formatMessageSimplified(fullText);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                } catch (e) {
+                    // ignore malformed lines
                 }
             }
-        } else {
-            addNewMessage('assistant', 'Sorry, I encountered an error. Please try again.');
         }
+
+        // Final render with MathJax
+        messageContent.innerHTML = formatMessageSimplified(fullText);
+        const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align');
+        if (hasMath) {
+            loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
+        }
+        
     } catch (error) {
         console.error('Chat error:', error);
         addNewMessage('assistant', 'Sorry, I encountered an error. Please try again.');

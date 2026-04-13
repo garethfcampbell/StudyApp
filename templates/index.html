@@ -1827,117 +1827,142 @@ function endCalculationSession() {
         }
         
         // Map actions to specific API endpoints
-        const actionMap = {
-            'Explanation of key concepts': '/start_key_concepts_generation',
-            'Essay question': '/start_essay_generation'
+        const streamActionMap = {
+            'Explanation of key concepts': 'key_concepts',
+            'Essay question': 'essay'
         };
         
-        const endpoint = actionMap[action];
-        if (!endpoint) {
+        const streamAction = streamActionMap[action];
+        if (!streamAction) {
             // Fallback to general chat for unknown actions
             generalChat(action);
             return;
         }
         
-        // Show specific progress based on action type and store timer
+        // Show specific progress based on action type
         currentProgressTimer = showSpecificProgress(action);
         
-        fetch(endpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            }
-        })
-        .then(response => {
-            // Check if response is OK and contains JSON
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            
-            // Try to parse as JSON, but handle HTML responses gracefully
-            const contentType = response.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
-                return response.json();
-            } else {
-                // If not JSON, treat as text and wrap in error structure
-                return response.text().then(text => ({
-                    success: false,
-                    error: 'I\'m having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments.'
-                }));
-            }
-        })
-        .then(data => {
-            // Check if this is a polling-based endpoint (essay generation, key concepts, or quiz generation)
-            if (data.task_id && action === 'Essay question') {
-                console.log('📝 Starting essay polling with task ID:', data.task_id);
-                startEssayPolling(data.task_id);
-                return;
-            }
-            
-            if (data.task_id && action === 'Explanation of key concepts') {
-                console.log('🔑 Starting key concepts polling with task ID:', data.task_id);
-                startKeyConceptsPolling(data.task_id);
-                return;
-            }
-            
+        // Use streaming SSE endpoint
+        streamQuickAction(streamAction, action, clickedButton);
+    }
 
-            
-            // Stop progress bar immediately when response is received
-            if (currentProgressTimer) {
-                clearInterval(currentProgressTimer);
-                currentProgressTimer = null;
-            }
-            
-            // Remove progress indicator
-            const progressIndicator = document.getElementById('progress-indicator');
-            if (progressIndicator) {
-                progressIndicator.remove();
-            }
-            
-            hideLoading();
-            // Keep the button active/green after completion - don't clear until new action
-            
-            if (data.success) {
-                if (data.response) {
-                    addMessage('assistant', data.response);
-                }
-            } else if (data.error) {
-                // Use the error message directly (centralized error handling already provides user-friendly messages)
-                addMessage('assistant', data.error);
-                // Only clear on error
+    async function streamQuickAction(streamAction, actionLabel, clickedButton) {
+        const messagesDiv = document.getElementById('messages');
+
+        try {
+            const response = await fetch('/quickaction_stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: streamAction })
+            });
+
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                // Error response — remove progress bar and show error
+                const data = await response.json();
+                if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
+                const progressIndicator = document.getElementById('progress-indicator');
+                if (progressIndicator) progressIndicator.remove();
+                addMessage('assistant', data.error || 'Sorry, I encountered an error. Please try again.');
                 document.querySelectorAll('.btn-outline-primary').forEach(btn => {
                     btn.classList.remove('processing', 'active');
-                    // Remove any inline styles that might override CSS
-                    btn.style.removeProperty('background-color');
-                    btn.style.removeProperty('border-color');
                 });
+                return;
             }
-        })
-        .catch(error => {
-            // Stop progress bar on error
-            if (currentProgressTimer) {
-                clearInterval(currentProgressTimer);
-                currentProgressTimer = null;
+
+            // SSE streaming — create a message bubble and fill it progressively
+            // Remove progress bar as soon as we start receiving content
+            let progressRemoved = false;
+            function removeProgress() {
+                if (progressRemoved) return;
+                progressRemoved = true;
+                if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
+                const progressIndicator = document.getElementById('progress-indicator');
+                if (progressIndicator) {
+                    progressIndicator.style.transition = 'opacity 0.3s ease-out';
+                    progressIndicator.style.opacity = '0';
+                    setTimeout(() => { if (progressIndicator.parentNode) progressIndicator.remove(); }, 300);
+                }
             }
-            
-            // Remove progress indicator
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant chat-message entering';
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
+            messageDiv.appendChild(messageContent);
+
+            let fullText = '';
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const payload = line.slice(6);
+                    if (payload === '[DONE]') continue;
+                    try {
+                        const chunk = JSON.parse(payload);
+                        fullText += chunk;
+
+                        // On first chunk, swap progress bar for message bubble
+                        if (!progressRemoved) {
+                            removeProgress();
+                            messagesDiv.appendChild(messageDiv);
+                            requestAnimationFrame(() => {
+                                messageDiv.classList.remove('entering');
+                                messageDiv.classList.add('entered');
+                            });
+                        }
+
+                        messageContent.innerHTML = formatMessageSimplified(fullText);
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    } catch (e) { /* ignore malformed */ }
+                }
+            }
+
+            // If no chunks arrived at all, still clean up
+            if (!progressRemoved) {
+                removeProgress();
+                if (!fullText) {
+                    addMessage('assistant', 'No response received. Please try again.');
+                }
+            }
+
+            // Final render with MathJax if needed
+            if (fullText) {
+                messageContent.innerHTML = formatMessageSimplified(fullText);
+                const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align');
+                if (hasMath) {
+                    loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
+                }
+            }
+
+            // Set button to active state (green) to show success
+            if (clickedButton) {
+                clickedButton.classList.remove('processing');
+                clickedButton.classList.add('active');
+            }
+
+        } catch (error) {
+            console.error('Stream quickAction error:', error);
+            if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
             const progressIndicator = document.getElementById('progress-indicator');
-            if (progressIndicator) {
-                progressIndicator.remove();
-            }
-            
-            hideLoading();
-            // Clear active state on error
+            if (progressIndicator) progressIndicator.remove();
+            addMessage('assistant', `❌ Error: ${error.message}`);
             document.querySelectorAll('.btn-outline-primary').forEach(btn => {
                 btn.classList.remove('processing', 'active');
-                // Remove any inline styles that might override CSS
-                btn.style.removeProperty('background-color');
-                btn.style.removeProperty('border-color');
             });
-            addMessage('assistant', `❌ Error: ${error.message}`);
-        });
+        }
     }
-    
+
     function showSpecificProgress(action) {
         const messagesDiv = document.getElementById('messages');
         const progressDiv = document.createElement('div');

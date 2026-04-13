@@ -201,6 +201,41 @@ class TutorAI:
             logging.error(f"Async OpenAI fallback call failed: {e}")
             raise e
 
+    async def _make_async_openai_streaming_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, timeout=60):
+        """Streaming variant of _make_async_openai_fallback_call. Yields text chunks."""
+        if not self.async_openai_client:
+            raise Exception("Async OpenAI client is not available.")
+
+        if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano"):
+            combined_content = ""
+            for message in messages:
+                if message["role"] == "system":
+                    combined_content += f"System: {message['content']}\n\n"
+                else:
+                    combined_content += f"{message['content']}\n\n"
+            api_args = {
+                "model": model,
+                "messages": [{"role": "user", "content": combined_content.strip()}],
+                "max_completion_tokens": max_tokens,
+                "stream": True,
+            }
+        else:
+            api_args = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+            }
+
+        stream = await asyncio.wait_for(
+            self.async_openai_client.chat.completions.create(**api_args),
+            timeout=timeout
+        )
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
     def set_context(self, pdf_content):
 
         self.context = pdf_content
@@ -638,6 +673,134 @@ You MUST use the following structure and formatting precisely.
         except Exception as e:
             logging.error(f"ASYNC ESSAY: Critical error in async essay generation: {e}")
             return f"Critical error in essay generation: {str(e)}"
+
+    async def generate_essay_question_stream_async(self):
+        """Streaming version of generate_essay_question_async. Yields text chunks."""
+        if not self.context:
+            yield "No lecture notes available to create essay question from."
+            return
+
+        # Reuse the same prompt from generate_essay_question_async
+        non_stream_result = None
+        try:
+            prompt = (await self._get_essay_prompt())
+            truncated_context = self.context[:80000] if len(self.context) > 80000 else self.context
+            messages = [
+                {"role": "system", "content": f"You are an expert at creating analytical essay questions from academic content.\n\nLecture Notes:\n{truncated_context}"},
+                {"role": "user", "content": prompt}
+            ]
+            # Try gpt-5.4-mini streaming, fallback to gpt-5.4-nano
+            try:
+                async for chunk in self._make_async_openai_streaming_call(
+                    messages=messages, model="gpt-5.4-mini", temperature=0.4, max_tokens=15000, timeout=60
+                ):
+                    yield chunk
+                return
+            except Exception as e:
+                logging.error(f"STREAM ESSAY: gpt-5.4-mini failed: {e}")
+            try:
+                async for chunk in self._make_async_openai_streaming_call(
+                    messages=messages, model="gpt-5.4-nano", temperature=0.4, max_tokens=15000, timeout=60
+                ):
+                    yield chunk
+                return
+            except Exception as e:
+                logging.error(f"STREAM ESSAY: gpt-5.4-nano failed: {e}")
+                yield "I'm having trouble generating an essay question right now. Please try again in a moment."
+        except Exception as e:
+            logging.error(f"STREAM ESSAY: Critical error: {e}")
+            yield f"Critical error in essay generation: {str(e)}"
+
+    async def _get_essay_prompt(self):
+        """Return the essay question prompt text (extracted for reuse)."""
+        return """
+
+            CRITICAL FORMATTING REQUIREMENTS:
+            - Use markdown formatting for emphasis: **bold text**, *italic text*, `code text`
+            - **ABSOLUTELY NO MATHEMATICAL NOTATION:** Do NOT use LaTeX formatting, mathematical symbols, or any notation:
+              * NO dollar signs: $x$, $\\delta$, $P_t$, etc.
+              * NO backslash notation: \\(x\\), \\[equation\\], etc.
+              * NO mathematical symbols: √, ∑, ∫, ≤, ≥, ≠, π, etc.
+            - NEVER use HTML tags - only use markdown formatting
+            - ONLY USE HYPHENS FOR BULLETS (-) - never use asterisks (*) or dots (•)
+            - Use ONLY plain English words to describe ALL mathematical concepts
+
+            TASK:
+
+            **ESSAY QUESTION:**
+
+            Create ONE substantial essay question, with several suggested sub-questions, that:
+            - Requires integration of multiple concepts from the lecture notes, and
+            - Asks for the citation of additional reading of other academic literature, and
+            - Asks for commentary on real-world applications
+            - Asks for analysis, evaluation, or application (not just description)
+            - Is answerable in 500-750 words
+
+            Include assessment criteria, sub-questions, key concepts to address, and writing tips.
+
+            RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks."""
+
+    async def explain_key_concepts_stream_async(self):
+        """Streaming version of explain_key_concepts_async. Yields text chunks."""
+        if not self.context:
+            yield "No lecture notes available to explain key concepts from."
+            return
+
+        try:
+            prompt = self._get_key_concepts_prompt()
+            truncated_context = self.context[:80000] if len(self.context) > 80000 else self.context
+            messages = [
+                {"role": "system", "content": f"\n\nLecture Notes:\n{truncated_context}"},
+                {"role": "user", "content": prompt}
+            ]
+            # Try gpt-5.4-mini streaming, fallback to gpt-5.4-nano
+            try:
+                async for chunk in self._make_async_openai_streaming_call(
+                    messages=messages, model="gpt-5.4-mini", temperature=0.4, max_tokens=15000, timeout=60
+                ):
+                    yield chunk
+                return
+            except Exception as e:
+                logging.error(f"STREAM KEY CONCEPTS: gpt-5.4-mini failed: {e}")
+            try:
+                async for chunk in self._make_async_openai_streaming_call(
+                    messages=messages, model="gpt-5.4-nano", temperature=0.4, max_tokens=15000, timeout=60
+                ):
+                    yield chunk
+                return
+            except Exception as e:
+                logging.error(f"STREAM KEY CONCEPTS: gpt-5.4-nano failed: {e}")
+                yield "I'm having trouble explaining the key concepts right now. Please try again in a moment."
+        except Exception as e:
+            logging.error(f"STREAM KEY CONCEPTS: Critical error: {e}")
+            yield f"Critical error in key concepts explanation: {str(e)}"
+
+    def _get_key_concepts_prompt(self):
+        """Return the key concepts prompt text (extracted for reuse)."""
+        return r"""
+Identify and briefly explain exactly 5 key concepts from these lecture notes. Present them in a clear, accessible way that helps students understand complex ideas without being condescending.
+
+CRITICAL FORMATTING REQUIREMENTS:
+- **ABSOLUTELY NO MATHEMATICAL NOTATION**
+- Use only plain text with markdown formatting (bold, italic, bullet points)
+- ONLY USE HYPHENS FOR BULLETS (-) - never use asterisks (*) or dots (•)
+- Each bullet point must be on its own line with consistent hyphen formatting
+- Describe ALL mathematical concepts using ONLY plain English words
+
+Use the following structure:
+
+***KEY CONCEPTS EXPLAINED:***
+
+For each major concept:
+
+**1. [Concept Name]**
+  - *What it is:* Clear definition in plain language
+  - *How it works:* Brief explanation
+  - *Why it matters:* Practical significance
+  - *Real-world example:* Concrete example
+
+End with: "Would you like to explore any of these topics in more detail?"
+"""
 
     async def explain_key_concepts_async(self):
 

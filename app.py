@@ -795,6 +795,76 @@ def simple_chat_stream():
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
+@app.route('/quickaction_stream', methods=['POST'])
+@csrf.exempt
+@rate_limit(calls_per_minute=30, use_session=True)
+def quickaction_stream():
+    """Streaming SSE endpoint for Key Concepts and Essay quick actions."""
+    import asyncio
+    import queue as queue_mod
+
+    init_session()
+
+    data = request.get_json()
+    action = (data or {}).get('action', '')
+    if action not in ('key_concepts', 'essay'):
+        return jsonify({'success': False, 'error': 'Invalid action'}), 400
+
+    session_id = session.get('session_id')
+    pdf_content = get_pdf_content_with_fallback()
+    if not pdf_content:
+        return jsonify({'success': False, 'error': 'No document content found. Please upload lecture notes first.'}), 400
+
+    q = queue_mod.Queue()
+
+    def _run_stream():
+        async def _consume():
+            full_response = ""
+            try:
+                tutor_ai = TutorAI()
+                tutor_ai.set_context(pdf_content)
+
+                if action == 'key_concepts':
+                    gen = tutor_ai.explain_key_concepts_stream_async()
+                else:
+                    gen = tutor_ai.generate_essay_question_stream_async()
+
+                async for chunk in gen:
+                    full_response += chunk
+                    q.put(chunk)
+            except Exception as e:
+                logging.error(f"QUICKACTION STREAM: Error during streaming ({action}): {e}")
+                if not full_response:
+                    q.put(f"I'm having trouble right now. Please try again in a moment.")
+            finally:
+                # Store the response in message history
+                try:
+                    storage_manager = StorageManager()
+                    msgs = storage_manager.retrieve_content(session_id, 'messages') or []
+                    msgs.append({'role': 'user', 'content': 'Explanation of key concepts' if action == 'key_concepts' else 'Essay question'})
+                    msgs.append({'role': 'assistant', 'content': full_response})
+                    storage_manager.store_content(session_id, 'messages', msgs)
+                except Exception as e:
+                    logging.error(f"QUICKACTION STREAM: Error storing messages: {e}")
+                q.put(None)
+
+        asyncio.run(_consume())
+
+    thread = threading.Thread(target=_run_stream, daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                yield f"data: [DONE]\n\n"
+                break
+            escaped = json.dumps(chunk)
+            yield f"data: {escaped}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
 def generate_summary_with_fallback(tutor_ai, pdf_content, max_retries=3):
     """
     Generate executive summary with fallback mechanism

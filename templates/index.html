@@ -2478,6 +2478,11 @@ function endCalculationSession() {
         result = result.replace(/\\euro\b/g, '€');
         result = result.replace(/\\dollar\b/g, '$');
 
+        // HTML-escape < and > to prevent LaTeX operators (e.g. i<j in \sum_{i<j})
+        // from being parsed as HTML tags when set via innerHTML.
+        // Must happen BEFORE markdown-to-HTML so intentional tags (<strong> etc.) are not escaped.
+        result = result.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
         // Fix backslash escaping from JSON
         // Use negative lookahead so \\[Npt] line-spacing commands are preserved for MathJax
         result = result.replace(/\\\\\[(?!\d+pt\])/g, '\\[');

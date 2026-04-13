@@ -758,25 +758,25 @@ You MUST use the following structure and formatting precisely.
 
 **MAIN QUESTION**
 
-[The primary essay prompt — a single, clearly worded question that integrates multiple concepts from the lecture notes and invites critical analysis]
+*[The primary essay prompt — a single, clearly worded question that integrates multiple concepts from the lecture notes and invites critical analysis]*
 
 **SUB-QUESTIONS**
 
 For each sub-question, provide:
-**The sub-question itself**
-  - *How to approach it:* A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the lecture notes to draw on, what kind of analysis is expected, and what evidence or examples to include.
+*The sub-question itself*
+    A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the lecture notes to draw on, what kind of analysis is expected, and what evidence or examples to include.
 
 Example format:
-**1: [The question]**
-  - *How to approach it:* [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the lecture notes, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
-**2: [The question]**
-  - *How to approach it:* [2-3 sentences of specific guidance]
-**3: [The question]**
-  - *How to approach it:* [2-3 sentences of specific guidance]
+*1: [The question]*
+    [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the lecture notes, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
+*2: [The question]*
+    [2-3 sentences of specific guidance]
+*3: [The question]*
+    [2-3 sentences of specific guidance]
 
 **ASSESSMENT CRITERIA (QUB Conceptual Equivalents Scale)**
 
-Explain clearly how the essay will be assessed using the QUB Conceptual Equivalents Scale. For each grade band, describe what a student must demonstrate AND give a concrete suggestion for how to achieve that level in THIS specific essay:
+Explain clearly how the essay will be assessed using the QUB Conceptual Equivalents Scale. For each grade band, describe what a student must demonstrate AND give a concrete suggestion for how to achieve that level in THIS specific essay. Do not use bullet points, provide a paragraph of explanation for each grade band.
 
 - **First Class (70-100%):** Exceptional and exemplary work showing a very high level of critical analysis; a very high level of insight in the conclusions drawn; an in-depth knowledge and understanding across a wide range of relevant areas including areas at the forefront of the discipline; very thorough coverage of the topic; and confidence in the appropriate use of learning resources to support arguments made. To achieve this, the student should critically evaluate competing theoretical perspectives, draw on at least 4-5 additional academic references beyond the lecture material, identify limitations or tensions between theories, and demonstrate genuine original insight in their conclusions.
 

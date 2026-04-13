@@ -352,8 +352,8 @@ function addNewMessage(role, content) {
     // Scroll to bottom
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // Check for math expressions and render with MathJax
-    const hasMath = content.includes('$') || content.includes('\\(') || content.includes('\\[') || content.includes('\\begin{align');
+    // Check for math expressions (includes \begin{ for standalone environments)
+    const hasMath = content.includes('$') || content.includes('\\(') || content.includes('\\[') || content.includes('\\begin{');
     console.log('🔥 ADDNEWMESSAGE DEBUG: Has math expressions:', hasMath);
     
     // Only render MathJax if content contains math expressions
@@ -2500,7 +2500,8 @@ function endCalculationSession() {
             return `__LATEX_BLOCK_${blockIdx++}__`;
         }
         // 1. Standalone environments (\begin{align*}...\end{align*}, \begin{bmatrix}...\end{bmatrix}, etc.)
-        result = result.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, protectLatex);
+        //    Backreference \1 ensures \begin{X} matches \end{X}, not the first \end{anything}.
+        result = result.replace(/\\begin\{([^}]+)\}[\s\S]*?\\end\{\1\}/g, protectLatex);
         // 2. Display math \[...\] — lookbehind rejects \\[Npt] line-spacing commands
         result = result.replace(/(?<!\\)\\\[[\s\S]*?\\\]/g, protectLatex);
         // 3. Inline math \(...\)
@@ -2662,8 +2663,8 @@ function endCalculationSession() {
             console.log('🔥 MESSAGE DIV CLASSES AFTER ANIMATION:', messageDiv.className);
         });
         
-        // Check for math expressions
-        const hasMath = content.includes('$') || content.includes('\\(') || content.includes('\\[');
+        // Check for math expressions (includes \begin{ for standalone environments)
+        const hasMath = content.includes('$') || content.includes('\\(') || content.includes('\\[') || content.includes('\\begin{');
         console.log('Has math expressions:', hasMath);
         
         // Only render MathJax if content contains math expressions

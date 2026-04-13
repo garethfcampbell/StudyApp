@@ -774,145 +774,113 @@ function endCalculationSession() {
         return;
     }
     
-    // Function that just handles the API call and processing for summary generation
+    // Function that handles the API call and processing for summary generation (streaming)
     async function generateSummaryContent() {
         const existingProgressBar = document.getElementById('summaryProgressBar');
         const messagesDiv = document.getElementById('messages');
         
         try {
-            console.log('SUMMARY POLLING: Starting summary generation request');
-            const response = await fetch('/start_summary_generation', {
+            console.log('SUMMARY STREAM: Starting streaming summary request');
+            const response = await fetch('/summary_stream', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                }
+                headers: { 'Content-Type': 'application/json' }
             });
-            
-            console.log('SUMMARY POLLING: Response received, status:', response.status);
-            const taskData = await parseJSONResponse(response);
-            console.log('SUMMARY POLLING: Task data:', taskData);
-            
-            if (taskData.task_id) {
-                // Start polling for results
-                const maxAttempts = 45; // 90 seconds maximum
-                const pollInterval = 2000; // 2 second intervals
-                let attempts = 0;
-                
-                const poll = async () => {
-                    attempts++;
-                    console.log(`SUMMARY POLLING: Attempt ${attempts}/${maxAttempts}`);
-                    
+
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                // Error response
+                const data = await response.json();
+                if (window.summaryProgressTimer) clearInterval(window.summaryProgressTimer);
+                if (existingProgressBar && existingProgressBar.parentNode) {
+                    existingProgressBar.parentNode.removeChild(existingProgressBar);
+                }
+                addMessage('assistant', data.error || '❌ Error generating summary.');
+                return;
+            }
+
+            // SSE streaming — create message bubble and fill progressively
+            let progressRemoved = false;
+            function removeProgressBar() {
+                if (progressRemoved) return;
+                progressRemoved = true;
+                if (window.summaryProgressTimer) {
+                    clearInterval(window.summaryProgressTimer);
+                    window.summaryProgressTimer = null;
+                }
+                if (existingProgressBar) {
+                    existingProgressBar.style.transition = 'opacity 0.3s ease-out';
+                    existingProgressBar.style.opacity = '0';
+                    setTimeout(() => {
+                        if (existingProgressBar.parentNode) existingProgressBar.parentNode.removeChild(existingProgressBar);
+                    }, 300);
+                }
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant chat-message entering';
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
+            messageDiv.appendChild(messageContent);
+
+            let fullText = '';
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const payload = line.slice(6);
+                    if (payload === '[DONE]') continue;
                     try {
-                        const statusResponse = await fetch(`/summary_status/${taskData.task_id}`);
-                        const statusData = await statusResponse.json();
-                        
-                        console.log('SUMMARY POLLING: Status data:', statusData);
-                        
-                        if (statusData.status === 'complete' && statusData.success) {
-                            // Stop progress bar immediately when response is received
-                            if (window.summaryProgressTimer) {
-                                clearInterval(window.summaryProgressTimer);
-                            }
-                            
-                            // Smoothly fade out and remove progress bar
-                            if (existingProgressBar) {
-                                existingProgressBar.style.transition = 'opacity 0.5s ease-out';
-                                existingProgressBar.style.opacity = '0';
-                                
-                                setTimeout(() => {
-                                    if (existingProgressBar.parentNode) {
-                                        messagesDiv.removeChild(existingProgressBar);
-                                    }
-                                }, 500);
-                            }
-                            
-                            // Add the summary message
-                            setTimeout(() => {
-                                console.log('Adding executive summary to chat');
-                                addMessage('assistant', statusData.data);
-                            }, 500);
-                            
-                            return; // Stop polling
-                        } else if (statusData.status === 'failed') {
-                            // Stop progress bar on error
-                            if (window.summaryProgressTimer) {
-                                clearInterval(window.summaryProgressTimer);
-                            }
-                            
-                            // Remove progress indicator
-                            if (existingProgressBar) {
-                                existingProgressBar.style.transition = 'opacity 0.5s ease-out';
-                                existingProgressBar.style.opacity = '0';
-                                
-                                setTimeout(() => {
-                                    if (existingProgressBar.parentNode) {
-                                        messagesDiv.removeChild(existingProgressBar);
-                                    }
-                                    addMessage('assistant', `❌ Error generating summary: ${statusData.error}`);
-                                }, 500);
-                            }
-                            
-                            return; // Stop polling
-                        } else if (attempts < maxAttempts) {
-                            // Continue polling if still pending
-                            setTimeout(poll, pollInterval);
-                        } else {
-                            // Timeout
-                            if (window.summaryProgressTimer) {
-                                clearInterval(window.summaryProgressTimer);
-                            }
-                            
-                            if (existingProgressBar) {
-                                existingProgressBar.style.transition = 'opacity 0.5s ease-out';
-                                existingProgressBar.style.opacity = '0';
-                                
-                                setTimeout(() => {
-                                    if (existingProgressBar.parentNode) {
-                                        messagesDiv.removeChild(existingProgressBar);
-                                    }
-                                    addMessage('assistant', '❌ Summary generation timed out. Please try again.');
-                                }, 500);
-                            }
-                            
-                            return; // Stop polling
+                        const chunk = JSON.parse(payload);
+                        fullText += chunk;
+
+                        if (!progressRemoved) {
+                            removeProgressBar();
+                            messagesDiv.appendChild(messageDiv);
+                            requestAnimationFrame(() => {
+                                messageDiv.classList.remove('entering');
+                                messageDiv.classList.add('entered');
+                            });
                         }
-                    } catch (pollError) {
-                        console.error('SUMMARY POLLING: Error during polling:', pollError);
-                        if (attempts < maxAttempts) {
-                            setTimeout(poll, pollInterval);
-                        } else {
-                            throw pollError;
-                        }
-                    }
-                };
-                
-                // Start polling
-                setTimeout(poll, pollInterval);
-            } else {
-                const errorMessage = taskData.error || 'No task ID returned from server';
-                console.error('SUMMARY POLLING: Error:', errorMessage);
-                throw new Error(errorMessage);
+
+                        messageContent.innerHTML = formatMessageSimplified(fullText);
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    } catch (e) { /* ignore */ }
+                }
             }
+
+            if (!progressRemoved) {
+                removeProgressBar();
+                if (!fullText) addMessage('assistant', 'No summary received. Please try again.');
+            }
+
+            // Final render
+            if (fullText) {
+                messageContent.innerHTML = formatMessageSimplified(fullText);
+                const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align');
+                if (hasMath) {
+                    loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
+                }
+            }
+
+            console.log('SUMMARY STREAM: Complete');
+
         } catch (error) {
-            console.error('SUMMARY POLLING: Exception in summary generation:', error);
-            
-            // Stop progress bar on error
-            if (window.summaryProgressTimer) {
-                clearInterval(window.summaryProgressTimer);
+            console.error('SUMMARY STREAM: Exception:', error);
+            if (window.summaryProgressTimer) clearInterval(window.summaryProgressTimer);
+            if (existingProgressBar && existingProgressBar.parentNode) {
+                existingProgressBar.parentNode.removeChild(existingProgressBar);
             }
-            
-            // Remove progress indicator
-            if (existingProgressBar) {
-                existingProgressBar.style.transition = 'opacity 0.5s ease-out';
-                existingProgressBar.style.opacity = '0';
-                
-                setTimeout(() => {
-                    if (existingProgressBar.parentNode) {
-                        messagesDiv.removeChild(existingProgressBar);
-                    }
-                    addMessage('assistant', `❌ Error generating summary: ${error.message}`);
-                }, 500);
-            }
+            addMessage('assistant', `❌ Error generating summary: ${error.message}`);
         }
     }
 
@@ -1827,117 +1795,142 @@ function endCalculationSession() {
         }
         
         // Map actions to specific API endpoints
-        const actionMap = {
-            'Explanation of key concepts': '/start_key_concepts_generation',
-            'Essay question': '/start_essay_generation'
+        const streamActionMap = {
+            'Explanation of key concepts': 'key_concepts',
+            'Essay question': 'essay'
         };
         
-        const endpoint = actionMap[action];
-        if (!endpoint) {
+        const streamAction = streamActionMap[action];
+        if (!streamAction) {
             // Fallback to general chat for unknown actions
             generalChat(action);
             return;
         }
         
-        // Show specific progress based on action type and store timer
+        // Show specific progress based on action type
         currentProgressTimer = showSpecificProgress(action);
         
-        fetch(endpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            }
-        })
-        .then(response => {
-            // Check if response is OK and contains JSON
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            
-            // Try to parse as JSON, but handle HTML responses gracefully
-            const contentType = response.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
-                return response.json();
-            } else {
-                // If not JSON, treat as text and wrap in error structure
-                return response.text().then(text => ({
-                    success: false,
-                    error: 'I\'m having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments.'
-                }));
-            }
-        })
-        .then(data => {
-            // Check if this is a polling-based endpoint (essay generation, key concepts, or quiz generation)
-            if (data.task_id && action === 'Essay question') {
-                console.log('📝 Starting essay polling with task ID:', data.task_id);
-                startEssayPolling(data.task_id);
-                return;
-            }
-            
-            if (data.task_id && action === 'Explanation of key concepts') {
-                console.log('🔑 Starting key concepts polling with task ID:', data.task_id);
-                startKeyConceptsPolling(data.task_id);
-                return;
-            }
-            
+        // Use streaming SSE endpoint
+        streamQuickAction(streamAction, action, clickedButton);
+    }
 
-            
-            // Stop progress bar immediately when response is received
-            if (currentProgressTimer) {
-                clearInterval(currentProgressTimer);
-                currentProgressTimer = null;
-            }
-            
-            // Remove progress indicator
-            const progressIndicator = document.getElementById('progress-indicator');
-            if (progressIndicator) {
-                progressIndicator.remove();
-            }
-            
-            hideLoading();
-            // Keep the button active/green after completion - don't clear until new action
-            
-            if (data.success) {
-                if (data.response) {
-                    addMessage('assistant', data.response);
-                }
-            } else if (data.error) {
-                // Use the error message directly (centralized error handling already provides user-friendly messages)
-                addMessage('assistant', data.error);
-                // Only clear on error
+    async function streamQuickAction(streamAction, actionLabel, clickedButton) {
+        const messagesDiv = document.getElementById('messages');
+
+        try {
+            const response = await fetch('/quickaction_stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: streamAction })
+            });
+
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                // Error response — remove progress bar and show error
+                const data = await response.json();
+                if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
+                const progressIndicator = document.getElementById('progress-indicator');
+                if (progressIndicator) progressIndicator.remove();
+                addMessage('assistant', data.error || 'Sorry, I encountered an error. Please try again.');
                 document.querySelectorAll('.btn-outline-primary').forEach(btn => {
                     btn.classList.remove('processing', 'active');
-                    // Remove any inline styles that might override CSS
-                    btn.style.removeProperty('background-color');
-                    btn.style.removeProperty('border-color');
                 });
+                return;
             }
-        })
-        .catch(error => {
-            // Stop progress bar on error
-            if (currentProgressTimer) {
-                clearInterval(currentProgressTimer);
-                currentProgressTimer = null;
+
+            // SSE streaming — create a message bubble and fill it progressively
+            // Remove progress bar as soon as we start receiving content
+            let progressRemoved = false;
+            function removeProgress() {
+                if (progressRemoved) return;
+                progressRemoved = true;
+                if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
+                const progressIndicator = document.getElementById('progress-indicator');
+                if (progressIndicator) {
+                    progressIndicator.style.transition = 'opacity 0.3s ease-out';
+                    progressIndicator.style.opacity = '0';
+                    setTimeout(() => { if (progressIndicator.parentNode) progressIndicator.remove(); }, 300);
+                }
             }
-            
-            // Remove progress indicator
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant chat-message entering';
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
+            messageDiv.appendChild(messageContent);
+
+            let fullText = '';
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const payload = line.slice(6);
+                    if (payload === '[DONE]') continue;
+                    try {
+                        const chunk = JSON.parse(payload);
+                        fullText += chunk;
+
+                        // On first chunk, swap progress bar for message bubble
+                        if (!progressRemoved) {
+                            removeProgress();
+                            messagesDiv.appendChild(messageDiv);
+                            requestAnimationFrame(() => {
+                                messageDiv.classList.remove('entering');
+                                messageDiv.classList.add('entered');
+                            });
+                        }
+
+                        messageContent.innerHTML = formatMessageSimplified(fullText);
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    } catch (e) { /* ignore malformed */ }
+                }
+            }
+
+            // If no chunks arrived at all, still clean up
+            if (!progressRemoved) {
+                removeProgress();
+                if (!fullText) {
+                    addMessage('assistant', 'No response received. Please try again.');
+                }
+            }
+
+            // Final render with MathJax if needed
+            if (fullText) {
+                messageContent.innerHTML = formatMessageSimplified(fullText);
+                const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align');
+                if (hasMath) {
+                    loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
+                }
+            }
+
+            // Set button to active state (green) to show success
+            if (clickedButton) {
+                clickedButton.classList.remove('processing');
+                clickedButton.classList.add('active');
+            }
+
+        } catch (error) {
+            console.error('Stream quickAction error:', error);
+            if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
             const progressIndicator = document.getElementById('progress-indicator');
-            if (progressIndicator) {
-                progressIndicator.remove();
-            }
-            
-            hideLoading();
-            // Clear active state on error
+            if (progressIndicator) progressIndicator.remove();
+            addMessage('assistant', `❌ Error: ${error.message}`);
             document.querySelectorAll('.btn-outline-primary').forEach(btn => {
                 btn.classList.remove('processing', 'active');
-                // Remove any inline styles that might override CSS
-                btn.style.removeProperty('background-color');
-                btn.style.removeProperty('border-color');
             });
-            addMessage('assistant', `❌ Error: ${error.message}`);
-        });
+        }
     }
-    
+
     function showSpecificProgress(action) {
         const messagesDiv = document.getElementById('messages');
         const progressDiv = document.createElement('div');

@@ -1142,10 +1142,7 @@ function endCalculationSession() {
                             
                             // ALWAYS start summary generation now that upload is confirmed complete
                             console.log('UPLOAD: Upload completed, starting summary generation immediately');
-                            setTimeout(() => {
-                                console.log('UPLOAD: Starting summary generation after upload confirmation');
-                                startSummaryGeneration();
-                            }, 2000);
+                            startSummaryGeneration();
                             
                         } else if (statusData.status === 'failed' || statusData.error) {
                             uploadCompleted = true;

@@ -500,37 +500,27 @@ End your response with: "Would you like to explore any of these topics in more d
                 {"role": "user", "content": prompt}
             ]
 
-            # Try OpenAI streaming first (reliable token-by-token streaming)
+            # Try gpt-5.4-mini streaming (primary)
             try:
-                logging.info("STREAM SUMMARY: Trying gpt-5.4-nano streaming...")
+                logging.info("STREAM SUMMARY: Trying gpt-5.4-mini streaming...")
                 async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-nano", temperature=0.2, max_tokens=15000, timeout=90
+                    messages=messages, model="gpt-5.4-mini", temperature=0.2, max_tokens=15000, timeout=90
                 ):
                     yield chunk
                 return
-            except Exception as nano_error:
-                logging.error(f"STREAM SUMMARY: gpt-5.4-nano streaming failed: {nano_error}")
+            except Exception as mini_error:
+                logging.error(f"STREAM SUMMARY: gpt-5.4-mini streaming failed: {mini_error}")
 
-            # Fallback to Gemini streaming
-            if self.async_gemini_client:
-                try:
-                    logging.info("STREAM SUMMARY: Trying gemini-3.1-flash-lite-preview streaming fallback...")
-                    stream = await asyncio.wait_for(
-                        self.async_gemini_client.chat.completions.create(
-                            model="gemini-3.1-flash-lite-preview",
-                            messages=messages,
-                            temperature=0.2,
-                            max_tokens=15000,
-                            stream=True,
-                        ),
-                        timeout=60
-                    )
-                    async for chunk in stream:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            yield chunk.choices[0].delta.content
-                    return
-                except Exception as gemini_error:
-                    logging.error(f"STREAM SUMMARY: Gemini streaming also failed: {gemini_error}")
+            # Fallback to gpt-5.4-mini retry
+            try:
+                logging.info("STREAM SUMMARY: Retrying gpt-5.4-mini streaming fallback...")
+                async for chunk in self._make_async_openai_streaming_call(
+                    messages=messages, model="gpt-5.4-mini", temperature=0.2, max_tokens=15000, timeout=90
+                ):
+                    yield chunk
+                return
+            except Exception as fallback_error:
+                logging.error(f"STREAM SUMMARY: gpt-5.4-mini fallback also failed: {fallback_error}")
 
             yield "I'm having trouble generating a summary right now. Please try again in a moment."
         except Exception as e:

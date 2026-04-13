@@ -605,34 +605,22 @@ You MUST use the following structure and formatting precisely.
 **SUB-QUESTIONS**
 
 For each sub-question, provide:
-- The sub-question itself
-- **How to approach it:** A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the lecture notes to draw on, what kind of analysis is expected, and what evidence or examples to include.
+**The sub-question itself**
+  - *How to approach it:* A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the lecture notes to draw on, what kind of analysis is expected, and what evidence or examples to include.
 
 Example format:
-- *Sub-question 1:* [The question]
-  - **How to approach it:** [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the lecture notes, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
-- *Sub-question 2:* [The question]
-  - **How to approach it:** [2-3 sentences of specific guidance]
-- *Sub-question 3:* [The question]
-  - **How to approach it:** [2-3 sentences of specific guidance]
-
-**KEY CONCEPTS TO ADDRESS**
-
-List 4-5 specific concepts from the lecture notes. For each, explain:
-- What the concept is (brief definition)
-- How the student should incorporate it into their essay (e.g. "Use this concept to support your argument in sub-question 2 by showing how...")
+**1: [The question]**
+  - *How to approach it:* [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the lecture notes, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
+**2: [The question]**
+  - *How to approach it:* [2-3 sentences of specific guidance]
+**3: [The question]**
+  - *How to approach it:* [2-3 sentences of specific guidance]
 
 **ASSESSMENT CRITERIA (QUB Conceptual Equivalents Scale)**
 
 Explain clearly how the essay will be assessed using the QUB Conceptual Equivalents Scale. For each grade band, describe what a student must demonstrate AND give a concrete suggestion for how to achieve that level in THIS specific essay:
 
-- **First Class (70-100%):**
-
-  - **Exceptional (90-100%):** Exceptional and exemplary work showing a very high level of critical analysis; a very high level of insight in the conclusions drawn; an in-depth knowledge and understanding across a wide range of relevant areas including areas at the forefront of the discipline; very thorough coverage of the topic; and confidence in the appropriate use of learning resources to support arguments made. To achieve this, the student should critically evaluate competing theoretical perspectives, draw on at least 4-5 additional academic references beyond the lecture material, identify limitations or tensions between theories, and demonstrate genuine original insight in their conclusions.
-
-  - **Definite First (80-89%):** Excellent and outstanding answer showing considerable independence of thought and critical judgement with sustained critical analysis; a well-developed ability to analyse concepts and ideas at an abstract level; a thorough understanding of all the main issues involved and their relevance; a substantial degree of originality; substantial evidence of wide, relevant and critical use of learning resources; and good understanding of complex and problematic areas of the discipline. To achieve this, the student should go well beyond the lecture material, reference 3-4 additional academic sources, and offer sustained critical evaluation throughout.
-
-  - **Low First (70-79%):** Excellent answer showing a good level of independence of thought and critical judgement and a level of critical analysis; a developed ability to analyse concepts and ideas; an understanding of all the main issues involved and their relevance; a degree of originality; evidence of wide, relevant and critical use of learning resources; and some understanding of complex and problematic areas of the discipline. To achieve this, the student should demonstrate clear critical analysis of the key concepts, reference 2-3 additional sources, and show some original thinking.
+- **First Class (70-100%):** Exceptional and exemplary work showing a very high level of critical analysis; a very high level of insight in the conclusions drawn; an in-depth knowledge and understanding across a wide range of relevant areas including areas at the forefront of the discipline; very thorough coverage of the topic; and confidence in the appropriate use of learning resources to support arguments made. To achieve this, the student should critically evaluate competing theoretical perspectives, draw on at least 4-5 additional academic references beyond the lecture material, identify limitations or tensions between theories, and demonstrate genuine original insight in their conclusions.
 
 - **Upper Second (2:1, 60-69%):** Good performance showing some independence of thought and critical judgement; some ability to analyse concepts and ideas; an understanding of the main issues involved and their relevance; appropriate use of learning resources; and clear understanding of a reasonable range of literature or source materials. To achieve this, the student should go beyond describing concepts to evaluating their strengths and limitations, and reference at least 1-2 sources beyond the lecture material.
 

@@ -584,78 +584,11 @@ End your response with: "Would you like to explore any of these topics in more d
             **ESSAY QUESTION:**
 
             Create ONE substantial essay question, with several suggested sub-questions, that:
-            • Requires integration of multiple concepts from the lecture notes, and 
-            • Asks for the citation of additional reading of other academic literature, and 
-            • Asks for commentary on real-world applications
-            • Asks for analysis, evaluation, or application (not just description)
-            • Is answerable in 500-750 words
-
-            **🎯 ASSESSMENT CRITERIA (based on QUB Conceptual Equivalents Scale):**
-
-            **FIRST CLASS (70-100%):**
-            
-            **Exceptional (90-100%):** 
-            Exceptional and exemplary work showing:
-            A very high level of critical analysis.
-            A very high level of insight in the conclusions drawn.
-            An in-depth knowledge and understanding across a wide range of relevant areas including areas at the forefront of the discipline.
-            Very thorough coverage of the topic.
-            Confidence in the appropriate use of learning resources to support arguments made.
-            
-            **Definite First (80-89%):** 
-            Excellent and outstanding answer showing:
-            Considerable independence of thought and critical judgement with sustained critical analysis.
-            A well-developed ability to analyse concepts and ideas at an abstract level.
-            A thorough understanding of all the main issues involved and their relevance.
-            A substantial degree of originality.
-            Substantial evidence of wide, relevant and critical use of learning resources.
-            Good understanding of complex and problematic areas of the discipline.
-            
-            **Low First (70-79%):**
-            
-            Excellent answer showing:
-            A good level of independence of thought and critical judgement and a level of critical analysis.
-            A developed ability to analyse concepts and ideas.
-            An understanding of all the main issues involved and their relevance.
-            A degree of originality.
-            Evidence of wide, relevant and critical use of learning resources.
-            Some understanding of complex and problematic areas of the discipline.
-
-            **UPPER SECOND CLASS (60-69%):**
-            
-            **High 2:1 (65-69%):**
-            Good performance showing:
-            Some independence of thought and critical judgement.
-            Some ability to analyse concepts and ideas.
-            An understanding of the main issues involved and their relevance.
-            Appropriate use of learning resources.
-            Clear understanding of a reasonable range of literature or source materials.
-            
-            **Low 2:1 (60-64%):**
-            
-            Good performance showing:
-            Clear understanding of a reasonable range of literature or source materials.
-            Some knowledge and understanding of the central issues and themes.
-            Appropriate use of learning resources.
-            Some level of critical analysis and evaluation.
-
-            **LOWER SECOND CLASS (50-59%):**
-            
-            Adequate answer showing:
-            Some knowledge and understanding of the central issues and themes.
-            Limited critical analysis and evaluation.
-            Limited literature covered.
-            Average understanding of materials.
-            Limited independence of thought.
-
-            **THIRD CLASS (40-49%):**
-            
-            Weak answer showing:
-            Demonstration of basic knowledge.
-            Limited understanding of the topic area.
-            Some irrelevance of content.
-            Uncritical use of sources.
-            Little indication of independent learning.
+            - Requires integration of multiple concepts from the lecture notes, and
+            - Asks for the citation of additional reading of other academic literature, and
+            - Asks for commentary on real-world applications
+            - Asks for analysis, evaluation, or application (not just description)
+            - Is answerable in 500-750 words
 
 ---
 
@@ -663,31 +596,60 @@ End your response with: "Would you like to explore any of these topics in more d
 
 You MUST use the following structure and formatting precisely.
 
-```markdown
-
 ***ESSAY QUESTION***
-
 
 **MAIN QUESTION**
 
-[The primary essay prompt]
+[The primary essay prompt — a single, clearly worded question that integrates multiple concepts from the lecture notes and invites critical analysis]
 
 **SUB-QUESTIONS**
 
-[2-3 guiding questions to help structure the response]
+For each sub-question, provide:
+- The sub-question itself
+- **How to approach it:** A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the lecture notes to draw on, what kind of analysis is expected, and what evidence or examples to include.
+
+Example format:
+- *Sub-question 1:* [The question]
+  - **How to approach it:** [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the lecture notes, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
+- *Sub-question 2:* [The question]
+  - **How to approach it:** [2-3 sentences of specific guidance]
+- *Sub-question 3:* [The question]
+  - **How to approach it:** [2-3 sentences of specific guidance]
 
 **KEY CONCEPTS TO ADDRESS**
 
-[Explain how 4-5 specific concepts could be included]
+List 4-5 specific concepts from the lecture notes. For each, explain:
+- What the concept is (brief definition)
+- How the student should incorporate it into their essay (e.g. "Use this concept to support your argument in sub-question 2 by showing how...")
 
-**ASSESSMENT CRITERIA**
+**ASSESSMENT CRITERIA (QUB Conceptual Equivalents Scale)**
 
-[Explain the QUB Conceptual Equivalents Scale in detail]
+Explain clearly how the essay will be assessed using the QUB Conceptual Equivalents Scale. For each grade band, describe what a student must demonstrate AND give a concrete suggestion for how to achieve that level in THIS specific essay:
 
-**WRITING TIPS**
+- **First Class (70-100%):**
 
-[Provide 3-5 concise tips for writing the essay (do not mention formatting of mathematical notation)]
+  - **Exceptional (90-100%):** Exceptional and exemplary work showing a very high level of critical analysis; a very high level of insight in the conclusions drawn; an in-depth knowledge and understanding across a wide range of relevant areas including areas at the forefront of the discipline; very thorough coverage of the topic; and confidence in the appropriate use of learning resources to support arguments made. To achieve this, the student should critically evaluate competing theoretical perspectives, draw on at least 4-5 additional academic references beyond the lecture material, identify limitations or tensions between theories, and demonstrate genuine original insight in their conclusions.
 
+  - **Definite First (80-89%):** Excellent and outstanding answer showing considerable independence of thought and critical judgement with sustained critical analysis; a well-developed ability to analyse concepts and ideas at an abstract level; a thorough understanding of all the main issues involved and their relevance; a substantial degree of originality; substantial evidence of wide, relevant and critical use of learning resources; and good understanding of complex and problematic areas of the discipline. To achieve this, the student should go well beyond the lecture material, reference 3-4 additional academic sources, and offer sustained critical evaluation throughout.
+
+  - **Low First (70-79%):** Excellent answer showing a good level of independence of thought and critical judgement and a level of critical analysis; a developed ability to analyse concepts and ideas; an understanding of all the main issues involved and their relevance; a degree of originality; evidence of wide, relevant and critical use of learning resources; and some understanding of complex and problematic areas of the discipline. To achieve this, the student should demonstrate clear critical analysis of the key concepts, reference 2-3 additional sources, and show some original thinking.
+
+- **Upper Second (2:1, 60-69%):** Good performance showing some independence of thought and critical judgement; some ability to analyse concepts and ideas; an understanding of the main issues involved and their relevance; appropriate use of learning resources; and clear understanding of a reasonable range of literature or source materials. To achieve this, the student should go beyond describing concepts to evaluating their strengths and limitations, and reference at least 1-2 sources beyond the lecture material.
+
+- **Lower Second (2:2, 50-59%):** Adequate answer showing some knowledge and understanding of the central issues and themes; limited critical analysis and evaluation; limited literature covered; average understanding of materials; and limited independence of thought. The student describes the key concepts correctly but does not evaluate them or connect them to wider literature.
+
+- **Third Class (40-49%):** Weak answer showing demonstration of basic knowledge; limited understanding of the topic area; some irrelevance of content; uncritical use of sources; and little indication of independent learning.
+
+**OVERALL ANSWER STRATEGY**
+
+Provide a suggested essay structure with 3-5 concise, actionable tips for how the student should plan and write their answer. For example:
+- How to structure the introduction (what to include in the opening paragraph)
+- How to organise the body paragraphs around the sub-questions
+- How to integrate academic references effectively
+- How to write a strong conclusion that demonstrates critical judgement
+- What common mistakes to avoid
+
+            RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks.
 
             """
 
@@ -798,7 +760,58 @@ You MUST use the following structure and formatting precisely.
             - Asks for analysis, evaluation, or application (not just description)
             - Is answerable in 500-750 words
 
-            Include assessment criteria, sub-questions, key concepts to address, and writing tips.
+---
+
+### REQUIRED OUTPUT STRUCTURE
+
+You MUST use the following structure and formatting precisely.
+
+***ESSAY QUESTION***
+
+**MAIN QUESTION**
+
+[The primary essay prompt — a single, clearly worded question that integrates multiple concepts from the lecture notes and invites critical analysis]
+
+**SUB-QUESTIONS**
+
+For each sub-question, provide:
+- The sub-question itself
+- **How to approach it:** A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the lecture notes to draw on, what kind of analysis is expected, and what evidence or examples to include.
+
+Example format:
+- *Sub-question 1:* [The question]
+  - **How to approach it:** [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the lecture notes, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
+- *Sub-question 2:* [The question]
+  - **How to approach it:** [2-3 sentences of specific guidance]
+- *Sub-question 3:* [The question]
+  - **How to approach it:** [2-3 sentences of specific guidance]
+
+**KEY CONCEPTS TO ADDRESS**
+
+List 4-5 specific concepts from the lecture notes. For each, explain:
+- What the concept is (brief definition)
+- How the student should incorporate it into their essay (e.g. "Use this concept to support your argument in sub-question 2 by showing how...")
+
+**ASSESSMENT CRITERIA (QUB Conceptual Equivalents Scale)**
+
+Explain clearly how the essay will be assessed using the QUB Conceptual Equivalents Scale. For each grade band, describe what a student must demonstrate AND give a concrete suggestion for how to achieve that level in THIS specific essay:
+
+- **First Class (70-100%):** Requires exceptional critical analysis, independence of thought, and wide use of academic sources beyond the lecture notes. To achieve this, the student should critically evaluate competing perspectives, draw on at least 3-4 additional academic references, and demonstrate original insight — for example, by identifying limitations or tensions between theories covered in the lectures.
+
+- **Upper Second (2:1, 60-69%):** Requires good understanding of the main issues, some critical analysis, and appropriate use of sources. To achieve this, the student should go beyond describing concepts to evaluating their strengths and limitations, and reference at least 1-2 sources beyond the lecture material.
+
+- **Lower Second (2:2, 50-59%):** Demonstrates adequate knowledge with limited critical analysis. The student describes the key concepts correctly but does not evaluate them or connect them to wider literature.
+
+- **Third Class (40-49%):** Shows basic knowledge but with limited understanding, some irrelevant content, and little evidence of independent reading.
+
+**OVERALL ANSWER STRATEGY**
+
+Provide a suggested essay structure with 3-5 concise, actionable tips for how the student should plan and write their answer. For example:
+- How to structure the introduction (what to include in the opening paragraph)
+- How to organise the body paragraphs around the sub-questions
+- How to integrate academic references effectively
+- How to write a strong conclusion that demonstrates critical judgement
+- What common mistakes to avoid
 
             RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks."""
 

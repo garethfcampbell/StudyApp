@@ -865,6 +865,72 @@ def quickaction_stream():
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
+@app.route('/summary_stream', methods=['POST'])
+@csrf.exempt
+def summary_stream():
+    """Streaming SSE endpoint for executive summary generation."""
+    import asyncio
+    import queue as queue_mod
+    import time
+
+    init_session()
+
+    session_id = session.get('session_id')
+
+    # Same race-condition handling as start_summary_generation
+    time.sleep(2.0)
+    pdf_content = get_pdf_content_with_fallback()
+    if not pdf_content:
+        storage_manager = StorageManager()
+        pdf_content = storage_manager.retrieve_content(session_id, 'pdf_content')
+    if not pdf_content:
+        time.sleep(5.0)
+        pdf_content = get_pdf_content_with_fallback()
+    if not pdf_content:
+        return jsonify({'success': False, 'error': 'Document content not available. Please try uploading your file again.'}), 400
+
+    q = queue_mod.Queue()
+
+    def _run_stream():
+        async def _consume():
+            full_response = ""
+            try:
+                tutor_ai = TutorAI()
+                tutor_ai.set_context(pdf_content)
+                async for chunk in tutor_ai.generate_cheat_sheet_stream_async():
+                    full_response += chunk
+                    q.put(chunk)
+            except Exception as e:
+                logging.error(f"SUMMARY STREAM: Error: {e}")
+                if not full_response:
+                    q.put("I'm having trouble generating a summary right now. Please try again.")
+            finally:
+                try:
+                    storage_manager = StorageManager()
+                    msgs = storage_manager.retrieve_content(session_id, 'messages') or []
+                    msgs.append({'role': 'assistant', 'content': full_response})
+                    storage_manager.store_content(session_id, 'messages', msgs)
+                except Exception as e:
+                    logging.error(f"SUMMARY STREAM: Error storing messages: {e}")
+                q.put(None)
+
+        asyncio.run(_consume())
+
+    thread = threading.Thread(target=_run_stream, daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                yield f"data: [DONE]\n\n"
+                break
+            escaped = json.dumps(chunk)
+            yield f"data: {escaped}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
 def generate_summary_with_fallback(tutor_ai, pdf_content, max_retries=3):
     """
     Generate executive summary with fallback mechanism

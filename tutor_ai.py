@@ -486,6 +486,93 @@ End your response with: "Would you like to explore any of these topics in more d
             logging.error(f"ASYNC SUMMARY: Critical error in async summary generation: {e}")
             return f"Critical error in summary generation: {str(e)}"
 
+    async def generate_cheat_sheet_stream_async(self):
+        """Streaming version of generate_cheat_sheet_async. Yields text chunks."""
+        if not self.context:
+            yield "No lecture notes available to create sheet from."
+            return
+
+        try:
+            prompt = self._get_summary_prompt()
+            truncated_context = self.context[:80000] if len(self.context) > 80000 else self.context
+            messages = [
+                {"role": "system", "content": f"You are an expert at creating study aids and revision sheets from academic content.\n\nLecture Notes:\n{truncated_context}"},
+                {"role": "user", "content": prompt}
+            ]
+
+            # Try Gemini streaming as primary
+            if self.async_gemini_client:
+                try:
+                    logging.info("STREAM SUMMARY: Trying gemini-3.1-flash-lite-preview streaming...")
+                    stream = await asyncio.wait_for(
+                        self.async_gemini_client.chat.completions.create(
+                            model="gemini-3.1-flash-lite-preview",
+                            messages=messages,
+                            temperature=0.2,
+                            max_tokens=15000,
+                            stream=True,
+                        ),
+                        timeout=60
+                    )
+                    async for chunk in stream:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            yield chunk.choices[0].delta.content
+                    return
+                except Exception as gemini_error:
+                    logging.error(f"STREAM SUMMARY: Gemini streaming failed: {gemini_error}")
+
+            # Fallback to gpt-5.4-nano streaming
+            try:
+                logging.info("STREAM SUMMARY: Trying gpt-5.4-nano streaming fallback...")
+                async for chunk in self._make_async_openai_streaming_call(
+                    messages=messages, model="gpt-5.4-nano", temperature=0.2, max_tokens=15000, timeout=60
+                ):
+                    yield chunk
+                return
+            except Exception as nano_error:
+                logging.error(f"STREAM SUMMARY: All streaming models failed: {nano_error}")
+                yield "I'm having trouble generating a summary right now. Please try again in a moment."
+        except Exception as e:
+            logging.error(f"STREAM SUMMARY: Critical error: {e}")
+            yield f"Critical error in summary generation: {str(e)}"
+
+    def _get_summary_prompt(self):
+        """Return the summary/cheat sheet prompt text (extracted for reuse)."""
+        return """
+
+Create a comprehensive study aid from the lecture notes I provide. Your output should begin with a concise overview, followed by a detailed bullet-point revision sheet.
+
+### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
+- **ONLY USE HYPHENS FOR BULLETS:** You MUST use only hyphens (`-`) for ALL bullet points. Do NOT use asterisks (*), bullet symbols (•), or any other characters.
+- **Bullet Point Format:** Each bullet point must follow this exact format: `- *Concept:* Brief explanation`
+- **ABSOLUTELY NO MATHEMATICAL NOTATION:** Do NOT use any LaTeX, dollar signs, backslash notation, or math symbols. Convert all math to plain English.
+- Use ONLY plain text to describe all mathematical concepts
+
+---
+
+### REQUIRED OUTPUT STRUCTURE
+
+***OVERVIEW***
+
+Summarise the main subject/topic of the lecture in a professional, academic tone.
+
+***KEY CONCEPTS***
+
+List the most important concepts with brief definitions, grouped into logical categories:
+
+**1. [First Category Name]**
+
+- *[Concept]:* Brief explanation of the concept.
+- *[Concept]:* Brief explanation of the concept.
+
+**2. [Second Category Name]**
+
+- *[Concept]:* Brief explanation of the concept.
+- *[Concept]:* Brief explanation of the concept.
+
+End your response with: "Would you like to explore any of these topics in more detail?"
+"""
+
     async def generate_essay_question_async(self):
 
         if not self.context:

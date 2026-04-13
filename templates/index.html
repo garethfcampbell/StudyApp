@@ -2491,17 +2491,20 @@ function endCalculationSession() {
         result = result.replace(/\\\\\)/g, '\\)');
         
         // Protect LaTeX blocks from markdown / bullet / <br> processing.
-        // Order: display math first (captures nested environments),
-        // then standalone environments, then inline math.
+        // Order: environments first (so \\[6pt] line breaks inside align*
+        // don't trigger the display-math regex), then display math, then inline.
         const latexBlocks = [];
         let blockIdx = 0;
         function protectLatex(match) {
             latexBlocks.push(match);
             return `__LATEX_BLOCK_${blockIdx++}__`;
         }
-        result = result.replace(/\\\[[\s\S]*?\\\]/g, protectLatex);
+        // 1. Standalone environments (\begin{align*}...\end{align*}, \begin{bmatrix}...\end{bmatrix}, etc.)
         result = result.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, protectLatex);
-        result = result.replace(/\\\([\s\S]*?\\\)/g, protectLatex);
+        // 2. Display math \[...\] — lookbehind rejects \\[Npt] line-spacing commands
+        result = result.replace(/(?<!\\)\\\[[\s\S]*?\\\]/g, protectLatex);
+        // 3. Inline math \(...\)
+        result = result.replace(/(?<!\\)\\\([\s\S]*?\\\)/g, protectLatex);
         
         // Enhanced markdown processing with bullet points
         result = result.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');

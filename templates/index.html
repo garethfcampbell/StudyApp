@@ -2490,6 +2490,19 @@ function endCalculationSession() {
         result = result.replace(/\\\\\(/g, '\\(');
         result = result.replace(/\\\\\)/g, '\\)');
         
+        // Protect LaTeX blocks from markdown / bullet / <br> processing.
+        // Order: display math first (captures nested environments),
+        // then standalone environments, then inline math.
+        const latexBlocks = [];
+        let blockIdx = 0;
+        function protectLatex(match) {
+            latexBlocks.push(match);
+            return `__LATEX_BLOCK_${blockIdx++}__`;
+        }
+        result = result.replace(/\\\[[\s\S]*?\\\]/g, protectLatex);
+        result = result.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, protectLatex);
+        result = result.replace(/\\\([\s\S]*?\\\)/g, protectLatex);
+        
         // Enhanced markdown processing with bullet points
         result = result.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
         result = result.replace(/\*((?!\*)[^*\n]+)\*/g, '<em>$1</em>');  // Handle italics
@@ -2551,6 +2564,11 @@ function endCalculationSession() {
         }
         
         result = result.replace(/\n/g, '<br>');
+        
+        // Restore protected LaTeX blocks (untouched by markdown/bullet/<br> processing)
+        for (let i = 0; i < latexBlocks.length; i++) {
+            result = result.split(`__LATEX_BLOCK_${i}__`).join(latexBlocks[i]);
+        }
         
         console.log('🔥 FINAL RESULT LENGTH:', result.length);
         console.log('🔥🔥🔥 FORMATMESSAGESIMPLIFIED DEBUG END 🔥🔥🔥');

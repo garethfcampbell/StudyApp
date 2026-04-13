@@ -2569,8 +2569,10 @@ function endCalculationSession() {
         
         result = result.replace(/\n/g, '<br>');
         
-        // Restore protected LaTeX blocks (untouched by markdown/bullet/<br> processing)
-        for (let i = 0; i < latexBlocks.length; i++) {
+        // Restore protected LaTeX blocks in REVERSE order so that outer blocks
+        // (which may contain inner-block placeholders) are restored first,
+        // exposing those inner placeholders for subsequent restoration passes.
+        for (let i = latexBlocks.length - 1; i >= 0; i--) {
             result = result.split(`__LATEX_BLOCK_${i}__`).join(latexBlocks[i]);
         }
         

@@ -28,11 +28,6 @@ class DatabaseStorageManager:
             self.db.session.remove()
         except Exception:
             pass
-        try:
-            self.db.engine.dispose()
-            logging.info("DatabaseStorageManager: connection pool disposed for recovery")
-        except Exception:
-            pass
 
     def _retry_db_operation(self, operation, max_retries=3, operation_name="db_operation"):
         last_error = None

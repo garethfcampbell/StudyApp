@@ -103,11 +103,6 @@ class OptimizedStorageManager:
             self.db.session.remove()
         except Exception:
             pass
-        try:
-            self.db.engine.dispose()
-            logging.info("DB connection pool disposed for recovery")
-        except Exception:
-            pass
 
     def _retry_db_operation(self, operation, max_retries=3, operation_name="db_operation"):
         last_error = None
@@ -139,7 +134,6 @@ class OptimizedStorageManager:
     def store_content(self, session_id: str, content_type: str, content: Any) -> None:
         """Store content with caching and retry on connection errors"""
         cache_key = self._get_cache_key(session_id, content_type)
-        self.cache.set(cache_key, content)
 
         def _do_store():
             with current_app.app_context():
@@ -161,11 +155,15 @@ class OptimizedStorageManager:
                     self.db.session.add(session_data)
                 
                 self.db.session.commit()
+                # Update cache only after successful DB commit
+                self.cache.set(cache_key, content)
                 logging.debug(f"Stored optimized content for session {session_id}, type {content_type}")
 
         try:
             self._retry_db_operation(_do_store, operation_name="optimized_store")
         except Exception as e:
+            # Invalidate cache on failure so stale data isn't served
+            self.cache.delete(cache_key)
             logging.error(f"Error in optimized store after retries: {e}")
             raise
     

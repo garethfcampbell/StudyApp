@@ -8,16 +8,14 @@ import multiprocessing
 bind = "0.0.0.0:5000"
 backlog = 2048
 
-# Worker processes - Optimized for speed and stability
-workers = min(multiprocessing.cpu_count() * 2 + 1, 12)  # Increased to 12 workers
-worker_class = "sync"  # Using sync workers for stability (avoid SSL conflicts)
-worker_connections = 1000  # Optimized connection limit
-max_requests = 2000  # Increased before restart
-max_requests_jitter = 200
-
-# Restart workers periodically to prevent memory leaks
+# Worker processes - Optimized for Replit with SSE streaming
+# gthread allows multiple threads per worker so SSE streams don't block all requests
+workers = min(multiprocessing.cpu_count() + 1, 4)  # Fewer workers, more threads each
+worker_class = "gthread"  # Threaded workers required for SSE streaming
+threads = 4  # Each worker handles 4 concurrent requests
+worker_connections = 1000
 max_requests = 2000
-max_requests_jitter = 100
+max_requests_jitter = 200
 
 # Timeouts - Optimized for faster responses
 timeout = 300  # Increased for file uploads and AI processing

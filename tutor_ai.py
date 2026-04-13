@@ -445,26 +445,18 @@ End your response with: "Would you like to explore any of these topics in more d
 
             logging.info(f"ASYNC SUMMARY: Context length: {len(truncated_context)} characters")
 
-            # Try Gemini Flash Lite as primary
-            if self.async_gemini_client:
-                try:
-                    logging.info("ASYNC SUMMARY: Trying gemini-3.1-flash-lite-preview for executive summary generation...")
-                    gemini_response = await asyncio.wait_for(
-                        self.async_gemini_client.chat.completions.create(
-                            model="gemini-3.1-flash-lite-preview",
-                            messages=messages,
-                            temperature=0.2,
-                            max_tokens=15000,
-                        ),
-                        timeout=60
-                    )
-                    result = gemini_response.choices[0].message.content
-                    if result and result.strip():
-                        logging.info("ASYNC SUMMARY: gemini-3.1-flash-lite-preview succeeded")
-                        return _strip_code_fences(result)
-                    raise ValueError("Gemini returned an empty response")
-                except Exception as gemini_error:
-                    logging.error(f"ASYNC SUMMARY: gemini-3.1-flash-lite-preview failed: {gemini_error}")
+            # Try gpt-5.4-mini as primary
+            try:
+                logging.info("ASYNC SUMMARY: Trying gpt-5.4-mini for executive summary generation...")
+                result = await self._make_async_openai_fallback_call(
+                    messages=messages, model="gpt-5.4-mini", temperature=0.2, max_tokens=15000, timeout=60
+                )
+                if result and result.strip():
+                    logging.info("ASYNC SUMMARY: gpt-5.4-mini succeeded")
+                    return _strip_code_fences(result)
+                raise ValueError("gpt-5.4-mini returned an empty response")
+            except Exception as mini_error:
+                logging.error(f"ASYNC SUMMARY: gpt-5.4-mini failed: {mini_error}")
 
             # Fallback to gpt-5.4-nano
             try:
@@ -500,37 +492,27 @@ End your response with: "Would you like to explore any of these topics in more d
                 {"role": "user", "content": prompt}
             ]
 
-            # Try OpenAI streaming first (reliable token-by-token streaming)
+            # Try gpt-5.4-mini streaming first (reliable token-by-token streaming)
             try:
-                logging.info("STREAM SUMMARY: Trying gpt-5.4-nano streaming...")
+                logging.info("STREAM SUMMARY: Trying gpt-5.4-mini streaming...")
+                async for chunk in self._make_async_openai_streaming_call(
+                    messages=messages, model="gpt-5.4-mini", temperature=0.2, max_tokens=15000, timeout=90
+                ):
+                    yield chunk
+                return
+            except Exception as mini_error:
+                logging.error(f"STREAM SUMMARY: gpt-5.4-mini streaming failed: {mini_error}")
+
+            # Fallback to gpt-5.4-nano streaming
+            try:
+                logging.info("STREAM SUMMARY: Trying gpt-5.4-nano streaming fallback...")
                 async for chunk in self._make_async_openai_streaming_call(
                     messages=messages, model="gpt-5.4-nano", temperature=0.2, max_tokens=15000, timeout=90
                 ):
                     yield chunk
                 return
             except Exception as nano_error:
-                logging.error(f"STREAM SUMMARY: gpt-5.4-nano streaming failed: {nano_error}")
-
-            # Fallback to Gemini streaming
-            if self.async_gemini_client:
-                try:
-                    logging.info("STREAM SUMMARY: Trying gemini-3.1-flash-lite-preview streaming fallback...")
-                    stream = await asyncio.wait_for(
-                        self.async_gemini_client.chat.completions.create(
-                            model="gemini-3.1-flash-lite-preview",
-                            messages=messages,
-                            temperature=0.2,
-                            max_tokens=15000,
-                            stream=True,
-                        ),
-                        timeout=60
-                    )
-                    async for chunk in stream:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            yield chunk.choices[0].delta.content
-                    return
-                except Exception as gemini_error:
-                    logging.error(f"STREAM SUMMARY: Gemini streaming also failed: {gemini_error}")
+                logging.error(f"STREAM SUMMARY: gpt-5.4-nano streaming also failed: {nano_error}")
 
             yield "I'm having trouble generating a summary right now. Please try again in a moment."
         except Exception as e:
@@ -725,26 +707,18 @@ You MUST use the following structure and formatting precisely.
 
             logging.info(f"ASYNC ESSAY: Context length: {len(truncated_context)} characters")
 
-            # Try Gemini as primary
-            if self.async_gemini_client:
-                try:
-                    logging.info("ASYNC ESSAY: Trying gemini-3.1-flash-lite-preview for essay generation...")
-                    gemini_response = await asyncio.wait_for(
-                        self.async_gemini_client.chat.completions.create(
-                            model="gemini-3.1-flash-lite-preview",
-                            messages=messages,
-                            temperature=0.4,
-                            max_tokens=15000,
-                        ),
-                        timeout=60
-                    )
-                    result = gemini_response.choices[0].message.content
-                    if result and result.strip():
-                        logging.info("ASYNC ESSAY: gemini-3.1-flash-lite-preview succeeded")
-                        return _strip_code_fences(result)
-                    raise ValueError("Gemini returned an empty response")
-                except Exception as gemini_error:
-                    logging.error(f"ASYNC ESSAY: gemini-3.1-flash-lite-preview failed: {gemini_error}")
+            # Try gpt-5.4-mini as primary
+            try:
+                logging.info("ASYNC ESSAY: Trying gpt-5.4-mini for essay generation...")
+                result = await self._make_async_openai_fallback_call(
+                    messages=messages, model="gpt-5.4-mini", temperature=0.4, max_tokens=15000, timeout=60
+                )
+                if result and result.strip():
+                    logging.info("ASYNC ESSAY: gpt-5.4-mini succeeded")
+                    return _strip_code_fences(result)
+                raise ValueError("gpt-5.4-mini returned an empty response")
+            except Exception as mini_error:
+                logging.error(f"ASYNC ESSAY: gpt-5.4-mini failed: {mini_error}")
 
             # Fallback to gpt-5.4-nano
             try:

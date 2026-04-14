@@ -1575,9 +1575,9 @@ FORMATTING REQUIREMENTS:
             logging.info(f"Generating exam worked example for question {q_id}...")
             result = await self._make_async_openai_fallback_call(
                 messages=messages,
-                model="gpt-5.4-mini",
-                max_tokens=5000,
-                timeout=90
+                model="gpt-5.4",
+                max_tokens=10000,
+                timeout=180
             )
             logging.info(f"Exam worked example generated successfully for question {q_id}")
             return result

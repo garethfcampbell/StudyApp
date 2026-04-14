@@ -21,7 +21,7 @@ class SessionCache:
         self._timestamps = {}
         self._lock = threading.RLock()
         self.default_ttl = default_ttl
-        self.max_size = 10000  # Limit cache size for memory efficiency
+        self.max_size = 20000  # Sized for 100+ concurrent users
         
     def get(self, key: str) -> Optional[Any]:
         """Get item from cache if not expired"""

@@ -102,7 +102,7 @@ class TutorAI:
     # Summary: Gemini Flash Lite primary, gpt-5.4-nano fallback, gpt-5.4-mini last resort
     # All other features: gpt-5.4-mini primary, gpt-5.4-nano fallback
 
-    async def _make_async_openai_fallback_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, response_format=None, timeout=50):
+    async def _make_async_openai_fallback_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, response_format=None, timeout=50, reasoning_effort=None):
 
         if not self.async_openai_client:
             raise Exception("Async OpenAI fallback is not available - no API key configured.")
@@ -129,7 +129,8 @@ class TutorAI:
                             "messages": [{"role": "user", "content": combined_content.strip()}],
                             "max_completion_tokens": max_tokens,
                         }
-                        # gpt-5.4-mini doesn't support response_format parameter or temperature (only default value 1)
+                        if reasoning_effort:
+                            api_args["reasoning_effort"] = reasoning_effort
                     else:
                         # Regular OpenAI models (gpt-4o-mini, etc.)
                         api_args = {
@@ -201,7 +202,7 @@ class TutorAI:
             logging.error(f"Async OpenAI fallback call failed: {e}")
             raise e
 
-    async def _make_async_openai_streaming_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, timeout=60):
+    async def _make_async_openai_streaming_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, timeout=60, reasoning_effort=None):
         """Streaming variant of _make_async_openai_fallback_call. Yields text chunks."""
         if not self.async_openai_client:
             raise Exception("Async OpenAI client is not available.")
@@ -219,6 +220,8 @@ class TutorAI:
                 "max_completion_tokens": max_tokens,
                 "stream": True,
             }
+            if reasoning_effort:
+                api_args["reasoning_effort"] = reasoning_effort
         else:
             api_args = {
                 "model": model,
@@ -1583,7 +1586,8 @@ FORMATTING REQUIREMENTS:
                 messages=messages,
                 model="gpt-5.4",
                 max_tokens=10000,
-                timeout=180
+                timeout=180,
+                reasoning_effort="medium"
             )
             logging.info(f"Exam worked example generated successfully for question {q_id}")
             return result
@@ -1665,7 +1669,8 @@ FORMATTING REQUIREMENTS:
                 messages=messages,
                 model="gpt-5.4",
                 max_tokens=10000,
-                timeout=180
+                timeout=180,
+                reasoning_effort="medium"
             ):
                 yield chunk
             logging.info(f"Exam worked example streaming completed for question {q_id}")

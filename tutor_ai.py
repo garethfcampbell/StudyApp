@@ -114,8 +114,8 @@ class TutorAI:
             for attempt in range(max_retries + 1):
                 try:
                     # Handle gpt-5.4-mini model which has different requirements
-                    if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano"):
-                        # gpt-5.4-mini doesn't support system messages - combine all messages into user message
+                    if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano", "gpt-5.4"):
+                        # gpt-5.4 family doesn't support system messages - combine all messages into user message
                         combined_content = ""
                         for message in messages:
                             if message["role"] == "system":
@@ -206,7 +206,7 @@ class TutorAI:
         if not self.async_openai_client:
             raise Exception("Async OpenAI client is not available.")
 
-        if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano"):
+        if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano", "gpt-5.4"):
             combined_content = ""
             for message in messages:
                 if message["role"] == "system":

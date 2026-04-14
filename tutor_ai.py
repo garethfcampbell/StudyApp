@@ -1522,7 +1522,10 @@ EXAM PAPER (for reference/context):
 SPECIFIC QUESTION TO SOLVE (Question {q_id}):
 {q_text}
 
-YOUR TASK: Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given, then set the student a new challenge using different numbers.
+YOUR TASK:
+1. Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given.
+2. If the exam paper already includes a solution or answer for this question, cross-check YOUR calculated answer against the PROVIDED solution. If they differ, carefully re-examine both approaches, identify where any error lies (yours or the paper's), and explain the discrepancy to the student.
+3. Then set the student a new challenge using different numbers.
 
 REQUIRED LAYOUT:
 
@@ -1554,6 +1557,9 @@ calculation &= ... \\\\[6pt]
 \\begin{{align*}}
 \\text{{Answer}} &= ...
 \\end{{align*}}
+
+**SOLUTION VERIFICATION** (include this section ONLY if the exam paper provides a solution or answer)
+Compare your calculated answer with the solution provided in the exam paper. If they match, confirm this. If they differ, explain clearly where the discrepancy is, which approach contains the error, and why.
 
 **CHALLENGE**
 Now try a similar problem with DIFFERENT numerical values (you invent new, realistic values).
@@ -1598,7 +1604,10 @@ EXAM PAPER (for reference/context):
 SPECIFIC QUESTION TO SOLVE (Question {q_id}):
 {q_text}
 
-YOUR TASK: Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given, then set the student a new challenge using different numbers.
+YOUR TASK:
+1. Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given.
+2. If the exam paper already includes a solution or answer for this question, cross-check YOUR calculated answer against the PROVIDED solution. If they differ, carefully re-examine both approaches, identify where any error lies (yours or the paper's), and explain the discrepancy to the student.
+3. Then set the student a new challenge using different numbers.
 
 REQUIRED LAYOUT:
 
@@ -1630,6 +1639,9 @@ calculation &= ... \\\\[6pt]
 \\begin{{align*}}
 \\text{{Answer}} &= ...
 \\end{{align*}}
+
+**SOLUTION VERIFICATION** (include this section ONLY if the exam paper provides a solution or answer)
+Compare your calculated answer with the solution provided in the exam paper. If they match, confirm this. If they differ, explain clearly where the discrepancy is, which approach contains the error, and why.
 
 **CHALLENGE**
 Now try a similar problem with DIFFERENT numerical values (you invent new, realistic values).

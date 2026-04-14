@@ -1490,8 +1490,8 @@ Choose ONE equation from the lecture notes that has not been used before."""
                 result = await self._make_async_openai_fallback_call(
                     messages=messages,
                     model="gpt-5.4-mini",
-                    max_tokens=5000,
-                    timeout=90,
+                    max_tokens=80000,
+                    timeout=180,
                     reasoning_effort="medium"
                 )
                 
@@ -1618,8 +1618,8 @@ Do not choose a different equation — this is the equation for this question.""
             async for chunk in self._make_async_openai_streaming_call(
                 messages=messages,
                 model="gpt-5.4-mini",
-                max_tokens=5000,
-                timeout=90,
+                max_tokens=80000,
+                timeout=180,
                 reasoning_effort="medium"
             ):
                 yield chunk
@@ -1701,7 +1701,7 @@ FORMATTING REQUIREMENTS:
             result = await self._make_async_openai_fallback_call(
                 messages=messages,
                 model="gpt-5.4-mini",
-                max_tokens=10000,
+                max_tokens=80000,
                 timeout=180,
                 reasoning_effort="medium"
             )
@@ -1784,7 +1784,7 @@ FORMATTING REQUIREMENTS:
             async for chunk in self._make_async_openai_streaming_call(
                 messages=messages,
                 model="gpt-5.4-mini",
-                max_tokens=10000,
+                max_tokens=80000,
                 timeout=180,
                 reasoning_effort="medium"
             ):
@@ -1882,8 +1882,8 @@ CORRECT:
             response = await self._make_async_openai_fallback_call(
                 messages=messages,
                 model="gpt-5.4-mini",
-                max_tokens=5000,
-                timeout=90,
+                max_tokens=80000,
+                timeout=180,
                 reasoning_effort="medium"
             )
             
@@ -1905,8 +1905,8 @@ CORRECT:
                 nano_response = await self._make_async_openai_fallback_call(
                     messages=messages,
                     model="gpt-5.4-nano",
-                    max_tokens=5000,
-                    timeout=45,
+                    max_tokens=80000,
+                    timeout=180,
                     reasoning_effort="medium"
                 )
                 
@@ -2009,8 +2009,8 @@ CORRECT:
             async for chunk in self._make_async_openai_streaming_call(
                 messages=messages,
                 model="gpt-5.4-mini",
-                max_tokens=5000,
-                timeout=120,
+                max_tokens=80000,
+                timeout=180,
                 reasoning_effort="medium"
             ):
                 yield chunk

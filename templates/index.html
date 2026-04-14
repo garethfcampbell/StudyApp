@@ -1298,7 +1298,7 @@ function endCalculationSession() {
             console.log('📝 Starting essay polling for task:', taskId);
             
             const pollInterval = 2000; // 2 seconds between polls
-            const maxAttempts = 45; // Maximum 45 attempts (90 seconds)
+            const maxAttempts = 90; // Maximum 90 attempts (180 seconds)
             let attempts = 0;
             
             const poll = () => {
@@ -1444,7 +1444,7 @@ function endCalculationSession() {
             console.log('🔑 Starting key concepts polling for task:', taskId);
             
             const pollInterval = 2000; // 2 seconds between polls
-            const maxAttempts = 45; // Maximum 45 attempts (90 seconds)
+            const maxAttempts = 90; // Maximum 90 attempts (180 seconds)
             let attempts = 0;
             
             const poll = () => {
@@ -1932,7 +1932,7 @@ function endCalculationSession() {
         
         // Start animated progress bar for quick actions
         const quickActionProgressBar = progressDiv.querySelector('.progress-bar');
-        return animateProgressBar(quickActionProgressBar, 45000);
+        return animateProgressBar(quickActionProgressBar, 180000);
     }
     
 

@@ -1620,7 +1620,7 @@ class AITutor {
         const calcButton = document.querySelector('[onclick="aiTutor.startEquations()"]');
         if (calcButton) {
             calcButton.classList.add('active');
-            this.animateProgressBar(calcButton, 90000); // 90 seconds
+            this.animateProgressBar(calcButton, 180000); // 180 seconds
         }
         
         try {

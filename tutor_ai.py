@@ -1490,8 +1490,9 @@ Choose ONE equation from the lecture notes that has not been used before."""
                 result = await self._make_async_openai_fallback_call(
                     messages=messages,
                     model="gpt-5.4-mini",
-                    max_tokens=5000,  # Increased to allow for more detailed mathematical explanations
-                    timeout=90  # Extended to 90-second timeout for maximum reliability
+                    max_tokens=5000,
+                    timeout=90,
+                    reasoning_effort="medium"
                 )
                 
                 # Log raw API response

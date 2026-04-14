@@ -1585,6 +1585,82 @@ FORMATTING REQUIREMENTS:
             logging.error(f"Exam worked example generation failed: {e}")
             return "I'm sorry, the AI service is taking too long to generate a worked example right now. Please try again in a moment."
 
+    async def _generate_exam_worked_example_stream(self, context_truncated, exam_question):
+        """Streaming version of _generate_exam_worked_example. Yields text chunks."""
+        q_id = exam_question.get("id", "?")
+        q_text = exam_question.get("question", "")
+
+        prompt = f"""You are helping a student revise for their exam. Below is the full exam paper for context, followed by ONE specific exam question.
+
+EXAM PAPER (for reference/context):
+{context_truncated}
+
+SPECIFIC QUESTION TO SOLVE (Question {q_id}):
+{q_text}
+
+YOUR TASK: Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given, then set the student a new challenge using different numbers.
+
+REQUIRED LAYOUT:
+
+***EXAM QUESTION {q_id}***
+
+**QUESTION**
+Reproduce the exact question text here so the student can read it.
+
+**EQUATION**
+Display the key equation(s) needed to solve this question in LaTeX.
+
+The variables in this equation are: \\(x\\): description; \\(y\\): description; etc.
+
+**EXPLANATION**
+Briefly explain what the equation does and why it is used here.
+
+**WORKED SOLUTION**
+Solve the question step-by-step using the EXACT numbers from the exam question.
+
+**Step 1:** Description
+\\begin{{align*}}
+calculation &= ... \\\\[6pt]
+&= ...
+\\end{{align*}}
+
+(Continue with as many steps as needed to reach the final answer.)
+
+**Final Result:**
+\\begin{{align*}}
+\\text{{Answer}} &= ...
+\\end{{align*}}
+
+**CHALLENGE**
+Now try a similar problem with DIFFERENT numerical values (you invent new, realistic values).
+State the new values clearly, then ask the student to calculate the answer.
+
+Please type your numerical answer in the chat below.
+
+FORMATTING REQUIREMENTS:
+- Use standard LaTeX: \\[ equation \\] for display math, \\( variable \\) for inline math
+- Use \\begin{{align*}} with \\\\[6pt] line spacing for multi-step calculations
+- Use **bold** for section headers and step descriptions
+- For matrices: \\begin{{bmatrix}} a & b \\\\ c & d \\end{{bmatrix}}
+- CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
+- Provide the formatted text directly — no JSON, no code blocks."""
+
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            logging.info(f"Streaming exam worked example for question {q_id}...")
+            async for chunk in self._make_async_openai_streaming_call(
+                messages=messages,
+                model="gpt-5.4",
+                max_tokens=10000,
+                timeout=180
+            ):
+                yield chunk
+            logging.info(f"Exam worked example streaming completed for question {q_id}")
+        except Exception as e:
+            logging.error(f"Exam worked example streaming failed: {e}")
+            yield "I'm sorry, the AI service is taking too long to generate a worked example right now. Please try again in a moment."
+
     async def check_calculation_answer_async(self, challenge_question, user_answer):
 
         if not self.context:

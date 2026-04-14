@@ -893,6 +893,127 @@ def quickaction_stream():
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
+@app.route('/calculation_stream', methods=['POST'])
+@csrf.exempt
+def calculation_stream():
+    """Streaming SSE endpoint for calculation question generation (exam & lecture notes)."""
+    import asyncio
+    import queue as queue_mod
+
+    init_session()
+
+    session_id = session.get('session_id')
+    pdf_content = get_pdf_content_with_fallback()
+    if not pdf_content:
+        return jsonify({'success': False, 'error': 'No document content found. Please upload lecture notes first.'}), 400
+
+    # Read session data before entering the background thread
+    storage_manager = StorageManager()
+    doc_type = storage_manager.retrieve_content(session_id, 'calc_doc_type')
+    exam_questions = storage_manager.retrieve_content(session_id, 'exam_questions')
+    equation_list = storage_manager.retrieve_content(session_id, 'equation_list')
+    current_index = storage_manager.retrieve_content(session_id, 'current_equation_index') or 0
+
+    q = queue_mod.Queue()
+
+    def _run_stream():
+        async def _consume():
+            nonlocal doc_type, exam_questions, equation_list, current_index
+            full_response = ""
+            try:
+                tutor_ai = TutorAI()
+                tutor_ai.set_context(pdf_content)
+                _storage = StorageManager()
+
+                # --- Detect document type on first call ---
+                if not doc_type:
+                    logging.info("CALCULATION STREAM: Detecting document type...")
+                    doc_type = await tutor_ai.detect_document_type_async()
+                    _storage.store_content(session_id, 'calc_doc_type', doc_type)
+                    logging.info(f"CALCULATION STREAM: Document classified as {doc_type}")
+
+                if doc_type == "exam_paper":
+                    # --- EXAM PAPER PATH (streaming) ---
+                    if not exam_questions:
+                        logging.info("CALCULATION STREAM: Extracting exam questions...")
+                        exam_questions = await tutor_ai.extract_exam_questions_async()
+                        if not exam_questions:
+                            q.put("I couldn't find any calculation questions in this exam paper. Please check the document contains numerical questions.")
+                            return
+                        _storage.store_content(session_id, 'exam_questions', exam_questions)
+                        _storage.store_content(session_id, 'current_equation_index', 0)
+                        current_index = 0
+
+                    if current_index >= len(exam_questions):
+                        q.put(f"You've worked through all {len(exam_questions)} exam questions — great work! You can upload a new paper to continue practising.")
+                        return
+
+                    current_q = exam_questions[current_index]
+                    logging.info(f"CALCULATION STREAM: Streaming worked example for exam Q{current_q.get('id', current_index+1)} ({current_index + 1}/{len(exam_questions)})")
+                    context_truncated = pdf_content[:80000] if len(pdf_content) > 80000 else pdf_content
+                    async for chunk in tutor_ai._generate_exam_worked_example_stream(context_truncated, current_q):
+                        full_response += chunk
+                        q.put(chunk)
+
+                else:
+                    # --- LECTURE NOTES PATH (non-streaming, sent as single chunk) ---
+                    if not equation_list:
+                        logging.info("CALCULATION STREAM: Extracting equation list from notes...")
+                        equation_list = await tutor_ai.extract_equation_list_async()
+                        if not equation_list:
+                            q.put("I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas.")
+                            return
+                        _storage.store_content(session_id, 'equation_list', equation_list)
+                        _storage.store_content(session_id, 'current_equation_index', 0)
+                        current_index = 0
+
+                    if current_index >= len(equation_list):
+                        q.put(f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising.")
+                        return
+
+                    specific_equation = equation_list[current_index]
+                    logging.info(f"CALCULATION STREAM: Generating question for equation {current_index + 1}/{len(equation_list)}")
+                    result = await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
+                    full_response = result
+                    q.put(result)
+
+            except Exception as e:
+                logging.error(f"CALCULATION STREAM: Error: {e}")
+                import traceback
+                logging.error(traceback.format_exc())
+                if not full_response:
+                    q.put("I'm having trouble generating a calculation question right now. Please try again in a moment.")
+            finally:
+                # Store the response for calculation answer checking
+                try:
+                    _storage = StorageManager()
+                    if full_response:
+                        _storage.store_content(session_id, 'current_calculation_question', full_response)
+                        _storage.store_content(session_id, 'calculation_mode_active', True)
+                    msgs = _storage.retrieve_content(session_id, 'messages') or []
+                    msgs.append({'role': 'assistant', 'content': full_response})
+                    _storage.store_content(session_id, 'messages', msgs)
+                except Exception as e:
+                    logging.error(f"CALCULATION STREAM: Error storing messages: {e}")
+                q.put(None)
+
+        asyncio.run(_consume())
+
+    thread = threading.Thread(target=_run_stream, daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            chunk = q.get()
+            if chunk is None:
+                yield f"data: [DONE]\n\n"
+                break
+            escaped = json.dumps(chunk)
+            yield f"data: {escaped}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
 @app.route('/summary_stream', methods=['POST'])
 @csrf.exempt
 def summary_stream():

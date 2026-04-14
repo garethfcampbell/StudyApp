@@ -271,33 +271,59 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
             # Access storage inside app context (before entering async)
             _storage = StorageManager()
             equation_list = _storage.retrieve_content(session_id, 'equation_list')
+            exam_questions = _storage.retrieve_content(session_id, 'exam_questions')
+            doc_type = _storage.retrieve_content(session_id, 'calc_doc_type')
             current_index = _storage.retrieve_content(session_id, 'current_equation_index') or 0
 
             import asyncio
 
             async def async_generation():
-                nonlocal equation_list, current_index
+                nonlocal equation_list, exam_questions, doc_type, current_index
 
-                # --- Equation list: extract on first use ---
-                if not equation_list:
-                    logging.info("BACKGROUND TASK: No equation list found — extracting from notes")
-                    equation_list = await tutor_ai.extract_equation_list_async()
-                    logging.info(f"BACKGROUND TASK: Extraction returned {len(equation_list) if equation_list else 0} equations")
+                # --- First use: detect document type and extract questions/equations ---
+                if not doc_type:
+                    logging.info("BACKGROUND TASK: Detecting document type...")
+                    doc_type = await tutor_ai.detect_document_type_async()
+                    _storage.store_content(session_id, 'calc_doc_type', doc_type)
+                    logging.info(f"BACKGROUND TASK: Document classified as {doc_type}")
+
+                if doc_type == "exam_paper":
+                    # --- EXAM PAPER PATH ---
+                    if not exam_questions:
+                        logging.info("BACKGROUND TASK: Extracting exam questions...")
+                        exam_questions = await tutor_ai.extract_exam_questions_async()
+                        logging.info(f"BACKGROUND TASK: Extracted {len(exam_questions) if exam_questions else 0} exam questions")
+                        if not exam_questions:
+                            return "I couldn't find any calculation questions in this exam paper. Please check the document contains numerical questions."
+                        _storage.store_content(session_id, 'exam_questions', exam_questions)
+                        _storage.store_content(session_id, 'current_equation_index', 0)
+                        current_index = 0
+
+                    if current_index >= len(exam_questions):
+                        return f"You've worked through all {len(exam_questions)} exam questions — great work! You can upload a new paper to continue practising."
+
+                    current_q = exam_questions[current_index]
+                    logging.info(f"BACKGROUND TASK: Generating worked example for exam Q{current_q.get('id', current_index+1)} ({current_index + 1}/{len(exam_questions)})")
+                    return await tutor_ai.generate_calculation_question_async(exam_question=current_q)
+
+                else:
+                    # --- LECTURE NOTES PATH (original behaviour) ---
                     if not equation_list:
-                        return "I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas."
-                    _storage.store_content(session_id, 'equation_list', equation_list)
-                    _storage.store_content(session_id, 'current_equation_index', 0)
-                    current_index = 0
-                    logging.info(f"BACKGROUND TASK: Stored {len(equation_list)} equations")
+                        logging.info("BACKGROUND TASK: No equation list found — extracting from notes")
+                        equation_list = await tutor_ai.extract_equation_list_async()
+                        logging.info(f"BACKGROUND TASK: Extraction returned {len(equation_list) if equation_list else 0} equations")
+                        if not equation_list:
+                            return "I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas."
+                        _storage.store_content(session_id, 'equation_list', equation_list)
+                        _storage.store_content(session_id, 'current_equation_index', 0)
+                        current_index = 0
 
-                # --- Pick the current equation ---
-                if current_index >= len(equation_list):
-                    return f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising."
+                    if current_index >= len(equation_list):
+                        return f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising."
 
-                specific_equation = equation_list[current_index]
-                logging.info(f"BACKGROUND TASK: Generating question for equation {current_index + 1}/{len(equation_list)}: {specific_equation[:80]}")
-
-                return await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
+                    specific_equation = equation_list[current_index]
+                    logging.info(f"BACKGROUND TASK: Generating question for equation {current_index + 1}/{len(equation_list)}: {specific_equation[:80]}")
+                    return await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -1490,8 +1516,10 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 storage_manager.store_content(session_id, 'pdf_content', pdf_text)
                 primary_storage.store_content(session_id, 'pdf_content', pdf_text)
 
-                # Reset equation list so fresh notes start from equation 1
+                # Reset equation list / exam questions so fresh document starts from question 1
                 storage_manager.store_content(session_id, 'equation_list', None)
+                storage_manager.store_content(session_id, 'exam_questions', None)
+                storage_manager.store_content(session_id, 'calc_doc_type', None)
                 storage_manager.store_content(session_id, 'current_equation_index', 0)
 
                 update_task_complete(task_id, success=True, data={
@@ -2176,7 +2204,8 @@ def clear_session_data(session_id=None):
         content_types = [
             'pdf_content', 'quiz_data', 'calculation_quiz_data', 
             'current_calculation_question', 'used_calculation_questions',
-            'messages', 'quiz_questions', 'practice_equations'
+            'messages', 'quiz_questions', 'practice_equations',
+            'equation_list', 'exam_questions', 'calc_doc_type', 'current_equation_index'
         ]
         
         for content_type in content_types:

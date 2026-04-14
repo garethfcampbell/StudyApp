@@ -19,7 +19,7 @@ import tempfile
 # ReplitDB no longer needed - using PostgreSQL for task tracking
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 # Create the app
 app = Flask(__name__)
@@ -279,51 +279,53 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
 
             async def async_generation():
                 nonlocal equation_list, exam_questions, doc_type, current_index
+                try:
+                    # --- First use: detect document type and extract questions/equations ---
+                    if not doc_type:
+                        logging.info("BACKGROUND TASK: Detecting document type...")
+                        doc_type = await tutor_ai.detect_document_type_async()
+                        _storage.store_content(session_id, 'calc_doc_type', doc_type)
+                        logging.info(f"BACKGROUND TASK: Document classified as {doc_type}")
 
-                # --- First use: detect document type and extract questions/equations ---
-                if not doc_type:
-                    logging.info("BACKGROUND TASK: Detecting document type...")
-                    doc_type = await tutor_ai.detect_document_type_async()
-                    _storage.store_content(session_id, 'calc_doc_type', doc_type)
-                    logging.info(f"BACKGROUND TASK: Document classified as {doc_type}")
-
-                if doc_type == "exam_paper":
-                    # --- EXAM PAPER PATH ---
-                    if not exam_questions:
-                        logging.info("BACKGROUND TASK: Extracting exam questions...")
-                        exam_questions = await tutor_ai.extract_exam_questions_async()
-                        logging.info(f"BACKGROUND TASK: Extracted {len(exam_questions) if exam_questions else 0} exam questions")
+                    if doc_type == "exam_paper":
+                        # --- EXAM PAPER PATH ---
                         if not exam_questions:
-                            return "I couldn't find any calculation questions in this exam paper. Please check the document contains numerical questions."
-                        _storage.store_content(session_id, 'exam_questions', exam_questions)
-                        _storage.store_content(session_id, 'current_equation_index', 0)
-                        current_index = 0
+                            logging.info("BACKGROUND TASK: Extracting exam questions...")
+                            exam_questions = await tutor_ai.extract_exam_questions_async()
+                            logging.info(f"BACKGROUND TASK: Extracted {len(exam_questions) if exam_questions else 0} exam questions")
+                            if not exam_questions:
+                                return "I couldn't find any calculation questions in this exam paper. Please check the document contains numerical questions."
+                            _storage.store_content(session_id, 'exam_questions', exam_questions)
+                            _storage.store_content(session_id, 'current_equation_index', 0)
+                            current_index = 0
 
-                    if current_index >= len(exam_questions):
-                        return f"You've worked through all {len(exam_questions)} exam questions — great work! You can upload a new paper to continue practising."
+                        if current_index >= len(exam_questions):
+                            return f"You've worked through all {len(exam_questions)} exam questions — great work! You can upload a new paper to continue practising."
 
-                    current_q = exam_questions[current_index]
-                    logging.info(f"BACKGROUND TASK: Generating worked example for exam Q{current_q.get('id', current_index+1)} ({current_index + 1}/{len(exam_questions)})")
-                    return await tutor_ai.generate_calculation_question_async(exam_question=current_q)
+                        current_q = exam_questions[current_index]
+                        logging.info(f"BACKGROUND TASK: Generating worked example for exam Q{current_q.get('id', current_index+1)} ({current_index + 1}/{len(exam_questions)})")
+                        return await tutor_ai.generate_calculation_question_async(exam_question=current_q)
 
-                else:
-                    # --- LECTURE NOTES PATH (original behaviour) ---
-                    if not equation_list:
-                        logging.info("BACKGROUND TASK: No equation list found — extracting from notes")
-                        equation_list = await tutor_ai.extract_equation_list_async()
-                        logging.info(f"BACKGROUND TASK: Extraction returned {len(equation_list) if equation_list else 0} equations")
+                    else:
+                        # --- LECTURE NOTES PATH (original behaviour) ---
                         if not equation_list:
-                            return "I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas."
-                        _storage.store_content(session_id, 'equation_list', equation_list)
-                        _storage.store_content(session_id, 'current_equation_index', 0)
-                        current_index = 0
+                            logging.info("BACKGROUND TASK: No equation list found — extracting from notes")
+                            equation_list = await tutor_ai.extract_equation_list_async()
+                            logging.info(f"BACKGROUND TASK: Extraction returned {len(equation_list) if equation_list else 0} equations")
+                            if not equation_list:
+                                return "I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas."
+                            _storage.store_content(session_id, 'equation_list', equation_list)
+                            _storage.store_content(session_id, 'current_equation_index', 0)
+                            current_index = 0
 
-                    if current_index >= len(equation_list):
-                        return f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising."
+                        if current_index >= len(equation_list):
+                            return f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising."
 
-                    specific_equation = equation_list[current_index]
-                    logging.info(f"BACKGROUND TASK: Generating question for equation {current_index + 1}/{len(equation_list)}: {specific_equation[:80]}")
-                    return await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
+                        specific_equation = equation_list[current_index]
+                        logging.info(f"BACKGROUND TASK: Generating question for equation {current_index + 1}/{len(equation_list)}: {specific_equation[:80]}")
+                        return await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
+                finally:
+                    await tutor_ai.close_async_clients()
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -355,7 +357,10 @@ def run_calculation_answer_check_background(task_id, challenge_question, user_an
         import asyncio
         
         async def async_answer_check():
-            return await tutor_ai.check_calculation_answer_async(challenge_question, user_answer)
+            try:
+                return await tutor_ai.check_calculation_answer_async(challenge_question, user_answer)
+            finally:
+                await tutor_ai.close_async_clients()
         
         # Run the async function in this thread
         loop = asyncio.new_event_loop()
@@ -388,7 +393,10 @@ def run_summary_generation_background(task_id, pdf_content):
         import asyncio
         
         async def async_summary_generation():
-            return await tutor_ai.generate_cheat_sheet_async()
+            try:
+                return await tutor_ai.generate_cheat_sheet_async()
+            finally:
+                await tutor_ai.close_async_clients()
         
         # Run the async function in this thread
         loop = asyncio.new_event_loop()
@@ -421,7 +429,10 @@ def run_essay_generation_background(task_id, pdf_content):
         import asyncio
         
         async def async_essay_generation():
-            return await tutor_ai.generate_essay_question_async()
+            try:
+                return await tutor_ai.generate_essay_question_async()
+            finally:
+                await tutor_ai.close_async_clients()
         
         # Run the async function in this thread
         loop = asyncio.new_event_loop()
@@ -454,7 +465,10 @@ def run_key_concepts_generation_background(task_id, pdf_content):
         import asyncio
         
         async def async_key_concepts_generation():
-            return await tutor_ai.explain_key_concepts_async()
+            try:
+                return await tutor_ai.explain_key_concepts_async()
+            finally:
+                await tutor_ai.close_async_clients()
         
         # Run the async function in this thread
         loop = asyncio.new_event_loop()
@@ -488,7 +502,10 @@ def run_chat_response_background(task_id, user_message, pdf_content, conversatio
         import asyncio
         
         async def async_chat_generation():
-            return await tutor_ai.get_response_async(user_message)
+            try:
+                return await tutor_ai.get_response_async(user_message)
+            finally:
+                await tutor_ai.close_async_clients()
         
         # Run the async function in this thread
         loop = asyncio.new_event_loop()
@@ -540,6 +557,7 @@ def simple_chat():
         try:
             init_session()
             
+            tutor_ai = None
             data = request.get_json()
             if not data or 'message' not in data:
                 return {'success': False, 'error': 'No message provided'}, 400
@@ -713,6 +731,9 @@ def simple_chat():
                 'success': False,
                 'error': str(e)
             }, 500
+        finally:
+            if tutor_ai:
+                await tutor_ai.close_async_clients()
     
     # Run async function in event loop
     try:
@@ -782,6 +803,10 @@ def simple_chat_stream():
                             _storage.store_content(session_id, 'messages', msgs)
                         except Exception as e:
                             logging.error(f"CALC_ANSWER_STREAM: Error storing messages: {e}")
+                        try:
+                            await tutor_ai.close_async_clients()
+                        except Exception:
+                            pass
                         calc_q.put(None)
 
                 asyncio.run(_consume())
@@ -835,6 +860,10 @@ def simple_chat_stream():
                     storage_manager.store_content(session_id, 'messages', msgs)
                 except Exception as e:
                     logging.error(f"STREAM: Error storing messages: {e}")
+                try:
+                    await tutor_ai.close_async_clients()
+                except Exception:
+                    pass
                 q.put(None)  # sentinel
 
         asyncio.run(_consume())
@@ -907,6 +936,10 @@ def quickaction_stream():
                     storage_manager.store_content(session_id, 'messages', msgs)
                 except Exception as e:
                     logging.error(f"QUICKACTION STREAM: Error storing messages: {e}")
+                try:
+                    await tutor_ai.close_async_clients()
+                except Exception:
+                    pass
                 q.put(None)
 
         asyncio.run(_consume())
@@ -1029,6 +1062,10 @@ def calculation_stream():
                     _storage.store_content(session_id, 'messages', msgs)
                 except Exception as e:
                     logging.error(f"CALCULATION STREAM: Error storing messages: {e}")
+                try:
+                    await tutor_ai.close_async_clients()
+                except Exception:
+                    pass
                 q.put(None)
 
         asyncio.run(_consume())
@@ -1095,6 +1132,10 @@ def summary_stream():
                     storage_manager.store_content(session_id, 'messages', msgs)
                 except Exception as e:
                     logging.error(f"SUMMARY STREAM: Error storing messages: {e}")
+                try:
+                    await tutor_ai.close_async_clients()
+                except Exception:
+                    pass
                 q.put(None)
 
         asyncio.run(_consume())
@@ -1291,7 +1332,10 @@ async def run_quiz_generation_async(task_id, pdf_content):
         tutor_ai.set_context(pdf_content)
         
         # Generate quiz using async method
-        quiz_questions = await tutor_ai.generate_retrieval_quiz_async()
+        try:
+            quiz_questions = await tutor_ai.generate_retrieval_quiz_async()
+        finally:
+            await tutor_ai.close_async_clients()
         
         if quiz_questions:
             logging.info(f"ASYNC QUIZ WORKER: Successfully generated {len(quiz_questions)} questions for task {task_id}")

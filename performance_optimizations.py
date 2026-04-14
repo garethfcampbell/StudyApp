@@ -435,12 +435,21 @@ ai_connection_pool = ConnectionPool(max_size=5)
 
 # Cleanup task that runs periodically
 def periodic_cleanup():
-    """Periodic cleanup task for maintenance"""
+    """Periodic cleanup task for maintenance — clears in-memory cache and expired DB sessions"""
     try:
         optimized_storage.cleanup_cache()
         logging.debug("Periodic cleanup completed")
     except Exception as e:
         logging.error(f"Error in periodic cleanup: {e}")
+
+    try:
+        from app import app
+        from database_storage_manager import DatabaseStorageManager
+        with app.app_context():
+            db_manager = DatabaseStorageManager()
+            db_manager.cleanup_expired_sessions()
+    except Exception as e:
+        logging.error(f"Error in DB session cleanup: {e}")
 
 # Schedule cleanup every 5 minutes
 import threading

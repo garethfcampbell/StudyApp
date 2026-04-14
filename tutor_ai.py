@@ -239,6 +239,19 @@ class TutorAI:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
+    async def close_async_clients(self):
+        """Explicitly close async HTTP clients to prevent 'Event loop is closed' errors."""
+        try:
+            if self.async_openai_client:
+                await self.async_openai_client.close()
+        except Exception:
+            pass
+        try:
+            if self.async_gemini_client:
+                await self.async_gemini_client.close()
+        except Exception:
+            pass
+
     def set_context(self, pdf_content):
 
         self.context = pdf_content
@@ -1485,8 +1498,8 @@ Choose ONE equation from the lecture notes that has not been used before."""
             messages = [{"role": "user", "content": prompt}]
             
             try:
-                logging.info("ASYNC DEBUG: Trying async gpt-5.4-mini for calculation question generation...")
-                logging.info(f"ASYNC DEBUG: async_openai_client is available: {self.async_openai_client is not None}")
+                logging.debug("ASYNC DEBUG: Trying async gpt-5.4-mini for calculation question generation...")
+                logging.debug(f"ASYNC DEBUG: async_openai_client is available: {self.async_openai_client is not None}")
                 result = await self._make_async_openai_fallback_call(
                     messages=messages,
                     model="gpt-5.4-mini",
@@ -1496,7 +1509,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
                 )
                 
                 # Log raw API response
-                logging.info(f"RAW API RESPONSE:\n{result}")
+                logging.debug(f"RAW API RESPONSE:\n{result}")
                 
                 # No LaTeX formatting - let MathJax handle delimiters directly
                 logging.info("CALC_QUESTION: Skipping LaTeX formatting, returning raw result")
@@ -1887,10 +1900,10 @@ CORRECT:
                 reasoning_effort="medium"
             )
             
-            logging.info("CHECK_CALC_ANSWER: RAW API RESPONSE from gpt-5.4-mini:")
-            logging.info(f"---START RAW API RESPONSE---")
-            logging.info(response)
-            logging.info(f"---END RAW API RESPONSE---")
+            logging.debug("CHECK_CALC_ANSWER: RAW API RESPONSE from gpt-5.4-mini:")
+            logging.debug(f"---START RAW API RESPONSE---")
+            logging.debug(response)
+            logging.debug(f"---END RAW API RESPONSE---")
             
             # No LaTeX formatting - let MathJax handle delimiters directly
             logging.info("CHECK_CALC_ANSWER: gpt-5.4-mini success - returning raw response")

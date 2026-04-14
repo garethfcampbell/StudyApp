@@ -990,7 +990,7 @@ def calculation_stream():
                         q.put(chunk)
 
                 else:
-                    # --- LECTURE NOTES PATH (non-streaming, sent as single chunk) ---
+                    # --- LECTURE NOTES PATH (streaming) ---
                     if not equation_list:
                         logging.info("CALCULATION STREAM: Extracting equation list from notes...")
                         equation_list = await tutor_ai.extract_equation_list_async()
@@ -1006,10 +1006,10 @@ def calculation_stream():
                         return
 
                     specific_equation = equation_list[current_index]
-                    logging.info(f"CALCULATION STREAM: Generating question for equation {current_index + 1}/{len(equation_list)}")
-                    result = await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
-                    full_response = result
-                    q.put(result)
+                    logging.info(f"CALCULATION STREAM: Streaming question for equation {current_index + 1}/{len(equation_list)}")
+                    async for chunk in tutor_ai.generate_calculation_question_stream_async(specific_equation=specific_equation):
+                        full_response += chunk
+                        q.put(chunk)
 
             except Exception as e:
                 logging.error(f"CALCULATION STREAM: Error: {e}")

@@ -1513,6 +1513,121 @@ Choose ONE equation from the lecture notes that has not been used before."""
             logging.error(f"Async calculation question generation failed: {e}")
             return "Sorry, I couldn't generate calculation questions at this time. Please try again later."
 
+    async def generate_calculation_question_stream_async(self, specific_equation=None):
+        """Streaming version of generate_calculation_question_async for lecture notes. Yields text chunks."""
+
+        if not self.context:
+            yield "No document context available. Please upload a document first."
+            return
+
+        context_truncated = self.context[:80000] if len(self.context) > 80000 else self.context
+
+        if specific_equation:
+            equation_instruction = f"""
+EQUATION TO USE:
+You MUST base this question on the following specific equation from the lecture notes:
+
+    {specific_equation}
+
+Do not choose a different equation — this is the equation for this question."""
+        else:
+            equation_instruction = "\nChoose ONE equation from the lecture notes that has not been used before."
+
+        prompt = f"""Based on the following lecture notes, generate ONE calculation question that follows this specific 6-part layout pattern:
+
+            LECTURE NOTES:
+            {context_truncated}
+
+            {equation_instruction}
+
+            REQUIRED LAYOUT PATTERN:
+            1) Display the equation you are using in LaTeX formatting.
+            2) Explain the variable definitions clearly
+            3) Provide an explanation of what the equation means and its purpose
+            4) Show a worked example using specific input values with step-by-step LaTeX calculations
+            5) Set a challenge for the user using different input values
+            6) Ask the user to input their answer in the chat
+
+            CONTENT REQUIREMENTS:
+            - Use ONLY the equation specified above — do not substitute a different one
+            - For worked examples, you may use values from the lecture notes if available
+            - For challenge problems, you MUST create NEW and DIFFERENT numerical values
+            - Show complete step-by-step calculations in LaTeX format
+            - End by asking the user to type their numerical answer in the chat
+
+            FORMATTING REQUIREMENTS:
+            - Use standard LaTeX: \\[ equation \\] for display math, \\( variable \\) for inline math
+            - Use standard math operators: \\times, \\div, \\cdot, \\frac{{numerator}}{{denominator}}
+            - For subscripts: Always use underscore with braces \\mu_{{12}} (proper braces required)
+            - For superscripts: Always use caret with braces \\sigma^{{2}} (proper braces required)  
+            - For combined: \\hat{{\\mu}}_{{12}} or \\sigma_{{1}}^{{2}} (always use proper braces)
+            - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
+            - For the worked examples, you MUST use \\begin{{align*}} with proper alignment for each step so that the calculations are clear and easy to follow.
+            - For matrices: \\begin{{bmatrix}} a & b \\\\ c & d \\end{{bmatrix}}.
+            - For line spacing in align* environments use \\\\[6pt] between lines.
+            - For worked examples: Use **Step N:** Description followed by calculation
+            - Use **bold** for section headers and step descriptions
+
+            EXAMPLE FORMAT:
+
+            ***CALCULATION QUESTION***
+
+            **EQUATION**
+            One of the equations used in this topic is:
+
+            \\[ LaTeX equation here \\]
+
+            The variables in this equation are: \\(x\\): Variable description; \\(y\\): Another variable description; and \\(z\\): Another variable description
+
+
+            **EXPLANATION**
+            Explanation of the equation's purpose and application.
+
+
+            **WORKED EXAMPLE**
+            Given values from lecture notes: \\(x = 10\\); \\(y = 5\\); and \\(z = 2\\)
+
+            **Step 1:** Calculate the sum
+            \\begin{{align*}}
+            x + y + z &= 10 + 5 + 2\\\\[6pt]
+            &= 17
+            \\end{{align*}}
+
+            **Step 2:** Multiply by 2
+            \\begin{{align*}}
+            \\text{{result}} \\times 2 &= 17 \\times 2 \\\\[6pt]
+            &= 34
+            \\end{{align*}}
+
+            **Final Result:** 
+            \\begin{{align*}}
+            \\text{{Answer}} &= 34
+            \\end{{align*}}
+
+            **CHALLENGE**
+            Calculate the result when: \\(x = 12\\); \\(y = 8\\); and \\(z = 10\\)
+
+            Please type your numerical answer in the chat below.
+
+            RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks, just the formatted calculation question."""
+
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            logging.info("CALC_QUESTION_STREAM: Streaming with gpt-5.4-mini + reasoning_effort=medium...")
+            async for chunk in self._make_async_openai_streaming_call(
+                messages=messages,
+                model="gpt-5.4-mini",
+                max_tokens=5000,
+                timeout=90,
+                reasoning_effort="medium"
+            ):
+                yield chunk
+            logging.info("CALC_QUESTION_STREAM: Streaming completed")
+        except Exception as e:
+            logging.error(f"CALC_QUESTION_STREAM: Streaming failed: {e}")
+            yield "I'm sorry, the AI service is taking too long to generate a calculation question right now. Please try again in a moment."
+
     async def _generate_exam_worked_example(self, context_truncated, exam_question):
         """Generate a worked example for an exam paper question using its exact numbers, then set a challenge with different numbers."""
         q_id = exam_question.get("id", "?")
@@ -1588,7 +1703,7 @@ FORMATTING REQUIREMENTS:
                 model="gpt-5.4-mini",
                 max_tokens=10000,
                 timeout=180,
-                reasoning_effort="high"
+                reasoning_effort="medium"
             )
             logging.info(f"Exam worked example generated successfully for question {q_id}")
             return result
@@ -1671,7 +1786,7 @@ FORMATTING REQUIREMENTS:
                 model="gpt-5.4-mini",
                 max_tokens=10000,
                 timeout=180,
-                reasoning_effort="high"
+                reasoning_effort="medium"
             ):
                 yield chunk
             logging.info(f"Exam worked example streaming completed for question {q_id}")
@@ -1768,7 +1883,8 @@ CORRECT:
                 messages=messages,
                 model="gpt-5.4-mini",
                 max_tokens=5000,
-                timeout=90
+                timeout=90,
+                reasoning_effort="medium"
             )
             
             logging.info("CHECK_CALC_ANSWER: RAW API RESPONSE from gpt-5.4-mini:")
@@ -1790,7 +1906,8 @@ CORRECT:
                     messages=messages,
                     model="gpt-5.4-nano",
                     max_tokens=5000,
-                    timeout=45
+                    timeout=45,
+                    reasoning_effort="medium"
                 )
                 
                 # No LaTeX formatting - let MathJax handle delimiters directly

@@ -917,6 +917,7 @@ def calculation_stream():
     q = queue_mod.Queue()
 
     def _run_stream():
+      with app.app_context():
         async def _consume():
             nonlocal doc_type, exam_questions, equation_list, current_index
             full_response = ""

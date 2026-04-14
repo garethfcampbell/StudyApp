@@ -1216,6 +1216,103 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
 
     # Legacy sync method removed - all quiz operations now use async polling
 
+    async def detect_document_type_async(self):
+        """Detect whether the uploaded document is an exam paper or lecture notes."""
+        if not self.context:
+            return "lecture_notes"
+
+        try:
+            sample = self.context[:8000]
+            prompt = f"""Classify this document as EITHER "exam_paper" or "lecture_notes".
+
+An exam paper contains numbered questions that ask students to calculate, solve, or evaluate
+specific problems with given numerical data. It typically has marks allocated (e.g. [10 marks]),
+time limits, instructions like "Answer ALL questions", question numbers, and specific numerical
+scenarios for students to work through.
+
+Lecture notes contain explanations, theory, derivations, definitions, and examples used for
+teaching — they are NOT a set of questions to be answered.
+
+DOCUMENT EXCERPT:
+{sample}
+
+Reply with ONLY one of these two strings, nothing else:
+exam_paper
+lecture_notes"""
+
+            messages = [{"role": "user", "content": prompt}]
+            for model in ("gpt-5.4-mini", "gpt-5.4-nano"):
+                try:
+                    content = await self._make_async_openai_fallback_call(
+                        messages, model=model, max_tokens=20, timeout=30
+                    )
+                    result = content.strip().lower().replace('"', '').replace("'", "")
+                    if "exam" in result:
+                        logging.info(f"Document classified as exam_paper by {model}")
+                        return "exam_paper"
+                    else:
+                        logging.info(f"Document classified as lecture_notes by {model}")
+                        return "lecture_notes"
+                except Exception as e:
+                    logging.error(f"Document classification failed with {model}: {e}")
+
+            return "lecture_notes"
+        except Exception as e:
+            logging.error(f"detect_document_type_async failed: {e}")
+            return "lecture_notes"
+
+    async def extract_exam_questions_async(self):
+        """Extract individual calculation questions from an exam paper, preserving exact wording and numbers."""
+        if not self.context:
+            return []
+
+        try:
+            context_truncated = self.context[:80000] if len(self.context) > 80000 else self.context
+
+            prompt = f"""You are analysing an exam paper to extract each individual calculation question.
+
+EXAM PAPER:
+{context_truncated}
+
+TASK: Extract every calculation question from this exam paper as a list of self-contained question objects.
+
+Rules:
+- Include EVERY question and sub-question that requires a numerical calculation (e.g. 1a, 1b, 2a, 2b, 2c etc.).
+- Preserve the EXACT wording, numbers, and data from the exam paper — do not alter, summarise, or rephrase.
+- Each entry must be completely self-contained: include any shared data, tables, or context from the parent question that the sub-question depends on so it can be understood in isolation.
+- Preserve the original question ordering.
+- Exclude purely discursive questions that ask students to "explain", "discuss", or "describe" without any calculation.
+- Include the mark allocation if stated (e.g. "[10 marks]").
+- Return ONLY a valid JSON array of objects with the keys "id" and "question", no surrounding text.
+
+Example output format:
+[
+  {{"id": "1a", "question": "A bond with a face value of £1,000 pays a coupon of 5% per annum... Calculate the present value of the bond. [10 marks]"}},
+  {{"id": "1b", "question": "Using the same bond from Question 1a (face value £1,000, coupon 5%)... Calculate the yield to maturity if the bond is trading at £950. [8 marks]"}}
+]"""
+
+            messages = [{"role": "user", "content": prompt}]
+            import json as _json
+
+            for model in ("gpt-5.4-mini", "gpt-5.4-nano"):
+                try:
+                    content = await self._make_async_openai_fallback_call(
+                        messages, model=model, max_tokens=4000, timeout=90
+                    )
+                    content = _strip_code_fences(content.strip())
+                    questions = _json.loads(content)
+                    if isinstance(questions, list) and len(questions) > 0:
+                        logging.info(f"Extracted {len(questions)} exam questions using {model}")
+                        return questions
+                except Exception as e:
+                    logging.error(f"Exam question extraction failed with {model}: {e}")
+
+            return []
+
+        except Exception as e:
+            logging.error(f"extract_exam_questions_async failed: {e}")
+            return []
+
     async def extract_equation_list_async(self):
         """Extract all calculable equations from the lecture notes in order, returning a list of LaTeX strings."""
         if not self.context:
@@ -1266,7 +1363,7 @@ Example output format:
             logging.error(f"extract_equation_list_async failed: {e}")
             return []
 
-    async def generate_calculation_question_async(self, used_questions=None, specific_equation=None):
+    async def generate_calculation_question_async(self, used_questions=None, specific_equation=None, exam_question=None):
 
         if not self.context:
             return "No document context available. Please upload a document first."
@@ -1275,6 +1372,11 @@ Example output format:
             # Truncate context for gpt-5.4-mini with increased limit for better mathematical context
             context_truncated = self.context[:80000] if len(self.context) > 80000 else self.context
 
+            # --- EXAM PAPER MODE ---
+            if exam_question:
+                return await self._generate_exam_worked_example(context_truncated, exam_question)
+
+            # --- LECTURE NOTES MODE (original behaviour) ---
             # Build the equation instruction — use pinned equation if provided, otherwise fall back
             if specific_equation:
                 equation_instruction = f"""
@@ -1406,6 +1508,82 @@ Choose ONE equation from the lecture notes that has not been used before."""
         except Exception as e:
             logging.error(f"Async calculation question generation failed: {e}")
             return "Sorry, I couldn't generate calculation questions at this time. Please try again later."
+
+    async def _generate_exam_worked_example(self, context_truncated, exam_question):
+        """Generate a worked example for an exam paper question using its exact numbers, then set a challenge with different numbers."""
+        q_id = exam_question.get("id", "?")
+        q_text = exam_question.get("question", "")
+
+        prompt = f"""You are helping a student revise for their exam. Below is the full exam paper for context, followed by ONE specific exam question.
+
+EXAM PAPER (for reference/context):
+{context_truncated}
+
+SPECIFIC QUESTION TO SOLVE (Question {q_id}):
+{q_text}
+
+YOUR TASK: Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given, then set the student a new challenge using different numbers.
+
+REQUIRED LAYOUT:
+
+***EXAM QUESTION {q_id}***
+
+**QUESTION**
+Reproduce the exact question text here so the student can read it.
+
+**EQUATION**
+Display the key equation(s) needed to solve this question in LaTeX.
+
+The variables in this equation are: \\(x\\): description; \\(y\\): description; etc.
+
+**EXPLANATION**
+Briefly explain what the equation does and why it is used here.
+
+**WORKED SOLUTION**
+Solve the question step-by-step using the EXACT numbers from the exam question.
+
+**Step 1:** Description
+\\begin{{align*}}
+calculation &= ... \\\\[6pt]
+&= ...
+\\end{{align*}}
+
+(Continue with as many steps as needed to reach the final answer.)
+
+**Final Result:**
+\\begin{{align*}}
+\\text{{Answer}} &= ...
+\\end{{align*}}
+
+**CHALLENGE**
+Now try a similar problem with DIFFERENT numerical values (you invent new, realistic values).
+State the new values clearly, then ask the student to calculate the answer.
+
+Please type your numerical answer in the chat below.
+
+FORMATTING REQUIREMENTS:
+- Use standard LaTeX: \\[ equation \\] for display math, \\( variable \\) for inline math
+- Use \\begin{{align*}} with \\\\[6pt] line spacing for multi-step calculations
+- Use **bold** for section headers and step descriptions
+- For matrices: \\begin{{bmatrix}} a & b \\\\ c & d \\end{{bmatrix}}
+- CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
+- Provide the formatted text directly — no JSON, no code blocks."""
+
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            logging.info(f"Generating exam worked example for question {q_id}...")
+            result = await self._make_async_openai_fallback_call(
+                messages=messages,
+                model="gpt-5.4-mini",
+                max_tokens=5000,
+                timeout=90
+            )
+            logging.info(f"Exam worked example generated successfully for question {q_id}")
+            return result
+        except Exception as e:
+            logging.error(f"Exam worked example generation failed: {e}")
+            return "I'm sorry, the AI service is taking too long to generate a worked example right now. Please try again in a moment."
 
     async def check_calculation_answer_async(self, challenge_question, user_answer):
 

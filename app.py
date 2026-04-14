@@ -598,19 +598,7 @@ def simple_chat():
                 
                 # Otherwise, treat as an answer to check
                 else:
-                    # Detect numerical answers (numbers, percentages, currency)
-                    import re
-                    answer_pattern = r'^[£$€¥]?[\d,]+\.?\d*%?$|^\d+\.?\d*%?$|^[\d,]+\.?\d*[£$€¥]?$'
-                    if re.match(answer_pattern, user_message.strip()) or any(char.isdigit() for char in user_message):
-                        # This looks like a numerical answer - use the existing calculation answer checking
-                        logging.info(f"SIMPLE_CHAT: Detected numerical answer in calculation mode: {user_message}")
-                        # We'll continue with normal processing but use calculation checking logic
-                    else:
-                        # Not a numerical answer, provide guidance
-                        return {
-                            'success': True,
-                            'response': 'Please provide a numerical answer to the calculation question above, or type "skip" to get a new question, or "end practice" to finish. 🔢'
-                        }, 200
+                    logging.info(f"SIMPLE_CHAT: Processing calculation answer: {user_message}")
             
             # Get document context using fallback mechanism
             pdf_content = get_pdf_content_with_fallback()
@@ -761,12 +749,57 @@ def simple_chat_stream():
     session_id = session.get('session_id')
     storage_manager = StorageManager()
 
-    # Check calculation mode — fall back to non-streaming simple_chat for calc answers
     calculation_mode = storage_manager.retrieve_content(session_id, 'calculation_mode_active')
     current_calculation = storage_manager.retrieve_content(session_id, 'current_calculation_question')
     if calculation_mode and current_calculation:
-        # Delegate to the non-streaming endpoint for calculation answers
-        return simple_chat()
+        pdf_content = get_pdf_content_with_fallback()
+        if not pdf_content:
+            return jsonify({'success': False, 'error': 'No document content found.'}), 400
+
+        tutor_ai = TutorAI()
+        tutor_ai.set_context(pdf_content)
+
+        calc_q = queue.Queue()
+
+        def _run_calc_stream():
+            with app.app_context():
+                async def _consume():
+                    full_response = ""
+                    try:
+                        async for chunk in tutor_ai.check_calculation_answer_stream_async(current_calculation, user_message):
+                            full_response += chunk
+                            calc_q.put(chunk)
+                    except Exception as e:
+                        logging.error(f"CALC_ANSWER_STREAM: Error: {e}")
+                        if not full_response:
+                            calc_q.put("I'm having trouble checking your answer right now. Please try again.")
+                    finally:
+                        try:
+                            _storage = StorageManager()
+                            msgs = _storage.retrieve_content(session_id, 'messages') or []
+                            msgs.append({'role': 'user', 'content': user_message})
+                            msgs.append({'role': 'assistant', 'content': full_response})
+                            _storage.store_content(session_id, 'messages', msgs)
+                        except Exception as e:
+                            logging.error(f"CALC_ANSWER_STREAM: Error storing messages: {e}")
+                        calc_q.put(None)
+
+                asyncio.run(_consume())
+
+        calc_thread = threading.Thread(target=_run_calc_stream, daemon=True)
+        calc_thread.start()
+
+        def generate_calc():
+            while True:
+                chunk = calc_q.get()
+                if chunk is None:
+                    yield f"data: [DONE]\n\n"
+                    break
+                escaped = json.dumps(chunk)
+                yield f"data: {escaped}\n\n"
+
+        return Response(generate_calc(), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     pdf_content = get_pdf_content_with_fallback()
     if not pdf_content:

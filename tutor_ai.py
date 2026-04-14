@@ -1801,4 +1801,104 @@ CORRECT:
                 logging.error(f"Both gpt-5.4-mini and gpt-5.4-nano failed for calculation answer check: {o4_error} | {nano_error}")
                 return f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing calculation evaluations right now. Please try again in a moment, or click the Calculation questions button to get a new question."
 
+    async def check_calculation_answer_stream_async(self, challenge_question, user_answer):
+        """Streaming version of check_calculation_answer_async. Yields text chunks."""
+
+        if not self.context:
+            yield "No document context available."
+            return
+
+        truncated_context = self.context[:80000] if len(self.context) > 80000 else self.context
+
+        prompt = f"""You are evaluating a student's answer to a calculation question.
+
+LECTURE NOTES CONTEXT:
+{truncated_context}
+
+ORIGINAL CHALLENGE QUESTION:
+{challenge_question}
+
+STUDENT'S ANSWER: {user_answer}
+
+EVALUATION TASKS:
+1. Calculate the correct answer using the provided challenge values
+2. Provide the correct step-by-step solution
+3. Determine if the student's answer is correct (accept reasonable rounding and alternative valid approaches)
+4. Give appropriate feedback
+5. Ask if they want another calculation question
+
+NOTE: The student may provide a numerical answer, a formula, a written explanation of their working, or a combination. Evaluate whatever form of answer they have given.
+
+RESPONSE FORMAT:
+**Step-by-Step Solution:**
+**Step 1:** [Description of first step]
+\\begin{{align*}}
+[equation 1] &= [step 1] \\\\
+&= [step 2] \\\\
+&= [final result]
+\\end{{align*}}
+**Step 2:** [Description of second step]  
+\\begin{{align*}}
+[equation 2] &= [step 1] \\\\
+&= [step 2] \\\\
+&= [final result]
+\\end{{align*}}
+[Continue for all steps...]
+
+**Final Answer:** [Correct numerical answer]
+
+**Feedback:** [Comment on the student's answer]
+
+**To move on to the next set of equations from the lecture notes, just click the Next Question button.**
+
+CRITICAL FORMATTING REQUIREMENTS:
+- ALWAYS use \\begin{{align*}} environment for ALL step-by-step calculations
+- Use standard LaTeX: \\( variable \\) for inline math in text descriptions
+- Use standard math operators: \\times, \\div, \\cdot, \\frac{{numerator}}{{denominator}}
+- For subscripts: Always use underscore with braces \\mu_{{12}} (proper braces required)
+- For superscripts: Always use caret with braces \\sigma^{{2}} (proper braces required)  
+- For combined: \\hat{{\\mu}}_{{12}} or \\sigma_{{1}}^{{2}} (always use proper braces)
+- CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
+- For matrices: \\begin{{bmatrix}} a & b \\\\ c & d \\end{{bmatrix}}
+- For line spacing in align* environments use \\\\[6pt] between lines.
+- Use **bold** for section headers and step descriptions
+- Each step must be in its own align* environment for proper formatting
+
+IMPORTANT MULTI-LINE CALCULATION FORMATTING:
+INCORRECT:
+\\[
+K\\,e^{{-rT}}
+= 52 \\times e^{{-0.05 \\times 1}}
+= 52 \\times e^{{-0.05}}
+\\approx 52 \\times 0.951229
+\\approx 49.4629
+\\]
+
+CORRECT:
+\\begin{{align*}}
+    K e^{{-rT}} &= 52 \\times e^{{-0.05 \\times 1}} \\\\
+              &= 52 \\times e^{{-0.05}} \\\\
+              &\\approx 52 \\times 0.951229 \\\\
+              &\\approx 49.4629
+\\end{{align*}}
+
+"""
+
+        messages = [{"role": "user", "content": prompt}]
+
+        try:
+            logging.info("CHECK_CALC_ANSWER_STREAM: Streaming with gpt-5.4-mini + reasoning_effort=medium...")
+            async for chunk in self._make_async_openai_streaming_call(
+                messages=messages,
+                model="gpt-5.4-mini",
+                max_tokens=5000,
+                timeout=120,
+                reasoning_effort="medium"
+            ):
+                yield chunk
+            logging.info("CHECK_CALC_ANSWER_STREAM: Streaming completed")
+        except Exception as e:
+            logging.error(f"CHECK_CALC_ANSWER_STREAM: gpt-5.4-mini streaming failed: {e}")
+            yield f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing the evaluation right now. Please try again in a moment."
+
     

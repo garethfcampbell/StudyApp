@@ -1255,10 +1255,10 @@ function endCalculationSession() {
         
 
         
-        // Special handling for calculation questions - use polling pattern
+        // Special handling for calculation questions - use streaming SSE
         if (action === 'Calculation questions') {
-            console.log('=== CALCULATION QUESTION POLLING ===');
-            console.log('Starting calculation question generation with polling...');
+            console.log('=== CALCULATION QUESTION STREAMING ===');
+            console.log('Starting calculation question generation with streaming...');
             
             // Load MathJax immediately for calculation questions
             loadMathJax().then(() => {
@@ -1270,235 +1270,8 @@ function endCalculationSession() {
             // Show progress bar for calculation questions
             currentProgressTimer = showSpecificProgress(action);
             
-            try {
-                // Start background task
-                fetch('/start_calculation_generation', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({})
-                })
-                .then(response => parseJSONResponse(response))
-                .then(data => {
-                    if (data.task_id) {
-                        console.log('✓ Background task started with ID:', data.task_id);
-                        // Start polling for results
-                        pollCalculationTask(data.task_id, clickedButton);
-                    } else if (data.error) {
-                        console.error('✗ Error starting background task:', data.error);
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        addMessage('assistant', data.error);
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                    }
-                })
-                .catch(error => {
-                    console.error('✗ Error starting calculation task:', error);
-                    // Stop progress bar
-                    if (currentProgressTimer) {
-                        clearInterval(currentProgressTimer);
-                        currentProgressTimer = null;
-                    }
-                    // Remove progress indicator
-                    const progressIndicator = document.getElementById('progress-indicator');
-                    if (progressIndicator) {
-                        progressIndicator.remove();
-                    }
-                    addMessage('assistant', '❌ Error starting calculation generation: ' + error.message);
-                    // Clear active state on error
-                    document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                        btn.classList.remove('processing', 'active');
-                    });
-                });
-            } catch (error) {
-                console.error('✗ Error starting calculation generation:', error);
-                
-                // Stop progress bar on error
-                if (currentProgressTimer) {
-                    clearInterval(currentProgressTimer);
-                    currentProgressTimer = null;
-                }
-                
-                // Remove progress indicator
-                const progressIndicator = document.getElementById('progress-indicator');
-                if (progressIndicator) {
-                    progressIndicator.remove();
-                }
-                
-                addMessage('assistant', '❌ Error: ' + error.message);
-                // Clear active state on error
-                document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                    btn.classList.remove('processing', 'active');
-                });
-            }
+            streamCalculationQuestion(clickedButton);
             return;
-        }
-        
-        // Polling function for calculation task status
-        function pollCalculationTask(taskId, clickedButton) {
-            const pollInterval = 2000; // Poll every 2 seconds
-            const maxAttempts = 45; // Maximum 90 seconds
-            let attempts = 0;
-            
-            const poll = () => {
-                attempts++;
-                console.log(`Polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
-                
-                fetch(`/calculation_status/${taskId}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log('Poll response:', data);
-                    
-                    if (data.status === 'complete' && data.success) {
-                        console.log('✓ Task completed successfully');
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        // Add the calculation question to the chat
-                        console.log('📝 CALCULATION POLLING SUCCESS');
-                        console.log('📝 Adding calculation question to chat...');
-                        
-                        // Add the calculation question to chat
-                        addMessage('assistant', data.data);
-                        
-                        // Show calculation answer input instead of general chat
-                        console.log('📝 Switching to calculation answer input mode');
-                        if (typeof aiTutor !== 'undefined' && aiTutor.showCalculationAnswerInput) {
-                            aiTutor.showCalculationAnswerInput();
-                        } else {
-                            console.error('AITutor instance or showCalculationAnswerInput method not available');
-                        }
-                        
-                        // Set button to active state (green) to show success
-                        if (clickedButton) {
-                            clickedButton.classList.remove('processing');
-                            clickedButton.classList.add('active');
-                        }
-                        
-                    } else if (data.status === 'failed' || data.status === 'error') {
-                        console.error('✗ Task failed:', data.error);
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', data.error || 'Calculation generation failed');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                        
-                    } else if (data.status === 'pending') {
-                        // Task still running, continue polling
-                        if (attempts < maxAttempts) {
-                            setTimeout(poll, pollInterval);
-                        } else {
-                            console.error('✗ Polling timeout');
-                            
-                            // Stop progress bar
-                            if (currentProgressTimer) {
-                                clearInterval(currentProgressTimer);
-                                currentProgressTimer = null;
-                            }
-                            
-                            // Remove progress indicator
-                            const progressIndicator = document.getElementById('progress-indicator');
-                            if (progressIndicator) {
-                                progressIndicator.remove();
-                            }
-                            
-                            addMessage('assistant', 'Generation is taking longer than expected. Please try again.');
-                            
-                            // Clear active state on timeout
-                            document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                                btn.classList.remove('processing', 'active');
-                            });
-                        }
-                    } else {
-                        console.error('✗ Unknown task status:', data.status);
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', 'Unknown error occurred during generation');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                    }
-                })
-                .catch(error => {
-                    console.error('✗ Polling error:', error);
-                    
-                    if (attempts < maxAttempts) {
-                        // Retry on network error
-                        setTimeout(poll, pollInterval);
-                    } else {
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', 'Network error during generation. Please try again.');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                    }
-                });
-            };
-            
-            // Start polling immediately
-            poll();
         }
         
         function startEssayPolling(taskId) {
@@ -1809,6 +1582,130 @@ function endCalculationSession() {
         
         // Use streaming SSE endpoint
         streamQuickAction(streamAction, action, clickedButton);
+    }
+
+    async function streamCalculationQuestion(clickedButton) {
+        const messagesDiv = document.getElementById('messages');
+
+        try {
+            const response = await fetch('/calculation_stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                // Error response — remove progress bar and show error
+                const data = await response.json();
+                if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
+                const progressIndicator = document.getElementById('progress-indicator');
+                if (progressIndicator) progressIndicator.remove();
+                addMessage('assistant', data.error || 'Sorry, I encountered an error. Please try again.');
+                document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                    btn.classList.remove('processing', 'active');
+                });
+                return;
+            }
+
+            // SSE streaming — create a message bubble and fill it progressively
+            let progressRemoved = false;
+            function removeProgress() {
+                if (progressRemoved) return;
+                progressRemoved = true;
+                if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
+                const progressIndicator = document.getElementById('progress-indicator');
+                if (progressIndicator) {
+                    progressIndicator.style.transition = 'opacity 0.3s ease-out';
+                    progressIndicator.style.opacity = '0';
+                    setTimeout(() => { if (progressIndicator.parentNode) progressIndicator.remove(); }, 300);
+                }
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant chat-message entering';
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
+            messageDiv.appendChild(messageContent);
+
+            let fullText = '';
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const payload = line.slice(6);
+                    if (payload === '[DONE]') continue;
+                    try {
+                        const chunk = JSON.parse(payload);
+                        fullText += chunk;
+
+                        // On first chunk, swap progress bar for message bubble
+                        if (!progressRemoved) {
+                            removeProgress();
+                            messagesDiv.appendChild(messageDiv);
+                            requestAnimationFrame(() => {
+                                messageDiv.classList.remove('entering');
+                                messageDiv.classList.add('entered');
+                            });
+                        }
+
+                        messageContent.innerHTML = formatMessageSimplified(fullText);
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    } catch (e) { /* ignore malformed */ }
+                }
+            }
+
+            // If no chunks arrived at all, still clean up
+            if (!progressRemoved) {
+                removeProgress();
+                if (!fullText) {
+                    addMessage('assistant', 'No response received. Please try again.');
+                }
+            }
+
+            // Final render with MathJax if needed
+            if (fullText) {
+                messageContent.innerHTML = formatMessageSimplified(fullText);
+                const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align') || fullText.includes('\\begin{');
+                if (hasMath) {
+                    loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
+                }
+            }
+
+            // Show calculation answer input
+            console.log('📝 Switching to calculation answer input mode');
+            if (typeof aiTutor !== 'undefined' && aiTutor.showCalculationAnswerInput) {
+                aiTutor.showCalculationAnswerInput();
+            } else {
+                console.error('AITutor instance or showCalculationAnswerInput method not available');
+            }
+
+            // Set button to active state (green) to show success
+            if (clickedButton) {
+                clickedButton.classList.remove('processing');
+                clickedButton.classList.add('active');
+            }
+
+        } catch (error) {
+            console.error('Stream calculation error:', error);
+            if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
+            const progressIndicator = document.getElementById('progress-indicator');
+            if (progressIndicator) progressIndicator.remove();
+            addMessage('assistant', 'Error generating calculation question: ' + error.message);
+            document.querySelectorAll('.btn-outline-primary').forEach(btn => {
+                btn.classList.remove('processing', 'active');
+            });
+        }
     }
 
     async function streamQuickAction(streamAction, actionLabel, clickedButton) {

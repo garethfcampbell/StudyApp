@@ -1584,10 +1584,10 @@ FORMATTING REQUIREMENTS:
             logging.info(f"Generating exam worked example for question {q_id}...")
             result = await self._make_async_openai_fallback_call(
                 messages=messages,
-                model="gpt-5.4",
+                model="gpt-5.4-mini",
                 max_tokens=10000,
                 timeout=180,
-                reasoning_effort="medium"
+                reasoning_effort="high"
             )
             logging.info(f"Exam worked example generated successfully for question {q_id}")
             return result
@@ -1667,10 +1667,10 @@ FORMATTING REQUIREMENTS:
             logging.info(f"Streaming exam worked example for question {q_id}...")
             async for chunk in self._make_async_openai_streaming_call(
                 messages=messages,
-                model="gpt-5.4",
+                model="gpt-5.4-mini",
                 max_tokens=10000,
                 timeout=180,
-                reasoning_effort="medium"
+                reasoning_effort="high"
             ):
                 yield chunk
             logging.info(f"Exam worked example streaming completed for question {q_id}")

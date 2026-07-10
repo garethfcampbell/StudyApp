@@ -22,7 +22,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 | Layer | Technology |
 |---|---|
 | Backend | Python / Flask / Gunicorn |
-| AI | OpenAI (`gpt-5.4-mini` primary, `gpt-5.4-nano` fallback) |
+| AI | OpenAI (`gpt-5.6-terra` primary, `gpt-5.6-luna` fallback) |
 | Database | PostgreSQL (Replit managed) |
 | Frontend | Bootstrap 5 / Vanilla JS / MathJax 3 |
 | File parsing | PyPDF2, python-pptx |
@@ -71,7 +71,7 @@ The app will be available at `http://localhost:5000`.
 
 ```
 ├── app.py                      # Main Flask application and routes
-├── tutor_ai.py                 # AI tutoring logic (OpenAI gpt-5.4-mini / nano)
+├── tutor_ai.py                 # AI tutoring logic (OpenAI gpt-5.6-terra / nano)
 ├── pdf_processor.py            # PDF and PowerPoint text extraction
 ├── models.py                   # SQLAlchemy database models
 ├── database.py                 # Database initialisation
@@ -98,14 +98,14 @@ All AI features use OpenAI models with automatic fallback:
 
 | Feature | Primary | Fallback | Streaming | Temperature | Max Tokens |
 |---|---|---|---|---|---|
-| Chat / tutoring | `gpt-5.4-mini` | `gpt-5.4-nano` | Yes | 0.7 | 15,000 |
-| Executive summary | `gpt-5.4-mini` | `gpt-5.4-nano` | Yes | 0.2 | 15,000 |
-| Key concepts | `gpt-5.4-mini` | `gpt-5.4-nano` | Yes | 0.4 | 15,000 |
-| Essay questions | `gpt-5.4-mini` | `gpt-5.4-nano` | Yes | 0.4 | 15,000 |
-| Quiz generation | `gpt-5.4-mini` | `gpt-5.4-nano` | No | 0.3 | 15,000 |
-| Equation extraction | `gpt-5.4-mini` | `gpt-5.4-nano` | No | — | 2,000 |
-| Calculation questions | `gpt-5.4-mini` | `gpt-5.4-nano` | No | — | 5,000 |
-| Answer evaluation | `gpt-5.4-mini` | `gpt-5.4-nano` | No | — | 5,000 |
+| Chat / tutoring | `gpt-5.6-terra` | `gpt-5.6-luna` | Yes | 0.7 | 15,000 |
+| Executive summary | `gpt-5.6-terra` | `gpt-5.6-luna` | Yes | 0.2 | 15,000 |
+| Key concepts | `gpt-5.6-terra` | `gpt-5.6-luna` | Yes | 0.4 | 15,000 |
+| Essay questions | `gpt-5.6-terra` | `gpt-5.6-luna` | Yes | 0.4 | 15,000 |
+| Quiz generation | `gpt-5.6-terra` | `gpt-5.6-luna` | No | 0.3 | 15,000 |
+| Equation extraction | `gpt-5.6-terra` | `gpt-5.6-luna` | No | — | 2,000 |
+| Calculation questions | `gpt-5.6-terra` | `gpt-5.6-luna` | No | — | 5,000 |
+| Answer evaluation | `gpt-5.6-terra` | `gpt-5.6-luna` | No | — | 5,000 |
 
 Chat, summary, key concepts, and essay questions use **Server-Sent Events (SSE)** for real-time streaming. Quiz generation, equation extraction, calculation questions, and answer evaluation use **background polling**.
 

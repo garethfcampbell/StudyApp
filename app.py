@@ -257,7 +257,7 @@ def cleanup_task(task_id):
 
 def run_calculation_generation_background(task_id, session_id, pdf_content):
     """
-    Background function to generate calculation questions using async gpt-5.4-mini.
+    Background function to generate calculation questions using async gpt-5.6-terra.
     On first call, extracts an ordered equation list from the notes and stores it in the
     session. Subsequent calls use the stored list and advance the index.
     """
@@ -343,7 +343,7 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
 
 def run_calculation_answer_check_background(task_id, challenge_question, user_answer, pdf_content):
     """
-    Background function to check calculation answers using async gpt-5.4-mini.
+    Background function to check calculation answers using async gpt-5.6-terra.
     This runs in a separate thread to avoid blocking the web server.
     """
     try:
@@ -353,7 +353,7 @@ def run_calculation_answer_check_background(task_id, challenge_question, user_an
         tutor_ai = TutorAI()
         tutor_ai.set_context(pdf_content)
         
-        # Check calculation answer using async method with gpt-5.4-mini
+        # Check calculation answer using async method with gpt-5.6-terra
         import asyncio
         
         async def async_answer_check():
@@ -690,7 +690,7 @@ def simple_chat():
                         'error': 'Error checking your answer. Please try again.'
                     }, 500
             else:
-                # Normal chat mode - get response asynchronously using gpt-5.4-mini primary with Gemini fallback
+                # Normal chat mode - get response asynchronously using gpt-5.6-terra primary with Gemini fallback
                 response = await tutor_ai.get_response_async(user_message)
                 
                 if response:

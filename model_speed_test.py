@@ -66,8 +66,8 @@ MESSAGES = [
 MODELS = [
     ("gemini-flash-lite-latest",       "gemini"),
     ("gemini-3.1-flash-lite-preview",  "gemini"),
-    ("gpt-5.4-mini",                   "openai"),
-    ("gpt-5.4-nano",                   "openai"),
+    ("gpt-5.6-terra",                   "openai"),
+    ("gpt-5.6-luna",                   "openai"),
 ]
 
 
@@ -77,7 +77,7 @@ async def test_model(name, provider, gemini_client, openai_client):
         return name, None, "client not available (missing API key)"
 
     # gpt-5.4-* don't support system messages — combine into one user message
-    if name in ("gpt-5.4-mini", "gpt-5.4-nano"):
+    if name in ("gpt-5.6-terra", "gpt-5.6-luna"):
         combined = ""
         for m in MESSAGES:
             prefix = "System: " if m["role"] == "system" else ""

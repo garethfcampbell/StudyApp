@@ -99,10 +99,10 @@ class TutorAI:
         """
 
     # All AI calls go through _make_async_openai_fallback_call
-    # Summary: Gemini Flash Lite primary, gpt-5.4-nano fallback, gpt-5.4-mini last resort
-    # All other features: gpt-5.4-mini primary, gpt-5.4-nano fallback
+    # Summary: Gemini Flash Lite primary, gpt-5.6-luna fallback, gpt-5.6-terra last resort
+    # All other features: gpt-5.6-terra primary, gpt-5.6-luna fallback
 
-    async def _make_async_openai_fallback_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, response_format=None, timeout=50, reasoning_effort=None):
+    async def _make_async_openai_fallback_call(self, messages, model="gpt-5.6-luna", temperature=0.7, max_tokens=20000, response_format=None, timeout=50, reasoning_effort=None):
 
         if not self.async_openai_client:
             raise Exception("Async OpenAI fallback is not available - no API key configured.")
@@ -113,8 +113,8 @@ class TutorAI:
             
             for attempt in range(max_retries + 1):
                 try:
-                    # Handle gpt-5.4-mini model which has different requirements
-                    if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano", "gpt-5.4"):
+                    # Handle gpt-5.6-terra model which has different requirements
+                    if model in ("gpt-5.6-terra", "gpt-5", "gpt-5-mini", "gpt-5.6-luna", "gpt-5.4"):
                         # gpt-5.4 family doesn't support system messages - combine all messages into user message
                         combined_content = ""
                         for message in messages:
@@ -123,7 +123,7 @@ class TutorAI:
                             else:
                                 combined_content += f"{message['content']}\n\n"
                         
-                        # Prepare arguments for gpt-5.4-mini (no system messages, use max_completion_tokens, no temperature)
+                        # Prepare arguments for gpt-5.6-terra (no system messages, use max_completion_tokens, no temperature)
                         api_args = {
                             "model": model,
                             "messages": [{"role": "user", "content": combined_content.strip()}],
@@ -202,12 +202,12 @@ class TutorAI:
             logging.error(f"Async OpenAI fallback call failed: {e}")
             raise e
 
-    async def _make_async_openai_streaming_call(self, messages, model="gpt-5.4-nano", temperature=0.7, max_tokens=20000, timeout=60, reasoning_effort=None):
+    async def _make_async_openai_streaming_call(self, messages, model="gpt-5.6-luna", temperature=0.7, max_tokens=20000, timeout=60, reasoning_effort=None):
         """Streaming variant of _make_async_openai_fallback_call. Yields text chunks."""
         if not self.async_openai_client:
             raise Exception("Async OpenAI client is not available.")
 
-        if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano", "gpt-5.4"):
+        if model in ("gpt-5.6-terra", "gpt-5", "gpt-5-mini", "gpt-5.6-luna", "gpt-5.4"):
             combined_content = ""
             for message in messages:
                 if message["role"] == "system":
@@ -290,10 +290,10 @@ class TutorAI:
         messages = self._build_chat_messages(user_message)
 
         try:
-            # Use OpenAI gpt-5.4-mini as primary for general chat
+            # Use OpenAI gpt-5.6-terra as primary for general chat
             ai_response = await self._make_async_openai_fallback_call(
                 messages=messages,
-                model="gpt-5.4-mini",
+                model="gpt-5.6-terra",
                 temperature=0.7,
                 max_tokens=15000,
                 timeout=60
@@ -306,11 +306,11 @@ class TutorAI:
             return ai_response
             
         except Exception as openai_error:
-            # Fallback to gpt-5.4-nano if gpt-5.4-mini fails
+            # Fallback to gpt-5.6-luna if gpt-5.6-terra fails
             try:
                 ai_response = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model="gpt-5.4-nano",
+                    model="gpt-5.6-luna",
                     temperature=0.7,
                     max_tokens=15000,
                     timeout=60
@@ -323,7 +323,7 @@ class TutorAI:
                 return ai_response
                 
             except Exception as nano_error:
-                logging.error(f"Both gpt-5.4-mini and gpt-5.4-nano failed for general chat: {openai_error} | {nano_error}")
+                logging.error(f"Both gpt-5.6-terra and gpt-5.6-luna failed for general chat: {openai_error} | {nano_error}")
                 return "I'm having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments."
 
     async def get_response_stream_async(self, user_message):
@@ -336,7 +336,7 @@ class TutorAI:
 
         async def _try_stream(model, timeout):
             # Build API args same way as _make_async_openai_fallback_call
-            if model in ("gpt-5.4-mini", "gpt-5", "gpt-5-mini", "gpt-5.4-nano"):
+            if model in ("gpt-5.6-terra", "gpt-5", "gpt-5-mini", "gpt-5.6-luna"):
                 combined_content = ""
                 for message in messages:
                     if message["role"] == "system":
@@ -373,12 +373,12 @@ class TutorAI:
             self.conversation_history.append({"role": "assistant", "content": full_response})
 
         try:
-            async for chunk in _try_stream("gpt-5.4-mini", 60):
+            async for chunk in _try_stream("gpt-5.6-terra", 60):
                 yield chunk
         except Exception as openai_error:
-            logging.error(f"Streaming gpt-5.4-mini failed: {openai_error}, falling back to gpt-5.4-nano")
+            logging.error(f"Streaming gpt-5.6-terra failed: {openai_error}, falling back to gpt-5.6-luna")
             try:
-                async for chunk in _try_stream("gpt-5.4-nano", 60):
+                async for chunk in _try_stream("gpt-5.6-luna", 60):
                     yield chunk
             except Exception as nano_error:
                 logging.error(f"Both streaming models failed: {openai_error} | {nano_error}")
@@ -461,30 +461,30 @@ End your response with: "Would you like to explore any of these topics in more d
 
             logging.info(f"ASYNC SUMMARY: Context length: {len(truncated_context)} characters")
 
-            # Try gpt-5.4-mini as primary
+            # Try gpt-5.6-terra as primary
             try:
-                logging.info("ASYNC SUMMARY: Trying gpt-5.4-mini for executive summary generation...")
+                logging.info("ASYNC SUMMARY: Trying gpt-5.6-terra for executive summary generation...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model="gpt-5.4-mini", temperature=0.2, max_tokens=15000, timeout=60
+                    messages=messages, model="gpt-5.6-terra", temperature=0.2, max_tokens=15000, timeout=60
                 )
                 if result and result.strip():
-                    logging.info("ASYNC SUMMARY: gpt-5.4-mini succeeded")
+                    logging.info("ASYNC SUMMARY: gpt-5.6-terra succeeded")
                     return _strip_code_fences(result)
-                raise ValueError("gpt-5.4-mini returned an empty response")
+                raise ValueError("gpt-5.6-terra returned an empty response")
             except Exception as mini_error:
-                logging.error(f"ASYNC SUMMARY: gpt-5.4-mini failed: {mini_error}")
+                logging.error(f"ASYNC SUMMARY: gpt-5.6-terra failed: {mini_error}")
 
-            # Fallback to gpt-5.4-nano
+            # Fallback to gpt-5.6-luna
             try:
-                logging.info("ASYNC SUMMARY: Trying gpt-5.4-nano fallback...")
+                logging.info("ASYNC SUMMARY: Trying gpt-5.6-luna fallback...")
                 result = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model="gpt-5.4-nano",
+                    model="gpt-5.6-luna",
                     temperature=0.2,
                     max_tokens=15000,
                     timeout=60
                 )
-                logging.info("ASYNC SUMMARY: gpt-5.4-nano fallback succeeded")
+                logging.info("ASYNC SUMMARY: gpt-5.6-luna fallback succeeded")
                 return _strip_code_fences(result)
             except Exception as nano_error:
                 logging.error(f"ASYNC SUMMARY: All models failed: {nano_error}")
@@ -508,27 +508,27 @@ End your response with: "Would you like to explore any of these topics in more d
                 {"role": "user", "content": prompt}
             ]
 
-            # Try gpt-5.4-mini streaming first (reliable token-by-token streaming)
+            # Try gpt-5.6-terra streaming first (reliable token-by-token streaming)
             try:
-                logging.info("STREAM SUMMARY: Trying gpt-5.4-mini streaming...")
+                logging.info("STREAM SUMMARY: Trying gpt-5.6-terra streaming...")
                 async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-mini", temperature=0.2, max_tokens=15000, timeout=90
+                    messages=messages, model="gpt-5.6-terra", temperature=0.2, max_tokens=15000, timeout=90
                 ):
                     yield chunk
                 return
             except Exception as mini_error:
-                logging.error(f"STREAM SUMMARY: gpt-5.4-mini streaming failed: {mini_error}")
+                logging.error(f"STREAM SUMMARY: gpt-5.6-terra streaming failed: {mini_error}")
 
-            # Fallback to gpt-5.4-nano streaming
+            # Fallback to gpt-5.6-luna streaming
             try:
-                logging.info("STREAM SUMMARY: Trying gpt-5.4-nano streaming fallback...")
+                logging.info("STREAM SUMMARY: Trying gpt-5.6-luna streaming fallback...")
                 async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-nano", temperature=0.2, max_tokens=15000, timeout=90
+                    messages=messages, model="gpt-5.6-luna", temperature=0.2, max_tokens=15000, timeout=90
                 ):
                     yield chunk
                 return
             except Exception as nano_error:
-                logging.error(f"STREAM SUMMARY: gpt-5.4-nano streaming also failed: {nano_error}")
+                logging.error(f"STREAM SUMMARY: gpt-5.6-luna streaming also failed: {nano_error}")
 
             yield "I'm having trouble generating a summary right now. Please try again in a moment."
         except Exception as e:
@@ -673,26 +673,26 @@ Provide a suggested essay structure with 3-5 concise, actionable tips for how th
 
             logging.info(f"ASYNC ESSAY: Context length: {len(truncated_context)} characters")
 
-            # Try gpt-5.4-mini as primary
+            # Try gpt-5.6-terra as primary
             try:
-                logging.info("ASYNC ESSAY: Trying gpt-5.4-mini for essay generation...")
+                logging.info("ASYNC ESSAY: Trying gpt-5.6-terra for essay generation...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model="gpt-5.4-mini", temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model="gpt-5.6-terra", temperature=0.4, max_tokens=15000, timeout=60
                 )
                 if result and result.strip():
-                    logging.info("ASYNC ESSAY: gpt-5.4-mini succeeded")
+                    logging.info("ASYNC ESSAY: gpt-5.6-terra succeeded")
                     return _strip_code_fences(result)
-                raise ValueError("gpt-5.4-mini returned an empty response")
+                raise ValueError("gpt-5.6-terra returned an empty response")
             except Exception as mini_error:
-                logging.error(f"ASYNC ESSAY: gpt-5.4-mini failed: {mini_error}")
+                logging.error(f"ASYNC ESSAY: gpt-5.6-terra failed: {mini_error}")
 
-            # Fallback to gpt-5.4-nano
+            # Fallback to gpt-5.6-luna
             try:
-                logging.info("ASYNC ESSAY: Trying gpt-5.4-nano fallback...")
+                logging.info("ASYNC ESSAY: Trying gpt-5.6-luna fallback...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model="gpt-5.4-nano", temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model="gpt-5.6-luna", temperature=0.4, max_tokens=15000, timeout=60
                 )
-                logging.info("ASYNC ESSAY: gpt-5.4-nano fallback succeeded")
+                logging.info("ASYNC ESSAY: gpt-5.6-luna fallback succeeded")
                 return _strip_code_fences(result)
             except Exception as nano_error:
                 logging.error(f"ASYNC ESSAY: All models failed: {nano_error}")
@@ -717,23 +717,23 @@ Provide a suggested essay structure with 3-5 concise, actionable tips for how th
                 {"role": "system", "content": f"You are an expert at creating analytical essay questions from academic content.\n\nLecture Notes:\n{truncated_context}"},
                 {"role": "user", "content": prompt}
             ]
-            # Try gpt-5.4-mini streaming, fallback to gpt-5.4-nano
+            # Try gpt-5.6-terra streaming, fallback to gpt-5.6-luna
             try:
                 async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-mini", temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model="gpt-5.6-terra", temperature=0.4, max_tokens=15000, timeout=60
                 ):
                     yield chunk
                 return
             except Exception as e:
-                logging.error(f"STREAM ESSAY: gpt-5.4-mini failed: {e}")
+                logging.error(f"STREAM ESSAY: gpt-5.6-terra failed: {e}")
             try:
                 async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-nano", temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model="gpt-5.6-luna", temperature=0.4, max_tokens=15000, timeout=60
                 ):
                     yield chunk
                 return
             except Exception as e:
-                logging.error(f"STREAM ESSAY: gpt-5.4-nano failed: {e}")
+                logging.error(f"STREAM ESSAY: gpt-5.6-luna failed: {e}")
                 yield "I'm having trouble generating an essay question right now. Please try again in a moment."
         except Exception as e:
             logging.error(f"STREAM ESSAY: Critical error: {e}")
@@ -844,23 +844,23 @@ Provide a suggested essay structure with 3-5 concise, actionable tips for how th
                 {"role": "system", "content": f"\n\nLecture Notes:\n{truncated_context}"},
                 {"role": "user", "content": prompt}
             ]
-            # Try gpt-5.4-mini streaming, fallback to gpt-5.4-nano
+            # Try gpt-5.6-terra streaming, fallback to gpt-5.6-luna
             try:
                 async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-mini", temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model="gpt-5.6-terra", temperature=0.4, max_tokens=15000, timeout=60
                 ):
                     yield chunk
                 return
             except Exception as e:
-                logging.error(f"STREAM KEY CONCEPTS: gpt-5.4-mini failed: {e}")
+                logging.error(f"STREAM KEY CONCEPTS: gpt-5.6-terra failed: {e}")
             try:
                 async for chunk in self._make_async_openai_streaming_call(
-                    messages=messages, model="gpt-5.4-nano", temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model="gpt-5.6-luna", temperature=0.4, max_tokens=15000, timeout=60
                 ):
                     yield chunk
                 return
             except Exception as e:
-                logging.error(f"STREAM KEY CONCEPTS: gpt-5.4-nano failed: {e}")
+                logging.error(f"STREAM KEY CONCEPTS: gpt-5.6-luna failed: {e}")
                 yield "I'm having trouble explaining the key concepts right now. Please try again in a moment."
         except Exception as e:
             logging.error(f"STREAM KEY CONCEPTS: Critical error: {e}")
@@ -970,7 +970,7 @@ End the overall response with: "Would you like to explore any of these topics in
             
             # Try async Gemini as primary
             try:
-                logging.info("ASYNC KEY CONCEPTS: Trying gpt-5.4-mini for key concepts explanation...")
+                logging.info("ASYNC KEY CONCEPTS: Trying gpt-5.6-terra for key concepts explanation...")
                 logging.info(f"ASYNC KEY CONCEPTS: Context length: {len(truncated_context)} characters")
                 
                 result = await self._make_async_openai_fallback_call(
@@ -984,20 +984,20 @@ End the overall response with: "Would you like to explore any of these topics in
                             "content": prompt
                         }
                     ],
-                    model="gpt-5.4-mini",
+                    model="gpt-5.6-terra",
                     temperature=0.4,
                     max_tokens=15000,
                     timeout=60
                 )
                 
-                logging.info("ASYNC KEY CONCEPTS: gpt-5.4-mini succeeded")
+                logging.info("ASYNC KEY CONCEPTS: gpt-5.6-terra succeeded")
                 return _strip_code_fences(result)
                 
             except Exception as openai_error:
-                logging.error(f"ASYNC KEY CONCEPTS: gpt-5.4-mini failed: {openai_error}")
-                # Fallback to gpt-5.4-nano
+                logging.error(f"ASYNC KEY CONCEPTS: gpt-5.6-terra failed: {openai_error}")
+                # Fallback to gpt-5.6-luna
                 try:
-                    logging.info("ASYNC KEY CONCEPTS: Trying gpt-5.4-nano fallback...")
+                    logging.info("ASYNC KEY CONCEPTS: Trying gpt-5.6-luna fallback...")
                     fallback_result = await self._make_async_openai_fallback_call(
                         messages=[
                             {
@@ -1009,17 +1009,17 @@ End the overall response with: "Would you like to explore any of these topics in
                                 "content": prompt
                             }
                         ],
-                        model="gpt-5.4-nano",
+                        model="gpt-5.6-luna",
                         temperature=0.4,
                         max_tokens=15000,
                         timeout=60
                     )
                     
-                    logging.info("ASYNC KEY CONCEPTS: gpt-5.4-nano fallback succeeded")
+                    logging.info("ASYNC KEY CONCEPTS: gpt-5.6-luna fallback succeeded")
                     return _strip_code_fences(fallback_result)
                     
                 except Exception as nano_error:
-                    logging.error(f"ASYNC KEY CONCEPTS: Both gpt-5.4-mini and gpt-5.4-nano failed: {nano_error}")
+                    logging.error(f"ASYNC KEY CONCEPTS: Both gpt-5.6-terra and gpt-5.6-luna failed: {nano_error}")
                     return "I'm having trouble explaining the key concepts right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
 
         except Exception as e:
@@ -1078,23 +1078,23 @@ CRITICAL FORMATTING RULES:
 
 RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no text, no code blocks."""
 
-            # Try gpt-5.4-mini as primary
+            # Try gpt-5.6-terra as primary
             try:
-                logging.info("ASYNC QUIZ: Trying gpt-5.4-mini for retrieval quiz generation...")
+                logging.info("ASYNC QUIZ: Trying gpt-5.6-terra for retrieval quiz generation...")
                 logging.info(f"ASYNC QUIZ: Context length: {len(context_truncated)} characters")
                 
                 result = await self._make_async_openai_fallback_call(
                     messages=[
                         {"role": "user", "content": prompt}
                     ],
-                    model="gpt-5.4-mini",
+                    model="gpt-5.6-terra",
                     response_format={"type": "json_object"},
                     temperature=0.3,
                     max_tokens=15000,
                     timeout=60
                 )
                 
-                logging.info("ASYNC QUIZ: gpt-5.4-mini succeeded")
+                logging.info("ASYNC QUIZ: gpt-5.6-terra succeeded")
                 
                 # Parse and validate the JSON response
                 import json
@@ -1168,15 +1168,15 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
                 return []
                 
             except Exception as openai_error:
-                logging.error(f"ASYNC QUIZ: gpt-5.4-mini failed: {openai_error}")
-                # Fallback to gpt-5.4-nano
+                logging.error(f"ASYNC QUIZ: gpt-5.6-terra failed: {openai_error}")
+                # Fallback to gpt-5.6-luna
                 try:
-                    logging.info("ASYNC QUIZ: Trying gpt-5.4-nano fallback...")
+                    logging.info("ASYNC QUIZ: Trying gpt-5.6-luna fallback...")
                     fallback_result = await self._make_async_openai_fallback_call(
                         messages=[
                             {"role": "user", "content": prompt}
                         ],
-                        model="gpt-5.4-nano",
+                        model="gpt-5.6-luna",
                         response_format={"type": "json_object"},
                         temperature=0.3,
                         max_tokens=15000,
@@ -1257,7 +1257,7 @@ exam_paper
 lecture_notes"""
 
             messages = [{"role": "user", "content": prompt}]
-            for model in ("gpt-5.4-mini", "gpt-5.4-nano"):
+            for model in ("gpt-5.6-terra", "gpt-5.6-luna"):
                 try:
                     content = await self._make_async_openai_fallback_call(
                         messages, model=model, max_tokens=20, timeout=30
@@ -1310,7 +1310,7 @@ Example output format:
             messages = [{"role": "user", "content": prompt}]
             import json as _json
 
-            for model in ("gpt-5.4-mini", "gpt-5.4-nano"):
+            for model in ("gpt-5.6-terra", "gpt-5.6-luna"):
                 try:
                     content = await self._make_async_openai_fallback_call(
                         messages, model=model, max_tokens=4000, timeout=90
@@ -1360,7 +1360,7 @@ Example output format:
             messages = [{"role": "user", "content": prompt}]
             import json as _json
 
-            for model in ("gpt-5.4-mini", "gpt-5.4-nano"):
+            for model in ("gpt-5.6-terra", "gpt-5.6-luna"):
                 try:
                     content = await self._make_async_openai_fallback_call(
                         messages, model=model, max_tokens=2000, timeout=60
@@ -1385,7 +1385,7 @@ Example output format:
             return "No document context available. Please upload a document first."
 
         try:
-            # Truncate context for gpt-5.4-mini with increased limit for better mathematical context
+            # Truncate context for gpt-5.6-terra with increased limit for better mathematical context
             context_truncated = self.context[:80000] if len(self.context) > 80000 else self.context
 
             # --- EXAM PAPER MODE ---
@@ -1494,15 +1494,15 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
             RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks, just the formatted calculation question."""
 
-            # Try gpt-5.4-mini as primary model for calculation questions (with async)
+            # Try gpt-5.6-terra as primary model for calculation questions (with async)
             messages = [{"role": "user", "content": prompt}]
             
             try:
-                logging.debug("ASYNC DEBUG: Trying async gpt-5.4-mini for calculation question generation...")
+                logging.debug("ASYNC DEBUG: Trying async gpt-5.6-terra for calculation question generation...")
                 logging.debug(f"ASYNC DEBUG: async_openai_client is available: {self.async_openai_client is not None}")
                 result = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model="gpt-5.4-mini",
+                    model="gpt-5.6-terra",
                     max_tokens=80000,
                     timeout=180,
                     reasoning_effort="medium"
@@ -1514,7 +1514,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
                 # No LaTeX formatting - let MathJax handle delimiters directly
                 logging.info("CALC_QUESTION: Skipping LaTeX formatting, returning raw result")
                 
-                logging.info("Async calculation question generated successfully using gpt-5.4-mini")
+                logging.info("Async calculation question generated successfully using gpt-5.6-terra")
                 return result
                 
             except Exception as e:
@@ -1627,10 +1627,10 @@ Do not choose a different equation — this is the equation for this question.""
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            logging.info("CALC_QUESTION_STREAM: Streaming with gpt-5.4-mini + reasoning_effort=medium...")
+            logging.info("CALC_QUESTION_STREAM: Streaming with gpt-5.6-terra + reasoning_effort=medium...")
             async for chunk in self._make_async_openai_streaming_call(
                 messages=messages,
-                model="gpt-5.4-mini",
+                model="gpt-5.6-terra",
                 max_tokens=80000,
                 timeout=180,
                 reasoning_effort="medium"
@@ -1713,7 +1713,7 @@ FORMATTING REQUIREMENTS:
             logging.info(f"Generating exam worked example for question {q_id}...")
             result = await self._make_async_openai_fallback_call(
                 messages=messages,
-                model="gpt-5.4-mini",
+                model="gpt-5.6-terra",
                 max_tokens=80000,
                 timeout=180,
                 reasoning_effort="medium"
@@ -1796,7 +1796,7 @@ FORMATTING REQUIREMENTS:
             logging.info(f"Streaming exam worked example for question {q_id}...")
             async for chunk in self._make_async_openai_streaming_call(
                 messages=messages,
-                model="gpt-5.4-mini",
+                model="gpt-5.6-terra",
                 max_tokens=80000,
                 timeout=180,
                 reasoning_effort="medium"
@@ -1887,49 +1887,49 @@ CORRECT:
 
 """
 
-        # Try gpt-5.4-mini as primary model for calculation answer evaluation (using same approach as question generation)
+        # Try gpt-5.6-terra as primary model for calculation answer evaluation (using same approach as question generation)
         messages = [{"role": "user", "content": prompt}]
         
         try:
-            logging.info("CHECK_CALC_ANSWER: Trying async gpt-5.4-mini for calculation answer evaluation...")
+            logging.info("CHECK_CALC_ANSWER: Trying async gpt-5.6-terra for calculation answer evaluation...")
             response = await self._make_async_openai_fallback_call(
                 messages=messages,
-                model="gpt-5.4-mini",
+                model="gpt-5.6-terra",
                 max_tokens=80000,
                 timeout=180,
                 reasoning_effort="medium"
             )
             
-            logging.debug("CHECK_CALC_ANSWER: RAW API RESPONSE from gpt-5.4-mini:")
+            logging.debug("CHECK_CALC_ANSWER: RAW API RESPONSE from gpt-5.6-terra:")
             logging.debug(f"---START RAW API RESPONSE---")
             logging.debug(response)
             logging.debug(f"---END RAW API RESPONSE---")
             
             # No LaTeX formatting - let MathJax handle delimiters directly
-            logging.info("CHECK_CALC_ANSWER: gpt-5.4-mini success - returning raw response")
+            logging.info("CHECK_CALC_ANSWER: gpt-5.6-terra success - returning raw response")
             
             return response
             
         except Exception as o4_error:
-            logging.error(f"gpt-5.4-mini failed for calculation answer check: {o4_error}")
-            # Fallback to gpt-5.4-nano
+            logging.error(f"gpt-5.6-terra failed for calculation answer check: {o4_error}")
+            # Fallback to gpt-5.6-luna
             try:
-                logging.info("CHECK_CALC_ANSWER: Falling back to gpt-5.4-nano...")
+                logging.info("CHECK_CALC_ANSWER: Falling back to gpt-5.6-luna...")
                 nano_response = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model="gpt-5.4-nano",
+                    model="gpt-5.6-luna",
                     max_tokens=80000,
                     timeout=180,
                     reasoning_effort="medium"
                 )
                 
                 # No LaTeX formatting - let MathJax handle delimiters directly
-                logging.debug("CHECK_CALC_ANSWER: gpt-5.4-nano fallback success")
+                logging.debug("CHECK_CALC_ANSWER: gpt-5.6-luna fallback success")
                 
                 return nano_response
                 
             except Exception as nano_error:
-                logging.error(f"Both gpt-5.4-mini and gpt-5.4-nano failed for calculation answer check: {o4_error} | {nano_error}")
+                logging.error(f"Both gpt-5.6-terra and gpt-5.6-luna failed for calculation answer check: {o4_error} | {nano_error}")
                 return f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing calculation evaluations right now. Please try again in a moment, or click the Calculation questions button to get a new question."
 
     async def check_calculation_answer_stream_async(self, challenge_question, user_answer):
@@ -2018,10 +2018,10 @@ CORRECT:
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            logging.info("CHECK_CALC_ANSWER_STREAM: Streaming with gpt-5.4-mini + reasoning_effort=medium...")
+            logging.info("CHECK_CALC_ANSWER_STREAM: Streaming with gpt-5.6-terra + reasoning_effort=medium...")
             async for chunk in self._make_async_openai_streaming_call(
                 messages=messages,
-                model="gpt-5.4-mini",
+                model="gpt-5.6-terra",
                 max_tokens=80000,
                 timeout=180,
                 reasoning_effort="medium"
@@ -2029,7 +2029,7 @@ CORRECT:
                 yield chunk
             logging.info("CHECK_CALC_ANSWER_STREAM: Streaming completed")
         except Exception as e:
-            logging.error(f"CHECK_CALC_ANSWER_STREAM: gpt-5.4-mini streaming failed: {e}")
+            logging.error(f"CHECK_CALC_ANSWER_STREAM: gpt-5.6-terra streaming failed: {e}")
             yield f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing the evaluation right now. Please try again in a moment."
 
     

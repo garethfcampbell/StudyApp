@@ -71,6 +71,7 @@ class TutorAI:
           * If the lecture notes contain LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
           * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
         • Use only plain text with markdown formatting (**bold**, *italic*, `code`, bullet points)
+        • For bold and italic, use ONLY asterisk syntax (**bold**, *italic*) - NEVER underscore syntax (__bold__, _italic_)
         • **HEADING FORMATTING**: Main headings in your responses must be in BLOCK CAPITALS and formatted with both bold and italic markdown: ***LIKE THIS***. 
         Sub-headings should be in BLOCK CAPITALS with bold markdown: **LIKE THIS**. 
         Keywords should be in italics *Like this*.

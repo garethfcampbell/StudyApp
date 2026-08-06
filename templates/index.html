@@ -381,6 +381,9 @@ function formatMessageContent(content) {
     // Simple markdown formatting
     content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     content = content.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    // __bold__ variant; no LaTeX protection in this path, so leave single _ alone
+    // (it would mangle LaTeX subscripts like x_1)
+    content = content.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
     content = content.replace(/`(.*?)`/g, '<code>$1</code>');
     content = content.replace(/\n/g, '<br>');
     return content;
@@ -2289,6 +2292,8 @@ function endCalculationSession() {
             processedContent = content.replace(/\\n/g, '\n');
             processedContent = processedContent.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
             processedContent = processedContent.replace(/\*((?!\*)[^*]+)\*/g, '<em>$1</em>');
+            processedContent = processedContent.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+            processedContent = processedContent.replace(/(?<![\w\\])_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
             processedContent = processedContent.replace(/`([^`]+)`/g, '<code>$1</code>');
             processedContent = processedContent.replace(/\n/g, '<br>');
         }
@@ -2427,6 +2432,10 @@ function endCalculationSession() {
         // Enhanced markdown processing with bullet points
         result = result.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
         result = result.replace(/\*((?!\*)[^*\n]+)\*/g, '<em>$1</em>');  // Handle italics
+        // Underscore variants (__bold__, _italic_). [^_\n] keeps __LATEX_BLOCK_n__
+        // placeholders intact; the boundary checks keep snake_case untouched.
+        result = result.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+        result = result.replace(/(?<![\w\\])_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
         result = result.replace(/`([^`\n]+)`/g, '<code>$1</code>');
         
         console.log('🔥 AFTER MARKDOWN PROCESSING (BEFORE BULLETS):', result.substring(0, 800));

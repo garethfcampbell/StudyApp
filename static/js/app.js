@@ -878,6 +878,10 @@ class AITutor {
         let beforeMarkdown = content;
         content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
         content = content.replace(/\*((?!\*)[^*]+)\*/g, '<em>$1</em>');  // Avoid double asterisks
+        // Underscore variants (__bold__, _italic_). [^_\n] keeps __LATEX_BLOCK_n__
+        // placeholders intact; the boundary checks keep snake_case untouched.
+        content = content.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+        content = content.replace(/(?<![\w\\])_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
         content = content.replace(/`([^`]+)`/g, '<code>$1</code>');
         
         // Handle bullet points before converting line breaks

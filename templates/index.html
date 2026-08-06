@@ -2429,6 +2429,10 @@ function endCalculationSession() {
         // 3. Inline math \(...\)
         result = result.replace(/(?<!\\)\\\([\s\S]*?\\\)/g, protectLatex);
         
+        // Markdown headings (# Heading) → bold+italic line, matching the
+        // ***HEADING*** house style. The models occasionally emit hash
+        // headings despite prompt instructions forbidding them.
+        result = result.replace(/^\s*#{1,6}\s+(.+)$/gm, '<strong><em>$1</em></strong>');
         // Enhanced markdown processing with bullet points
         result = result.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
         result = result.replace(/\*((?!\*)[^*\n]+)\*/g, '<em>$1</em>');  // Handle italics

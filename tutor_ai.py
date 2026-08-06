@@ -875,9 +875,12 @@ Identify and briefly explain exactly 5 key concepts from these lecture notes. Pr
 CRITICAL FORMATTING REQUIREMENTS:
 - **ABSOLUTELY NO MATHEMATICAL NOTATION**
 - Use only plain text with markdown formatting (bold, italic, bullet points)
+- NEVER use hash heading syntax (#, ##, ###) anywhere in the response
 - ONLY USE HYPHENS FOR BULLETS (-) - never use asterisks (*) or dots (•)
 - Each bullet point must be on its own line with consistent hyphen formatting
 - Describe ALL mathematical concepts using ONLY plain English words
+- CONCEPT HEADINGS: Each concept heading must be bold, on its own line (NOT a bullet point), numbered with a DIGIT and a period, exactly like: **1. Concept Name**
+- The no-mathematical-notation rule does NOT apply to these heading numbers: you MUST use the digits 1. 2. 3. 4. 5. - NEVER spell them as words (never "One:", "Two:", "Three:")
 
 Use the following structure:
 
@@ -912,9 +915,12 @@ CRITICAL FORMATTING REQUIREMENTS:
   * If the lecture notes contain LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
   * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
 - Use only plain text with markdown formatting (bold, italic, bullet points)
+- NEVER use hash heading syntax (#, ##, ###) anywhere in the response
 - ONLY USE HYPHENS FOR BULLETS (-) - never use asterisks (*) or dots (•)
 - Each bullet point must be on its own line with consistent hyphen formatting
 - Describe ALL mathematical concepts using ONLY plain English words
+- CONCEPT HEADINGS: Each concept heading must be bold, on its own line (NOT a bullet point), numbered with a DIGIT and a period, exactly like: **1. Concept Name**
+- The no-mathematical-notation rule does NOT apply to these heading numbers: you MUST use the digits 1. 2. 3. 4. 5. - NEVER spell them as words (never "One:", "Two:", "Three:")
 
 Use the following structure. Each bullet point MUST be on its own line.
 

@@ -2218,64 +2218,64 @@ function endCalculationSession() {
         content = content.replace(/\\\\\\\\begin\{[^}]+\}[\s\S]*?\\\\\\\\end\{[^}]+\}/g, (match) => {
             console.log('STEP 1A: Protected LaTeX environment (quadruple \\\\\\\\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         content = content.replace(/\\\\begin\{[^}]+\}[\s\S]*?\\\\end\{[^}]+\}/g, (match) => {
             console.log('STEP 1B: Protected LaTeX environment (double \\\\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         content = content.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, (match) => {
             console.log('STEP 1C: Protected LaTeX environment (single \\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         // Protect display math blocks \[ ... \] - check quadruple, double and single backslashes
         content = content.replace(/\\\\\\\\\[[\s\S]*?\\\\\\\\\]/g, (match) => {
             console.log('STEP 1D: Protected display math (quadruple \\\\\\\\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         content = content.replace(/\\\\\[[\s\S]*?\\\\\]/g, (match) => {
             console.log('STEP 1E: Protected display math (double \\\\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         content = content.replace(/\\\[[\s\S]*?\\\]/g, (match) => {
             console.log('STEP 1F: Protected display math (single \\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         // Protect inline math blocks \( ... \) - check quadruple, double and single backslashes
         content = content.replace(/\\\\\\\\\([\s\S]*?\\\\\\\\\)/g, (match) => {
             console.log('STEP 1G: Protected inline math (quadruple \\\\\\\\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         content = content.replace(/\\\\\([\s\S]*?\\\\\)/g, (match) => {
             console.log('STEP 1H: Protected inline math (double \\\\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         content = content.replace(/\\\([\s\S]*?\\\)/g, (match) => {
             console.log('STEP 1I: Protected inline math (single \\):', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         // Protect dollar sign math (legacy support)
         content = content.replace(/\$\$[\s\S]*?\$\$/g, (match) => {
             console.log('STEP 1J: Protected display dollar math:', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         content = content.replace(/\$[^$\n]+\$/g, (match) => {
             console.log('STEP 1K: Protected inline dollar math:', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         console.log('STEP 1 COMPLETE: LaTeX blocks isolated:', latexBlocks.length);
@@ -2314,7 +2314,7 @@ function endCalculationSession() {
             console.log(`  After delimiter fix: ${latexBlock}`);
             
             // Use global replace to handle all occurrences
-            const placeholder = `__LATEX_BLOCK_${i}__`;
+            const placeholder = `\uE000LATEXBLOCK${i}\uE001`;
             console.log(`  Looking for placeholder: ${placeholder}`);
             console.log(`  Content contains placeholder: ${processedContent.includes(placeholder)}`);
             
@@ -2370,7 +2370,7 @@ function endCalculationSession() {
         // Final verification - check for any remaining placeholders
         let remainingPlaceholders = 0;
         for (let i = 0; i < 20; i++) {
-            const placeholder = `__LATEX_BLOCK_${i}__`;
+            const placeholder = `\uE000LATEXBLOCK${i}\uE001`;
             if (processedContent.includes(placeholder)) {
                 console.log(`⚠️ REMAINING PLACEHOLDER: ${placeholder}`);
                 remainingPlaceholders++;
@@ -2419,7 +2419,7 @@ function endCalculationSession() {
         let blockIdx = 0;
         function protectLatex(match) {
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIdx++}__`;
+            return `\uE000LATEXBLOCK${blockIdx++}\uE001`;
         }
         // 1. Standalone environments (\begin{align*}...\end{align*}, \begin{bmatrix}...\end{bmatrix}, etc.)
         //    Backreference \1 ensures \begin{X} matches \end{X}, not the first \end{anything}.
@@ -2432,8 +2432,9 @@ function endCalculationSession() {
         // Enhanced markdown processing with bullet points
         result = result.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
         result = result.replace(/\*((?!\*)[^*\n]+)\*/g, '<em>$1</em>');  // Handle italics
-        // Underscore variants (__bold__, _italic_). [^_\n] keeps __LATEX_BLOCK_n__
-        // placeholders intact; the boundary checks keep snake_case untouched.
+        // Underscore variants (__bold__, _italic_). LaTeX is already swapped for
+        // \uE000LATEXBLOCKn\uE001 placeholders (markdown-inert, no underscores),
+        // and the boundary checks keep snake_case untouched.
         result = result.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
         result = result.replace(/(?<![\w\\])_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
         result = result.replace(/`([^`\n]+)`/g, '<code>$1</code>');
@@ -2499,7 +2500,7 @@ function endCalculationSession() {
         // (which may contain inner-block placeholders) are restored first,
         // exposing those inner placeholders for subsequent restoration passes.
         for (let i = latexBlocks.length - 1; i >= 0; i--) {
-            result = result.split(`__LATEX_BLOCK_${i}__`).join(latexBlocks[i]);
+            result = result.split(`\uE000LATEXBLOCK${i}\uE001`).join(latexBlocks[i]);
         }
         
         console.log('🔥 FINAL RESULT LENGTH:', result.length);
@@ -2541,7 +2542,7 @@ function endCalculationSession() {
         console.log('🔥 ADDMESSAGE: formatMessageSimplified returned (first 500 chars):', formattedContent ? formattedContent.substring(0, 500) : 'null/undefined');
         console.log('Final formatted content contains placeholders:');
         for (let i = 0; i < 10; i++) {
-            const placeholder = `__LATEX_BLOCK_${i}__`;
+            const placeholder = `\uE000LATEXBLOCK${i}\uE001`;
             if (formattedContent && formattedContent.includes(placeholder)) {
                 console.log(`  🔍 FOUND PLACEHOLDER: ${placeholder}`);
             }

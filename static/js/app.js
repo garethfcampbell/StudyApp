@@ -833,41 +833,41 @@ class AITutor {
         content = content.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, (match) => {
             console.log('STEP 1A: Protected LaTeX environment:', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         // Protect display math blocks \[ ... \]
         content = content.replace(/\\\[[\s\S]*?\\\]/g, (match) => {
             console.log('STEP 1B: Protected display math:', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         // Protect inline math blocks \( ... \)
         content = content.replace(/\\\([\s\S]*?\\\)/g, (match) => {
             console.log('STEP 1C: Protected inline math:', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         // Protect dollar sign math (legacy support)
         content = content.replace(/\$\$[\s\S]*?\$\$/g, (match) => {
             console.log('STEP 1D: Protected display dollar math:', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         content = content.replace(/\$[^$\n]+\$/g, (match) => {
             console.log('STEP 1E: Protected inline dollar math:', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         // Protect individual LaTeX commands with subscripts/superscripts
         content = content.replace(/\\[a-zA-Z]+(?:\{[^}]*\})*(?:[_^]\{[^}]*\})+/g, (match) => {
             console.log('STEP 1F: Protected LaTeX command:', match);
             latexBlocks.push(match);
-            return `__LATEX_BLOCK_${blockIndex++}__`;
+            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
         });
         
         console.log('STEP 1 COMPLETE: LaTeX blocks isolated:', latexBlocks.length);
@@ -878,8 +878,9 @@ class AITutor {
         let beforeMarkdown = content;
         content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
         content = content.replace(/\*((?!\*)[^*]+)\*/g, '<em>$1</em>');  // Avoid double asterisks
-        // Underscore variants (__bold__, _italic_). [^_\n] keeps __LATEX_BLOCK_n__
-        // placeholders intact; the boundary checks keep snake_case untouched.
+        // Underscore variants (__bold__, _italic_). LaTeX is already swapped for
+        // \uE000LATEXBLOCKn\uE001 placeholders (markdown-inert, no underscores),
+        // and the boundary checks keep snake_case untouched.
         content = content.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
         content = content.replace(/(?<![\w\\])_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
         content = content.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -908,7 +909,7 @@ class AITutor {
             latexBlock = latexBlock.replace(/\\\\/g, '\\');
             console.log(`  After delimiter fix: ${latexBlock}`);
             
-            content = content.replace(`__LATEX_BLOCK_${i}__`, latexBlock);
+            content = content.split(`\uE000LATEXBLOCK${i}\uE001`).join(latexBlock);
             console.log(`  Content after replacement: ${content.substring(0, 300)}`);
         }
         

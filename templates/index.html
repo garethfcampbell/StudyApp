@@ -1320,6 +1320,11 @@ function addNewMessage(role, content) {
             if (fixed.indexOf('\\begin{') === -1) {
                 fixed = fixed.replace(/(^|[^\\])&(?!(?:lt|gt|amp|quot|#\d+|#x[0-9a-fA-F]+);)/g, '$1\\&');
             }
+            // A raw € crashes MathJax 3's TeX compiler outright (verified against
+            // mathjax-full 3.2.1) — the browser renders that crash as the yellow
+            // "Math input error" box. \unicode{} is autoloaded by tex-svg. £ and
+            // common unicode math symbols (≈ × ≤ …) are safe and left alone.
+            fixed = fixed.replace(/€/g, '\\unicode{x20AC}');
             return fixed;
         }
         function protectLatex(match) {

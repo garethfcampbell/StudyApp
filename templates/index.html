@@ -8,7 +8,7 @@
             <h4><i class="fas fa-book me-2"></i>Lecture Notes</h4>
             
             <!-- File Upload Area -->
-            <div class="file-upload-area" id="fileUploadArea">
+            <div class="file-upload-area" id="fileUploadArea" role="button" tabindex="0" aria-label="Upload lecture notes (PDF or PowerPoint)">
                 <div class="upload-content">
                     <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
                     <h5>Upload your lecture notes</h5>
@@ -68,7 +68,7 @@
         
         <!-- Messages Area -->
         <div id="chatContainer" {% if not has_document %}style="display: none;"{% endif %}>
-            <div id="messages">
+            <div id="messages" role="log" aria-live="polite">
                 {% if message_count > 0 %}
                     <div class="loading" id="loadingMessages">
                         <div class="spinner-border" role="status">
@@ -117,10 +117,11 @@
         <div class="chat-input mt-3 mb-3" id="generalChatInput" style="display: none;">
             <h5>Ask a question</h5>
             <div class="input-group">
-                <input type="text" id="newChatInput" class="form-control" 
+                <input type="text" id="newChatInput" class="form-control"
                        placeholder="Ask me anything about your learning materials..."
+                       aria-label="Ask a question about your learning materials"
                        onkeypress="if(event.key==='Enter') newSendMessage()">
-                <button class="btn btn-primary qub-submit" id="newSendBtn" onclick="newSendMessage()">
+                <button class="btn btn-primary qub-submit" id="newSendBtn" onclick="newSendMessage()" aria-label="Send message">
                     <i class="fas fa-paper-plane"></i>
                 </button>
             </div>
@@ -136,8 +137,9 @@
         <div class="quick-actions mt-4 mb-4" id="calculationAnswerInput" style="display: none;">
             <h5><i class="fas fa-calculator me-2"></i>Your Answer</h5>
             <div class="input-group">
-                <input type="text" id="calcAnswerInput" class="form-control" 
+                <input type="text" id="calcAnswerInput" class="form-control"
                        placeholder="Enter your answer (e.g., 4.68, 15.2%, or describe your working)..."
+                       aria-label="Your answer to the calculation question"
                        onkeypress="if(event.key==='Enter') submitCalculationAnswer()">
                 <button class="btn btn-success" id="calcSubmitBtn" onclick="submitCalculationAnswer()">
                     <i class="fas fa-check"></i> Check Answer
@@ -205,22 +207,114 @@
 
 {% block scripts %}
 <script>
+// Escape a string for safe interpolation into innerHTML template literals.
+function escapeHtml(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Shared SSE stream reader used by all streaming endpoints.
+// Parses "data: ..." lines, accumulates JSON-encoded text chunks, and
+// throttles re-renders to at most one per 100ms (leading + trailing edge),
+// with a final unthrottled render after the stream ends.
+// Options:
+//   onFirstChunk() — called once when the first chunk arrives (hide spinners etc.)
+//   render(fullText) — update the DOM with the accumulated text
+// Returns the full accumulated text.
+async function streamSSE(response, options) {
+    const RENDER_INTERVAL_MS = 100;
+    let fullText = '';
+    let firstChunk = true;
+    let renderTimer = null;
+    let renderPending = false;
+
+    function scheduleRender() {
+        if (renderTimer) {
+            renderPending = true;
+            return;
+        }
+        options.render(fullText);
+        renderTimer = setTimeout(() => {
+            renderTimer = null;
+            if (renderPending) {
+                renderPending = false;
+                scheduleRender();
+            }
+        }, RENDER_INTERVAL_MS);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE lines; keep incomplete line in buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const payload = line.slice(6);
+            if (payload === '[DONE]') continue;
+            try {
+                const chunk = JSON.parse(payload);
+                fullText += chunk;
+
+                if (firstChunk) {
+                    firstChunk = false;
+                    if (options.onFirstChunk) options.onFirstChunk();
+                }
+
+                scheduleRender();
+            } catch (e) {
+                // ignore malformed lines
+            }
+        }
+    }
+
+    // Final unthrottled render
+    if (renderTimer) {
+        clearTimeout(renderTimer);
+        renderTimer = null;
+    }
+    options.render(fullText);
+
+    return fullText;
+}
+
 // NEW SIMPLE CHAT SYSTEM - Streaming via Server-Sent Events
+let chatStreamActive = false;
+
 async function newSendMessage() {
+    if (chatStreamActive) return; // ignore re-entrant sends while streaming
+
     const input = document.getElementById('newChatInput');
+    const sendBtn = document.getElementById('newSendBtn');
     const loadingDiv = document.getElementById('newChatLoading');
     const messagesDiv = document.getElementById('messages');
-    
+
     const userMessage = input.value.trim();
     if (!userMessage) return;
-    
-    // Clear input and show loading
+
+    // Clear input, disable controls while the stream is active, show loading
     input.value = '';
+    chatStreamActive = true;
+    input.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
     loadingDiv.style.display = 'block';
-    
+
     // Add user message to chat
     addNewMessage('user', userMessage);
-    
+
     try {
         // Try the streaming endpoint first
         const response = await fetch('/simple_chat_stream', {
@@ -253,458 +347,77 @@ async function newSendMessage() {
 
         // SSE streaming response — build the message progressively
         const messageDiv = document.createElement('div');
-        messageDiv.className = 'message assistant chat-message entering';
+        messageDiv.className = 'message assistant chat-message';
         const messageContent = document.createElement('div');
         messageContent.className = 'message-content';
         messageDiv.appendChild(messageContent);
         messagesDiv.appendChild(messageDiv);
-        requestAnimationFrame(() => {
-            messageDiv.classList.remove('entering');
-            messageDiv.classList.add('entered');
+
+        const fullText = await streamSSE(response, {
+            onFirstChunk: () => {
+                // Hide loading indicator as soon as first chunk arrives
+                loadingDiv.style.display = 'none';
+            },
+            render: (text) => {
+                messageContent.innerHTML = formatMessageSimplified(text);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
         });
 
-        let fullText = '';
-        let mathRenderTimer = null;
-        let loadingHidden = false;
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-
-            // Process complete SSE lines
-            const lines = buffer.split('\n');
-            buffer = lines.pop(); // keep incomplete line in buffer
-
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                const payload = line.slice(6);
-                if (payload === '[DONE]') continue;
-                try {
-                    const chunk = JSON.parse(payload);
-                    fullText += chunk;
-
-                    // Hide loading indicator as soon as first chunk arrives
-                    if (!loadingHidden) {
-                        loadingDiv.style.display = 'none';
-                        loadingHidden = true;
-                    }
-
-                    // Update the displayed content with the accumulated text
-                    messageContent.innerHTML = formatMessageSimplified(fullText);
-                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                } catch (e) {
-                    // ignore malformed lines
-                }
-            }
-        }
-
-        // Final render with MathJax
-        messageContent.innerHTML = formatMessageSimplified(fullText);
+        // Render math after the final render
         const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align');
         if (hasMath) {
             loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
         }
-        
+
     } catch (error) {
         console.error('Chat error:', error);
         addNewMessage('assistant', 'Sorry, I encountered an error. Please try again.');
     } finally {
+        chatStreamActive = false;
+        input.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
         loadingDiv.style.display = 'none';
     }
 }
 
 function addNewMessage(role, content) {
-    console.log('🔥 ADDNEWMESSAGE DEBUG: Adding message with role:', role);
-    console.log('🔥 ADDNEWMESSAGE DEBUG: Content length:', content ? content.length : 'null/undefined');
-    console.log('🔥 ADDNEWMESSAGE DEBUG: Content contains LaTeX?', content && (content.includes('\\[') || content.includes('\\(') || content.includes('$')));
-    
     const messagesDiv = document.getElementById('messages');
     const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role} chat-message entering`;
-    
+    messageDiv.className = `message ${role} chat-message`;
+
     const messageContent = document.createElement('div');
     messageContent.className = 'message-content';
-    
+
     // Use simplified LaTeX formatting to fix multi-line rendering
-    console.log('🔥 ADDNEWMESSAGE DEBUG: Calling formatMessageSimplified...');
-    console.log('🔥 ADDNEWMESSAGE DEBUG: Content before formatting (first 800 chars):', content ? content.substring(0, 800) : 'null/undefined');
-    const formattedContent = formatMessageSimplified(content);
-    console.log('🔥 ADDNEWMESSAGE DEBUG: Formatted content length:', formattedContent ? formattedContent.length : 'null/undefined');
-    console.log('🔥 ADDNEWMESSAGE DEBUG: Formatted content sample (first 800 chars):', formattedContent ? formattedContent.substring(0, 800) : 'null/undefined');
-    
-    messageContent.innerHTML = formattedContent;
-    
+    messageContent.innerHTML = formatMessageSimplified(content);
+
     messageDiv.appendChild(messageContent);
     messagesDiv.appendChild(messageDiv);
-    
-    // Trigger smooth entrance animation
-    requestAnimationFrame(() => {
-        messageDiv.classList.remove('entering');
-        messageDiv.classList.add('entered');
-    });
-    
+
     // Scroll to bottom
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    
-    // Check for math expressions (includes \begin{ for standalone environments)
-    const hasMath = content.includes('$') || content.includes('\\(') || content.includes('\\[') || content.includes('\\begin{');
-    console.log('🔥 ADDNEWMESSAGE DEBUG: Has math expressions:', hasMath);
-    
+
+    // Check for math expressions (includes \begin{ for standalone environments).
+    // '$' is deliberately not checked: $-delimiters are disabled in the MathJax
+    // config and finance content is full of dollar amounts.
+    const hasMath = content.includes('\\(') || content.includes('\\[') || content.includes('\\begin{');
+
     // Only render MathJax if content contains math expressions
     if (hasMath) {
-        console.log('🔥 ADDNEWMESSAGE DEBUG: Math detected, ensuring MathJax is loaded...');
         // Ensure MathJax is loaded before rendering
         loadMathJax().then(() => {
-            console.log('🔥 ADDNEWMESSAGE DEBUG: MathJax loaded, rendering math content...');
             return renderMathInElement(messageDiv);
-        }).then(() => {
-            console.log('🔥 ADDNEWMESSAGE DEBUG: MathJax rendered successfully');
         }).catch((err) => {
-            console.error('🔥 ADDNEWMESSAGE DEBUG: MathJax loading or rendering failed:', err);
+            console.error('MathJax loading or rendering failed:', err);
             // Try to render anyway in case MathJax was already available
             if (window.MathJax && window.MathJax.typesetPromise) {
                 renderMathInElement(messageDiv).catch(console.error);
             }
         });
-    } else {
-        console.log('🔥 ADDNEWMESSAGE DEBUG: No math expressions detected, skipping MathJax rendering');
     }
 }
 
-function formatMessageContent(content) {
-    // Simple markdown formatting
-    content = content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    content = content.replace(/\*(.*?)\*/g, '<em>$1</em>');
-    // __bold__ variant; no LaTeX protection in this path, so leave single _ alone
-    // (it would mangle LaTeX subscripts like x_1)
-    content = content.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
-    content = content.replace(/`(.*?)`/g, '<code>$1</code>');
-    content = content.replace(/\n/g, '<br>');
-    return content;
-}
-
-// CALCULATION ANSWER INPUT FUNCTIONS
-let calculationSessionEnded = false;
-
-function showCalculationAnswerInput() {
-    if (calculationSessionEnded) {
-        console.log('📝 BLOCKED: Calculation session has ended, not showing answer input');
-        return;
-    }
-    
-    console.log('📝 Showing calculation answer input');
-    document.getElementById('calculationAnswerInput').style.display = 'block';
-    document.getElementById('generalChatInput').style.display = 'none';
-    
-    // Focus on the calculation input
-    const calcInput = document.getElementById('calcAnswerInput');
-    if (calcInput) {
-        calcInput.focus();
-    }
-}
-
-function hideCalculationAnswerInput() {
-    console.log('📝 Hiding calculation answer input and showing Revision Techniques panel');
-    
-    // Hide calculation answer input
-    const calcAnswerSection = document.getElementById('calculationAnswerInput');
-    if (calcAnswerSection) {
-        calcAnswerSection.style.display = 'none';
-        console.log('📝 GLOBAL DEBUG: Aggressively hidden calculation answer input after ending session');
-    }
-    
-    // Hide feedback actions section too
-    const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
-    if (feedbackActionsSection) {
-        feedbackActionsSection.style.display = 'none';
-        console.log('📝 GLOBAL DEBUG: Hidden calculation feedback actions after ending session');
-    }
-    
-    // Show general chat input
-    const generalChatInput = document.getElementById('generalChatInput');
-    if (generalChatInput) {
-        generalChatInput.style.display = 'block';
-        console.log('📝 GLOBAL DEBUG: Restored normal chat input');
-    }
-    
-    // Show Revision Techniques panel again
-    const revisionPanel = document.getElementById('revisionTechniques');
-    if (revisionPanel) {
-        revisionPanel.style.display = 'block';
-        console.log('📝 GLOBAL DEBUG: Restored Revision Techniques panel');
-    }
-    
-    // Clear the calculation input
-    const calcInput = document.getElementById('calcAnswerInput');
-    if (calcInput) {
-        calcInput.value = '';
-    }
-    
-    console.log('📝 GLOBAL DEBUG: Successfully restored normal chat interface after ending calculation session');
-}
-
-async function submitCalculationAnswer() {
-    const input = document.getElementById('calcAnswerInput');
-    const loadingDiv = document.getElementById('calcAnswerLoading');
-    
-    const userAnswer = input.value.trim();
-    if (!userAnswer) {
-        alert('Please enter your answer before submitting.');
-        return;
-    }
-    
-    console.log('📝 Submitting calculation answer (streaming):', userAnswer);
-    
-    loadingDiv.style.display = 'block';
-    addNewMessage('user', userAnswer);
-    input.value = '';
-    
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message assistant chat-message entering';
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'message-content';
-    messageDiv.appendChild(contentDiv);
-    document.getElementById('chatMessages').appendChild(messageDiv);
-    
-    let fullResponse = '';
-    
-    try {
-        const response = await fetch('/simple_chat_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: userAnswer })
-        });
-        
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const data = line.slice(6);
-                    if (data === '[DONE]') continue;
-                    try {
-                        const chunk = JSON.parse(data);
-                        fullResponse += chunk;
-                        contentDiv.innerHTML = formatMessageSimplified(fullResponse);
-                    } catch (e) {}
-                }
-            }
-        }
-        
-        contentDiv.innerHTML = formatMessageSimplified(fullResponse);
-        messageDiv.className = 'message assistant chat-message entered';
-        
-        if (typeof MathJax !== 'undefined' && MathJax.typesetPromise) {
-            MathJax.typesetPromise([contentDiv]).catch(function(err) {
-                console.log('MathJax typeset error:', err);
-            });
-        }
-        
-        const chatMessages = document.getElementById('chatMessages');
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-        
-        const calcAnswerSection = document.getElementById('calculationAnswerInput');
-        if (calcAnswerSection) {
-            calcAnswerSection.style.display = 'none';
-        }
-        
-        let feedbackActionsSection = document.getElementById('calculationFeedbackActions');
-        if (!feedbackActionsSection) {
-            feedbackActionsSection = document.createElement('div');
-            feedbackActionsSection.id = 'calculationFeedbackActions';
-            feedbackActionsSection.style.cssText = `
-                background-color: rgba(214, 0, 13, 0.1) !important;
-                border: 3px solid #D6000D !important;
-                border-radius: 12px !important;
-                padding: 2rem !important;
-                margin: 2rem 0 4rem 0 !important;
-                text-align: center !important;
-                display: block !important;
-            `;
-            feedbackActionsSection.innerHTML = `
-                <div style="margin-bottom: 2rem;">
-                    <button type="button" class="btn btn-primary" onclick="nextCalculationQuestion()" style="margin: 0.5rem; padding: 0.75rem 1.5rem; font-weight: 600;">
-                        <i class="fas fa-arrow-right"></i> Next Question
-                    </button>
-                    <button type="button" class="btn btn-secondary" onclick="endCalculationSession()" style="margin: 0.5rem; padding: 0.75rem 1.5rem; font-weight: 600;">
-                        <i class="fas fa-times"></i> End Practice
-                    </button>
-                </div>
-            `;
-            if (calcAnswerSection && calcAnswerSection.parentNode) {
-                calcAnswerSection.parentNode.insertBefore(feedbackActionsSection, calcAnswerSection.nextSibling);
-            }
-        }
-        if (feedbackActionsSection) {
-            feedbackActionsSection.style.display = 'block';
-        }
-        
-    } catch (error) {
-        console.error('Calculation answer streaming error:', error);
-        if (!fullResponse) {
-            contentDiv.innerHTML = 'Sorry, I encountered an error checking your answer. Please try again.';
-        }
-    } finally {
-        loadingDiv.style.display = 'none';
-    }
-}
-
-function nextCalculationQuestion() {
-    console.log('📝 Generating next calculation question');
-    calculationSessionEnded = false;
-
-    // Hide feedback actions
-    const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
-    if (feedbackActionsSection) feedbackActionsSection.style.display = 'none';
-
-    // Show answer input section again and clear it
-    const calcAnswerSection = document.getElementById('calculationAnswerInput');
-    if (calcAnswerSection) calcAnswerSection.style.display = 'block';
-    const calcInput = document.getElementById('calcAnswerInput');
-    if (calcInput) calcInput.value = '';
-
-    // Advance the equation index on the server, then generate the next question
-    fetch('/increment_equation_index', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-        .then(response => response.json())
-        .then(data => {
-            console.log('📝 Equation index advanced to', data.index, 'of', data.total);
-            if (typeof quickAction === 'function') {
-                quickAction('Calculation questions');
-            }
-        })
-        .catch(error => {
-            console.error('Failed to increment equation index:', error);
-            // Still try to generate next question as fallback
-            if (typeof quickAction === 'function') {
-                quickAction('Calculation questions');
-            }
-        });
-}
-
-function endCalculationSession() {
-    console.log('📝 Ending calculation session');
-    calculationSessionEnded = true; // Set flag to prevent showing calculation input again
-    addNewMessage('user', 'end practice');
-    
-    // Send end command through simple chat
-    fetch('/simple_chat', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message: 'end practice' })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            addNewMessage('assistant', data.response);
-        }
-        // Hide the feedback actions section (Next Question and End Practice buttons)
-        const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
-        if (feedbackActionsSection) {
-            feedbackActionsSection.style.display = 'none';
-            console.log('📝 GLOBAL DEBUG: Hidden calculation feedback actions after ending session');
-        }
-        
-        // Hide the calculation answer input section with aggressive CSS
-        const calcAnswerSection = document.getElementById('calculationAnswerInput');
-        if (calcAnswerSection) {
-            calcAnswerSection.style.display = 'none';
-            calcAnswerSection.style.visibility = 'hidden';
-            calcAnswerSection.style.setProperty('display', 'none', 'important');
-            calcAnswerSection.classList.add('d-none');
-            console.log('📝 GLOBAL DEBUG: Aggressively hidden calculation answer input after ending session');
-        } else {
-            console.log('📝 GLOBAL DEBUG: calculationAnswerInput element not found!');
-        }
-        
-        // Also hide any dynamically created calculation answer sections
-        const allCalcSections = document.querySelectorAll('.calculation-answer-input, [id*="calculation"], [class*="calculation"]');
-        allCalcSections.forEach((section, index) => {
-            section.style.display = 'none';
-            section.style.visibility = 'hidden';
-            section.style.setProperty('display', 'none', 'important');
-            section.classList.add('d-none');
-            console.log(`📝 GLOBAL DEBUG: Aggressively hidden calc-related section ${index}:`, section.id || section.className);
-        });
-        
-        // Show the normal chat input and Quick Actions
-        const chatInput = document.getElementById('generalChatInput');
-        if (chatInput) {
-            chatInput.style.display = 'block';
-            console.log('📝 GLOBAL DEBUG: Restored normal chat input');
-        } else {
-            console.log('📝 GLOBAL DEBUG: Could not find generalChatInput element');
-        }
-        
-        // Show the existing Quick Actions panel (Revision Techniques) - exact same code as showQuickActions()
-        const revisionTechniques = document.getElementById('revisionTechniques');
-        if (revisionTechniques) {
-            revisionTechniques.style.display = 'block';
-            console.log('📝 GLOBAL DEBUG: Showed Revision Techniques panel');
-        } else {
-            console.warn('📝 GLOBAL DEBUG: Revision Techniques panel not found');
-        }
-        
-        console.log('📝 GLOBAL DEBUG: Successfully restored normal chat interface after ending calculation session');
-    })
-    .catch(error => {
-        console.error('End session error:', error);
-        addNewMessage('assistant', 'Error ending practice session. Please try again.');
-        
-        // Still restore normal interface even on error
-        const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
-        if (feedbackActionsSection) {
-            feedbackActionsSection.style.display = 'none';
-        }
-        
-        const calcAnswerSection = document.getElementById('calculationAnswerInput');
-        if (calcAnswerSection) {
-            calcAnswerSection.style.display = 'none';
-            calcAnswerSection.style.visibility = 'hidden';
-            calcAnswerSection.style.setProperty('display', 'none', 'important');
-            calcAnswerSection.classList.add('d-none');
-        }
-        
-        // Also hide any dynamically created calculation answer sections
-        const allCalcSections = document.querySelectorAll('.calculation-answer-input, [id*="calculation"], [class*="calculation"]');
-        allCalcSections.forEach((section) => {
-            section.style.display = 'none';
-            section.style.visibility = 'hidden';
-            section.style.setProperty('display', 'none', 'important');
-            section.classList.add('d-none');
-        });
-        
-        const chatInput = document.getElementById('generalChatInput');
-        if (chatInput) {
-            chatInput.style.display = 'block';
-        }
-        
-        // Show the existing Quick Actions panel (Revision Techniques) - exact same code as showQuickActions()
-        const revisionTechniques = document.getElementById('revisionTechniques');
-        if (revisionTechniques) {
-            revisionTechniques.style.display = 'block';
-            console.log('📝 ERROR HANDLER: Showed Revision Techniques panel');
-        } else {
-            console.warn('📝 ERROR HANDLER: Revision Techniques panel not found');
-        }
-    });
-}
 </script>
 <script>
     let quizActive = {{ quiz_active | lower }};
@@ -734,12 +447,8 @@ function endCalculationSession() {
             messagesDiv.innerHTML = '';
         }
         
-        // Hide welcome messages to prepare for new upload
-        const welcomeMessage = document.getElementById('welcomeMessage');
+        // Hide introductory content to prepare for new upload
         const benefitsSummary = document.getElementById('benefitsSummary');
-        if (welcomeMessage) {
-            welcomeMessage.style.display = 'none';
-        }
         if (benefitsSummary) {
             benefitsSummary.style.display = 'none';
         }
@@ -765,7 +474,15 @@ function endCalculationSession() {
     document.getElementById('fileUploadArea').addEventListener('click', () => {
         document.getElementById('fileInput').click();
     });
-    
+
+    // Keyboard activation for the upload dropzone (role="button")
+    document.getElementById('fileUploadArea').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            document.getElementById('fileInput').click();
+        }
+    });
+
     // Drag and drop handling
     const uploadArea = document.getElementById('fileUploadArea');
     uploadArea.addEventListener('dragover', (e) => {
@@ -785,17 +502,6 @@ function endCalculationSession() {
             handleFileUpload({ target: { files: files } });
         }
     });
-    
-    // Load messages on page load - DISABLED to prevent content reloading
-    // document.addEventListener('DOMContentLoaded', function() {
-    //     loadChatMessages();
-    // });
-    
-    // COMPLETELY DISABLED: This function was causing content reloading issues
-    async function loadChatMessages() {
-        console.log('🔥 loadChatMessages DISABLED to prevent content reloading');
-        return;
-    }
     
     // Function that handles the API call and processing for summary generation (streaming)
     async function generateSummaryContent() {
@@ -840,62 +546,35 @@ function endCalculationSession() {
             }
 
             const messageDiv = document.createElement('div');
-            messageDiv.className = 'message assistant chat-message entering';
+            messageDiv.className = 'message assistant chat-message';
             const messageContent = document.createElement('div');
             messageContent.className = 'message-content';
             messageDiv.appendChild(messageContent);
 
-            let fullText = '';
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
-
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const payload = line.slice(6);
-                    if (payload === '[DONE]') continue;
-                    try {
-                        const chunk = JSON.parse(payload);
-                        fullText += chunk;
-
-                        if (!progressRemoved) {
-                            removeProgressBar();
-                            messagesDiv.appendChild(messageDiv);
-                            requestAnimationFrame(() => {
-                                messageDiv.classList.remove('entering');
-                                messageDiv.classList.add('entered');
-                            });
-                        }
-
-                        messageContent.innerHTML = formatMessageSimplified(fullText);
-                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                    } catch (e) { /* ignore */ }
+            const fullText = await streamSSE(response, {
+                onFirstChunk: () => {
+                    // Swap the progress bar for the message bubble on first chunk
+                    removeProgressBar();
+                    messagesDiv.appendChild(messageDiv);
+                },
+                render: (text) => {
+                    messageContent.innerHTML = formatMessageSimplified(text);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 }
-            }
+            });
 
             if (!progressRemoved) {
                 removeProgressBar();
                 if (!fullText) addMessage('assistant', 'No summary received. Please try again.');
             }
 
-            // Final render
+            // Render math after the final render
             if (fullText) {
-                messageContent.innerHTML = formatMessageSimplified(fullText);
                 const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align');
                 if (hasMath) {
                     loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
                 }
             }
-
-            console.log('SUMMARY STREAM: Complete');
 
         } catch (error) {
             console.error('SUMMARY STREAM: Exception:', error);
@@ -907,20 +586,6 @@ function endCalculationSession() {
         }
     }
 
-    // Legacy function maintained for compatibility (now just coordinates the new functions)
-    async function generateSummary() {
-        console.log('LEGACY: generateSummary called - delegating to new system');
-        
-        // Check if progress bar already exists
-        const existingProgressBar = document.getElementById('summaryProgressBar');
-        if (!existingProgressBar) {
-            showSummaryProgressBar();
-        }
-        
-        // Call the actual generation function
-        await generateSummaryContent();
-    }
-    
     function handleFileUpload(event) {
         const file = event.target.files[0];
         if (!file) return;
@@ -939,7 +604,7 @@ function endCalculationSession() {
                         <i class="fas fa-file-upload fa-2x"></i>
                     </div>
                     <div class="flex-grow-1">
-                        <h6 class="mb-2">📤 Processing ${file.name}...</h6>
+                        <h6 class="mb-2">📤 Processing ${escapeHtml(file.name)}...</h6>
                         <div class="progress">
                             <div class="progress-bar progress-bar-striped progress-bar-animated" 
                                  role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
@@ -968,11 +633,7 @@ function endCalculationSession() {
             console.log('UPLOAD: Showing executive summary progress bar container');
             
             // Hide introductory content immediately when progress bar appears
-            const welcomeMessage = document.getElementById('welcomeMessage');
             const benefitsSummary = document.getElementById('benefitsSummary');
-            if (welcomeMessage) {
-                welcomeMessage.style.display = 'none';
-            }
             if (benefitsSummary) {
                 benefitsSummary.style.display = 'none';
             }
@@ -1112,7 +773,10 @@ function endCalculationSession() {
                 throw new Error(data.error);
             }
             
-            // Start polling for upload processing status
+            // Start polling for upload processing status.
+            // Network errors retry, but only up to maxPollErrors before giving up.
+            let pollErrorCount = 0;
+            const maxPollErrors = 120;
             const pollUploadStatus = () => {
                 fetch(`/upload_status/${data.task_id}`)
                     .then(response => response.json())
@@ -1133,7 +797,7 @@ function endCalculationSession() {
                                             <i class="fas fa-check-circle fa-2x"></i>
                                         </div>
                                         <div class="flex-grow-1">
-                                            <h6 class="mb-1">✅ Successfully loaded: ${data.filename}</h6>
+                                            <h6 class="mb-1">✅ Successfully loaded: ${escapeHtml(data.filename)}</h6>
                                             <small>
                                                 <i class="fas fa-robot me-1"></i>
                                                 Upload successful! Executive summary will be generated automatically.
@@ -1188,7 +852,7 @@ function endCalculationSession() {
                                         </div>
                                         <div class="flex-grow-1">
                                             <h6 class="mb-1">❌ Upload Failed</h6>
-                                            <small>${errorMsg}</small>
+                                            <small>${escapeHtml(errorMsg)}</small>
                                         </div>
                                     </div>
                                 </div>
@@ -1200,10 +864,33 @@ function endCalculationSession() {
                     })
                     .catch(error => {
                         console.error('Error polling upload status:', error);
-                        setTimeout(pollUploadStatus, 1000); // Retry on error
+                        pollErrorCount++;
+                        if (pollErrorCount < maxPollErrors) {
+                            setTimeout(pollUploadStatus, 1000); // Retry on error
+                            return;
+                        }
+                        // Too many failures — stop polling and show an error
+                        clearInterval(progressTimer);
+                        const existingProgressBar = document.getElementById('summaryProgressBar');
+                        if (existingProgressBar) {
+                            existingProgressBar.remove();
+                        }
+                        statusDiv.innerHTML = `
+                            <div class="alert alert-danger upload-completed">
+                                <div class="d-flex align-items-center">
+                                    <div class="me-3">
+                                        <i class="fas fa-exclamation-triangle fa-2x"></i>
+                                    </div>
+                                    <div class="flex-grow-1">
+                                        <h6 class="mb-1">❌ Upload Status Unavailable</h6>
+                                        <small>Lost contact with the server while processing your file. Please refresh the page and try again.</small>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
                     });
             };
-            
+
             // Start polling
             pollUploadStatus();
         })
@@ -1247,13 +934,7 @@ function endCalculationSession() {
     
     function quickAction(action) {
         console.log('quickAction called with:', action);
-        
-        // Reset calculation session flag when starting new calculation questions
-        if (action === 'Calculation questions') {
-            calculationSessionEnded = false;
-            console.log('📝 Reset calculation session flag for new session');
-        }
-        
+
         addMessage('user', action);
         
         // Clear previous active states and set current button as active
@@ -1297,297 +978,7 @@ function endCalculationSession() {
             return;
         }
         
-        function startEssayPolling(taskId) {
-            console.log('📝 Starting essay polling for task:', taskId);
-            
-            const pollInterval = 2000; // 2 seconds between polls
-            const maxAttempts = 90; // Maximum 90 attempts (180 seconds)
-            let attempts = 0;
-            
-            const poll = () => {
-                attempts++;
-                console.log(`📝 Essay polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
-                
-                fetch(`/essay_status/${taskId}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log('📝 Essay poll response:', data);
-                    
-                    if (data.status === 'complete' && data.success) {
-                        console.log('✓ Essay generation completed');
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        // Add the essay question to the chat
-                        addMessage('assistant', data.data);
-                        
-                        // Set button to active state (green) to show success
-                        if (clickedButton) {
-                            clickedButton.classList.remove('processing');
-                            clickedButton.classList.add('active');
-                        }
-                        
-                    } else if (data.status === 'failed' || data.status === 'error') {
-                        console.error('✗ Essay generation failed:', data.error);
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', data.error || 'Essay generation failed');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                        
-                    } else if (data.status === 'pending') {
-                        // Task still running, continue polling
-                        if (attempts < maxAttempts) {
-                            setTimeout(poll, pollInterval);
-                        } else {
-                            console.error('✗ Essay polling timeout');
-                            
-                            // Stop progress bar
-                            if (currentProgressTimer) {
-                                clearInterval(currentProgressTimer);
-                                currentProgressTimer = null;
-                            }
-                            
-                            // Remove progress indicator
-                            const progressIndicator = document.getElementById('progress-indicator');
-                            if (progressIndicator) {
-                                progressIndicator.remove();
-                            }
-                            
-                            addMessage('assistant', 'Essay generation is taking longer than expected. Please try again.');
-                            
-                            // Clear active state on timeout
-                            document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                                btn.classList.remove('processing', 'active');
-                            });
-                        }
-                    } else {
-                        console.error('✗ Unknown essay status:', data.status);
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', 'Unknown error occurred during essay generation');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                    }
-                })
-                .catch(error => {
-                    console.error('✗ Essay polling error:', error);
-                    
-                    if (attempts < maxAttempts) {
-                        // Retry on network error
-                        setTimeout(poll, pollInterval);
-                    } else {
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', 'Network error during essay generation. Please try again.');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                    }
-                });
-            };
-            
-            // Start polling immediately
-            poll();
-        }
-        
-
-        
-        function startKeyConceptsPolling(taskId) {
-            console.log('🔑 Starting key concepts polling for task:', taskId);
-            
-            const pollInterval = 2000; // 2 seconds between polls
-            const maxAttempts = 90; // Maximum 90 attempts (180 seconds)
-            let attempts = 0;
-            
-            const poll = () => {
-                attempts++;
-                console.log(`🔑 Key concepts polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
-                
-                fetch(`/key_concepts_status/${taskId}`)
-                .then(response => response.json())
-                .then(data => {
-                    console.log('🔑 Key concepts poll response:', data);
-                    
-                    if (data.status === 'complete' && data.success) {
-                        console.log('✓ Key concepts generation completed');
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        // Add the key concepts explanation to the chat
-                        addMessage('assistant', data.data);
-                        
-                        // Set button to active state (green) to show success
-                        if (clickedButton) {
-                            clickedButton.classList.remove('processing');
-                            clickedButton.classList.add('active');
-                        }
-                        
-                    } else if (data.status === 'failed' || data.status === 'error') {
-                        console.error('✗ Key concepts generation failed:', data.error);
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', data.error || 'Key concepts generation failed');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                        
-                    } else if (data.status === 'pending') {
-                        // Task still running, continue polling
-                        if (attempts < maxAttempts) {
-                            setTimeout(poll, pollInterval);
-                        } else {
-                            console.error('✗ Key concepts polling timeout');
-                            
-                            // Stop progress bar
-                            if (currentProgressTimer) {
-                                clearInterval(currentProgressTimer);
-                                currentProgressTimer = null;
-                            }
-                            
-                            // Remove progress indicator
-                            const progressIndicator = document.getElementById('progress-indicator');
-                            if (progressIndicator) {
-                                progressIndicator.remove();
-                            }
-                            
-                            addMessage('assistant', 'Key concepts generation is taking longer than expected. Please try again.');
-                            
-                            // Clear active state on timeout
-                            document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                                btn.classList.remove('processing', 'active');
-                            });
-                        }
-                    } else {
-                        console.error('✗ Unknown key concepts status:', data.status);
-                        
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', 'Unknown error occurred during key concepts generation');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                    }
-                })
-                .catch(error => {
-                    console.error('✗ Key concepts polling error:', error);
-                    
-                    if (attempts < maxAttempts) {
-                        // Retry on network error
-                        setTimeout(poll, pollInterval);
-                    } else {
-                        // Stop progress bar
-                        if (currentProgressTimer) {
-                            clearInterval(currentProgressTimer);
-                            currentProgressTimer = null;
-                        }
-                        
-                        // Remove progress indicator
-                        const progressIndicator = document.getElementById('progress-indicator');
-                        if (progressIndicator) {
-                            progressIndicator.remove();
-                        }
-                        
-                        addMessage('assistant', 'Network error during key concepts generation. Please try again.');
-                        
-                        // Clear active state on error
-                        document.querySelectorAll('.btn-outline-primary').forEach(btn => {
-                            btn.classList.remove('processing', 'active');
-                        });
-                    }
-                });
-            };
-            
-            // Start polling immediately
-            poll();
-        }
-        
-        // Map actions to specific API endpoints
+// Map actions to specific API endpoints
         const streamActionMap = {
             'Explanation of key concepts': 'key_concepts',
             'Essay question': 'essay'
@@ -1595,8 +986,8 @@ function endCalculationSession() {
         
         const streamAction = streamActionMap[action];
         if (!streamAction) {
-            // Fallback to general chat for unknown actions
-            generalChat(action);
+            // Unknown action — nothing to stream (the legacy /chat fallback was removed)
+            console.warn('Unknown quick action:', action);
             return;
         }
         
@@ -1646,47 +1037,22 @@ function endCalculationSession() {
             }
 
             const messageDiv = document.createElement('div');
-            messageDiv.className = 'message assistant chat-message entering';
+            messageDiv.className = 'message assistant chat-message';
             const messageContent = document.createElement('div');
             messageContent.className = 'message-content';
             messageDiv.appendChild(messageContent);
 
-            let fullText = '';
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
-
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const payload = line.slice(6);
-                    if (payload === '[DONE]') continue;
-                    try {
-                        const chunk = JSON.parse(payload);
-                        fullText += chunk;
-
-                        // On first chunk, swap progress bar for message bubble
-                        if (!progressRemoved) {
-                            removeProgress();
-                            messagesDiv.appendChild(messageDiv);
-                            requestAnimationFrame(() => {
-                                messageDiv.classList.remove('entering');
-                                messageDiv.classList.add('entered');
-                            });
-                        }
-
-                        messageContent.innerHTML = formatMessageSimplified(fullText);
-                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                    } catch (e) { /* ignore malformed */ }
+            const fullText = await streamSSE(response, {
+                onFirstChunk: () => {
+                    // On first chunk, swap progress bar for message bubble
+                    removeProgress();
+                    messagesDiv.appendChild(messageDiv);
+                },
+                render: (text) => {
+                    messageContent.innerHTML = formatMessageSimplified(text);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 }
-            }
+            });
 
             // If no chunks arrived at all, still clean up
             if (!progressRemoved) {
@@ -1696,10 +1062,9 @@ function endCalculationSession() {
                 }
             }
 
-            // Final render with MathJax if needed
+            // Render math after the final render
             if (fullText) {
-                messageContent.innerHTML = formatMessageSimplified(fullText);
-                const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align') || fullText.includes('\\begin{');
+                const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{');
                 if (hasMath) {
                     loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
                 }
@@ -1771,47 +1136,22 @@ function endCalculationSession() {
             }
 
             const messageDiv = document.createElement('div');
-            messageDiv.className = 'message assistant chat-message entering';
+            messageDiv.className = 'message assistant chat-message';
             const messageContent = document.createElement('div');
             messageContent.className = 'message-content';
             messageDiv.appendChild(messageContent);
 
-            let fullText = '';
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
-
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const payload = line.slice(6);
-                    if (payload === '[DONE]') continue;
-                    try {
-                        const chunk = JSON.parse(payload);
-                        fullText += chunk;
-
-                        // On first chunk, swap progress bar for message bubble
-                        if (!progressRemoved) {
-                            removeProgress();
-                            messagesDiv.appendChild(messageDiv);
-                            requestAnimationFrame(() => {
-                                messageDiv.classList.remove('entering');
-                                messageDiv.classList.add('entered');
-                            });
-                        }
-
-                        messageContent.innerHTML = formatMessageSimplified(fullText);
-                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                    } catch (e) { /* ignore malformed */ }
+            const fullText = await streamSSE(response, {
+                onFirstChunk: () => {
+                    // On first chunk, swap progress bar for message bubble
+                    removeProgress();
+                    messagesDiv.appendChild(messageDiv);
+                },
+                render: (text) => {
+                    messageContent.innerHTML = formatMessageSimplified(text);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 }
-            }
+            });
 
             // If no chunks arrived at all, still clean up
             if (!progressRemoved) {
@@ -1821,9 +1161,8 @@ function endCalculationSession() {
                 }
             }
 
-            // Final render with MathJax if needed
+            // Render math after the final render
             if (fullText) {
-                messageContent.innerHTML = formatMessageSimplified(fullText);
                 const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{align');
                 if (hasMath) {
                     loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
@@ -1940,460 +1279,12 @@ function endCalculationSession() {
     
 
     
-    function showInteractiveQuiz(quizData) {
-        // Hide chat container and show quiz container
-        document.getElementById('chatContainer').style.display = 'none';
-        const quizContainer = document.getElementById('quizContainer');
-        const quizContent = document.getElementById('quizContent');
-        
-        // Hide chat input and quick actions when quiz is active
-        const chatInput = document.querySelector('.chat-input');
-        const quickActions = document.querySelector('.quick-actions');
-        if (chatInput) {
-            chatInput.style.display = 'none';
-        }
-        if (quickActions) {
-            quickActions.style.display = 'none';
-        }
-        
-        if (quizContainer && quizContent) {
-            quizContainer.style.display = 'block';
-            
-            const progress = (quizData.question_number / quizData.total_questions) * 100;
-            const question = quizData.current_question;
-            
-            quizContent.innerHTML = `
-                <div class="progress-indicator">
-                    <div class="progress-text d-flex justify-content-between mb-2">
-                        <span>Question ${quizData.question_number} of ${quizData.total_questions}</span>
-                        <span>Score: 0</span>
-                    </div>
-                    <div class="progress">
-                        <div class="progress-bar" style="width: ${progress}%; background-color: ${progress >= 100 ? '#D6000D' : '#FF6600'}"></div>
-                    </div>
-                </div>
-                
-                <div class="quiz-question mt-3">
-                    <h5>${question.question}</h5>
-                    <div class="quiz-options">
-                        ${question.options.map((option, index) => `
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="radio" name="answer" value="${option}" id="option${index}">
-                                <label class="form-check-label" for="option${index}">${option}</label>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-                
-                <div class="d-flex justify-content-between mt-3">
-                    <button class="btn btn-secondary" onclick="endQuiz()">End Quiz</button>
-                    <button class="btn btn-primary" onclick="submitQuizAnswer()">Submit Answer</button>
-                </div>
-            `;
-            
-            // Store current quiz data globally
-            window.currentQuizData = quizData;
-        }
-    }
-    
-    function generalChat(message) {
-        // Check if any progress bar is currently active
-        const progressBars = document.querySelectorAll('.progress-bar');
-        const hasActiveProgress = Array.from(progressBars).some(bar => 
-            bar.style.width !== '0%' && bar.style.width !== '' && bar.style.width !== '100%'
-        );
-        
-        // Only show loading if no progress bar is active
-        if (!hasActiveProgress) {
-            showLoading();
-        }
-        
-        fetch('/chat', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ message: message })
-        })
-        .then(response => {
-            // Check if response is OK and contains JSON
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            
-            // Try to parse as JSON, but handle HTML responses gracefully
-            const contentType = response.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
-                return response.json();
-            } else {
-                // If not JSON, treat as text and wrap in error structure
-                return response.text().then(text => ({
-                    success: false,
-                    error: 'I\'m having trouble connecting to the AI service right now. This is likely a temporary issue. Please try again in a few moments.'
-                }));
-            }
-        })
-        .then(data => {
-            if (!hasActiveProgress) {
-                hideLoading();
-            }
-            if (data.response) {
-                addMessage('assistant', data.response);
-            } else if (data.error) {
-                addMessage('assistant', data.error);
-            }
-        })
-        .catch(error => {
-            if (!hasActiveProgress) {
-                hideLoading();
-            }
-            addMessage('assistant', 'Error: ' + error.message);
-        });
-    }
-    
-    function displayQuizQuestions(questions) {
-        let content = "📚 **Retrieval Quiz Questions:**\n\n";
-        questions.forEach((q, index) => {
-            content += `**Question ${index + 1}:** ${q.question}\n\n`;
-            content += `**Answer:** ${q.answer}\n\n`;
-            content += `**Explanation:** ${q.explanation}\n\n---\n\n`;
-        });
-        addMessage('assistant', content);
-    }
-    
-    function displayCalculationQuestions(equations) {
-        let content = "🔢 **Practice Calculations:**\n\n";
-        equations.forEach((eq, index) => {
-            content += `**Problem ${index + 1}:**\n`;
-            content += `${eq.description}\n\n`;
-            content += `**Formula:** ${eq.equation}\n\n`;
-            if (eq.worked_example) {
-                content += `**Worked Example:**\n${eq.worked_example}\n\n`;
-            }
-            content += `**Your Turn:** Calculate using the given values\n`;
-            if (eq.variables) {
-                Object.entries(eq.variables).forEach(([key, value]) => {
-                    content += `• ${key} = ${value.value} (${value.description})\n`;
-                });
-            }
-        });
-        addMessage('assistant', content);
-    }
-    
-    // Removed old calculation quiz functions - now using simplified chat-based approach
-    
-
-
-
-    function formatMarkdownContent(content) {
-        // Return empty string if content is invalid
-        if (!content || typeof content !== 'string') return '';
-
-        // 1. Un-escape newlines: The AI often sends '\\n' instead of '\n'.
-        const processedContent = content.replace(/\\n/g, '\n');
-
-        // 2. Use the 'marked' library if it's available to parse full markdown.
-        //    'gfm: true' enables GitHub Flavored Markdown for better list support.
-        //    'breaks: true' turns single newlines into <br> tags.
-        if (typeof marked !== 'undefined') {
-            return marked.parse(processedContent, { gfm: true, breaks: true });
-        }
-
-        // 3. Simple fallback if 'marked' is not loaded for some reason.
-        return processedContent.replace(/\n/g, '<br>');
-    }
-
-
-
-
-
-
-
-    // REPLACE THE OLD ensureMathDelimiters FUNCTION WITH THIS NEW ONE
-
-    /**
-     * Aggressively cleans and ensures a string is properly wrapped in 
-     * display math delimiters ($$) for MathJax. It strips any existing
-     * delimiters before wrapping.
-     * @param {string} str The string to format.
-     * @returns {string} The formatted string ready for MathJax.
-     */
-    function ensureMathDelimiters(str) {
-        if (!str) return '';
-
-        // Start with the trimmed string
-        let equation = str.trim();
-
-        // 1. Aggressively strip ALL leading dollar signs
-        while (equation.startsWith('$')) {
-            equation = equation.substring(1);
-        }
-
-        // 2. Aggressively strip ALL trailing dollar signs
-        while (equation.endsWith('$')) {
-            equation = equation.substring(0, equation.length - 1);
-        }
-
-        // 3. Return the clean equation wrapped in a fresh, single pair of $$
-        //    An extra trim() is added for safety.
-        return `$$${equation.trim()}$$`;
-    }
-
-
-
-
-
-    // ADD THIS NEW HELPER FUNCTION TO YOUR <script> BLOCK
-
-    /**
-     * Parses a comma-separated string of variable descriptions into a neat HTML bullet list.
-     * @param {string} variablesString The string from the JSON response.
-     * @returns {string} An HTML <ul> element.
-     */
-    function formatVariableList(variablesString) {
-        // Return empty if the string is invalid or empty
-        if (!variablesString || typeof variablesString !== 'string') return '';
-
-        // 1. Split the string by the comma delimiter.
-        // 2. Map over each item to trim leading/trailing whitespace.
-        // 3. Filter out any empty items that might result from extra commas.
-        // 4. Map the clean items into <li> tags.
-        // 5. Join them into a single string.
-        const listItems = variablesString.split(',')
-            .map(item => item.trim())
-            .filter(item => item.length > 0)
-            .map(item => `<li>${item}</li>`)
-            .join('');
-
-        // Wrap the list items in a <ul> tag.
-        return `<ul>${listItems}</ul>`;
-    }
-
-
-    
-
-
-
-
-    
-
-    
-    // Removed old calculation quiz display functions - now using simplified chat-based approach
-    // Removed old calculation quiz error handling - now using simplified chat-based approach
-
-
-
-
-
-
-    
-    // Removed old calculation quiz feedback functions - now using simplified chat-based approach
-    
-    // Removed old calculation quiz start function - now using simplified chat-based approach
-        
-    // Removed old calculation quiz end functions - now using simplified chat-based approach
-    
-    // Simplified LaTeX formatting function - let MathJax handle everything natively
-    function formatMessageWithLatexIsolation(content) {
-        console.log('=== GLOBAL FORMATMESSAGE DEBUG START ===');
-        console.log('Raw input content (FULL):', content);
-        console.log('Input length:', content.length);
-        console.log('Contains \\\\\\\\[:', content.includes('\\\\['));
-        console.log('Contains \\\\\\\\(:', content.includes('\\\\('));
-        console.log('Contains \\\\[:', content.includes('\\\\['));
-        console.log('Contains \\\\(:', content.includes('\\\\('));
-        console.log('Contains \\[:', content.includes('\\['));
-        console.log('Contains \\(:', content.includes('\\('));
-        console.log('Contains underscores:', content.includes('_'));
-        console.log('Contains $:', content.includes('$'));
-        console.log('Contains align*:', content.includes('align*'));
-        console.log('Contains begin{:', content.includes('\\begin{'));
-        console.log('Contains \\\\\\\\begin{:', content.includes('\\\\begin{'));
-        
-        // STEP 1: ISOLATE & PROTECT - Extract all LaTeX expressions for safe storage
-        const latexBlocks = [];
-        let blockIndex = 0;
-        
-        // Protect LaTeX environments - check quadruple, double and single backslashes (from JSON escaping)
-        content = content.replace(/\\\\\\\\begin\{[^}]+\}[\s\S]*?\\\\\\\\end\{[^}]+\}/g, (match) => {
-            console.log('STEP 1A: Protected LaTeX environment (quadruple \\\\\\\\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        content = content.replace(/\\\\begin\{[^}]+\}[\s\S]*?\\\\end\{[^}]+\}/g, (match) => {
-            console.log('STEP 1B: Protected LaTeX environment (double \\\\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        content = content.replace(/\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}/g, (match) => {
-            console.log('STEP 1C: Protected LaTeX environment (single \\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        
-        // Protect display math blocks \[ ... \] - check quadruple, double and single backslashes
-        content = content.replace(/\\\\\\\\\[[\s\S]*?\\\\\\\\\]/g, (match) => {
-            console.log('STEP 1D: Protected display math (quadruple \\\\\\\\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        content = content.replace(/\\\\\[[\s\S]*?\\\\\]/g, (match) => {
-            console.log('STEP 1E: Protected display math (double \\\\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        content = content.replace(/\\\[[\s\S]*?\\\]/g, (match) => {
-            console.log('STEP 1F: Protected display math (single \\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        
-        // Protect inline math blocks \( ... \) - check quadruple, double and single backslashes
-        content = content.replace(/\\\\\\\\\([\s\S]*?\\\\\\\\\)/g, (match) => {
-            console.log('STEP 1G: Protected inline math (quadruple \\\\\\\\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        content = content.replace(/\\\\\([\s\S]*?\\\\\)/g, (match) => {
-            console.log('STEP 1H: Protected inline math (double \\\\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        content = content.replace(/\\\([\s\S]*?\\\)/g, (match) => {
-            console.log('STEP 1I: Protected inline math (single \\):', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        
-        // Protect dollar sign math (legacy support)
-        content = content.replace(/\$\$[\s\S]*?\$\$/g, (match) => {
-            console.log('STEP 1J: Protected display dollar math:', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        
-        content = content.replace(/\$[^$\n]+\$/g, (match) => {
-            console.log('STEP 1K: Protected inline dollar math:', match);
-            latexBlocks.push(match);
-            return `\uE000LATEXBLOCK${blockIndex++}\uE001`;
-        });
-        
-        console.log('STEP 1 COMPLETE: LaTeX blocks isolated:', latexBlocks.length);
-        console.log('ALL ISOLATED BLOCKS:', latexBlocks);
-        console.log('Content after isolation (FULL):', content);
-        
-        // STEP 2: PROCESS MARKDOWN - Apply markdown formatting to non-LaTeX content
-        let processedContent;
-        if (typeof marked !== 'undefined') {
-            processedContent = content.replace(/\\n/g, '\n');
-            processedContent = marked.parse(processedContent);
-        } else {
-            // Manual markdown processing as fallback
-            processedContent = content.replace(/\\n/g, '\n');
-            processedContent = processedContent.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-            processedContent = processedContent.replace(/\*((?!\*)[^*]+)\*/g, '<em>$1</em>');
-            processedContent = processedContent.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
-            processedContent = processedContent.replace(/(?<![\w\\])_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
-            processedContent = processedContent.replace(/`([^`]+)`/g, '<code>$1</code>');
-            processedContent = processedContent.replace(/\n/g, '<br>');
-        }
-        
-        console.log('STEP 2 COMPLETE: Markdown processed');
-        console.log('Processed content after markdown (FULL):', processedContent);
-        
-        // STEP 3: RESTORE - Put pristine LaTeX back into the processed HTML
-        console.log('STEP 3: Starting restoration...');
-        for (let i = 0; i < latexBlocks.length; i++) {
-            let latexBlock = latexBlocks[i];
-            
-            console.log(`STEP 3.${i}: Restoring block ${i}`);
-            console.log(`  Original: ${latexBlock}`);
-            
-            // Convert double-escaped backslashes back to single backslashes for MathJax
-            latexBlock = latexBlock.replace(/\\\\/g, '\\');
-            console.log(`  After delimiter fix: ${latexBlock}`);
-            
-            // Use global replace to handle all occurrences
-            const placeholder = `\uE000LATEXBLOCK${i}\uE001`;
-            console.log(`  Looking for placeholder: ${placeholder}`);
-            console.log(`  Content contains placeholder: ${processedContent.includes(placeholder)}`);
-            
-            // Check if placeholder exists in HTML tags or as bold text
-            const htmlTagMatch = processedContent.match(new RegExp(`<[^>]*${placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^>]*>`, 'g'));
-            if (htmlTagMatch) {
-                console.log(`  ⚠️  Placeholder found inside HTML tag: ${htmlTagMatch}`);
-            }
-            
-            // Check if markdown converted placeholder to bold, italic, or underscore+italic
-            const boldPlaceholderPattern = `<strong>LATEX_BLOCK_${i}</strong>`;
-            const italicPlaceholderPattern = `<em>LATEX_BLOCK_${i}</em>`;
-            const underscoreItalicPattern = `_<em>LATEX_BLOCK_${i}</em>_`;
-            const hasBoldPlaceholder = processedContent.includes(boldPlaceholderPattern);
-            const hasItalicPlaceholder = processedContent.includes(italicPlaceholderPattern);
-            const hasUnderscoreItalic = processedContent.includes(underscoreItalicPattern);
-            console.log(`  Bold placeholder ${boldPlaceholderPattern} exists: ${hasBoldPlaceholder}`);
-            console.log(`  Italic placeholder ${italicPlaceholderPattern} exists: ${hasItalicPlaceholder}`);
-            console.log(`  Underscore+Italic placeholder ${underscoreItalicPattern} exists: ${hasUnderscoreItalic}`);
-            
-            // Count occurrences of all formats
-            const plainOccurrences = (processedContent.match(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            const boldOccurrences = (processedContent.match(new RegExp(boldPlaceholderPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            const italicOccurrences = (processedContent.match(new RegExp(italicPlaceholderPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            const underscoreItalicOccurrences = (processedContent.match(new RegExp(underscoreItalicPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            console.log(`  Plain placeholder occurs ${plainOccurrences} times`);
-            console.log(`  Bold placeholder occurs ${boldOccurrences} times`);
-            console.log(`  Italic placeholder occurs ${italicOccurrences} times`);
-            console.log(`  Underscore+Italic placeholder occurs ${underscoreItalicOccurrences} times`);
-            
-            // Replace all formats
-            processedContent = processedContent.split(placeholder).join(latexBlock);
-            processedContent = processedContent.split(boldPlaceholderPattern).join(latexBlock);
-            processedContent = processedContent.split(italicPlaceholderPattern).join(latexBlock);
-            processedContent = processedContent.split(underscoreItalicPattern).join(latexBlock);
-            
-            console.log(`  Content after replacement (first 500 chars): ${processedContent.substring(0, 500)}`);
-            
-            // Verify replacement worked
-            const remainingPlain = (processedContent.match(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            const remainingBold = (processedContent.match(new RegExp(boldPlaceholderPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            const remainingItalic = (processedContent.match(new RegExp(italicPlaceholderPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            const remainingUnderscoreItalic = (processedContent.match(new RegExp(underscoreItalicPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            console.log(`  Remaining plain placeholders: ${remainingPlain}`);
-            console.log(`  Remaining bold placeholders: ${remainingBold}`);
-            console.log(`  Remaining italic placeholders: ${remainingItalic}`);
-            console.log(`  Remaining underscore+italic placeholders: ${remainingUnderscoreItalic}`);
-        }
-        
-        console.log('STEP 3 COMPLETE: LaTeX blocks restored');
-        console.log('Final output content (FULL):', processedContent);
-        
-        // Final verification - check for any remaining placeholders
-        let remainingPlaceholders = 0;
-        for (let i = 0; i < 20; i++) {
-            const placeholder = `\uE000LATEXBLOCK${i}\uE001`;
-            if (processedContent.includes(placeholder)) {
-                console.log(`⚠️ REMAINING PLACEHOLDER: ${placeholder}`);
-                remainingPlaceholders++;
-            }
-        }
-        console.log('Total remaining placeholders:', remainingPlaceholders);
-        
-        console.log('=== GLOBAL FORMATMESSAGE DEBUG END ===');
-        
-        return processedContent;
-    }
-
-    // NEW SIMPLIFIED LATEX FUNCTION - bypasses complex placeholder system
+// NEW SIMPLIFIED LATEX FUNCTION - bypasses complex placeholder system
     function formatMessageSimplified(content) {
-        console.log('🔥🔥🔥 FORMATMESSAGESIMPLIFIED DEBUG START 🔥🔥🔥');
         if (!content) {
-            console.log('🔥 EMPTY CONTENT - RETURNING EMPTY STRING');
             return '';
         }
-        
-        console.log('🔥 INPUT CONTENT LENGTH:', content.length);
-        console.log('🔥 INPUT CONTENT (FIRST 800 CHARS):', content.substring(0, 800));
-        
+
         // Replace LaTeX currency commands with Unicode equivalents before any other processing
         // \pounds appears literally when MathJax can't resolve it; £ renders correctly in all contexts
         let result = content.replace(/\\pounds\b/g, '£');
@@ -2411,7 +1302,7 @@ function endCalculationSession() {
         result = result.replace(/\\\\\]/g, '\\]');
         result = result.replace(/\\\\\(/g, '\\(');
         result = result.replace(/\\\\\)/g, '\\)');
-        
+
         // Protect LaTeX blocks from markdown / bullet / <br> processing.
         // Order: environments first (so \\[6pt] line breaks inside align*
         // don't trigger the display-math regex), then display math, then inline.
@@ -2424,11 +1315,17 @@ function endCalculationSession() {
         // 1. Standalone environments (\begin{align*}...\end{align*}, \begin{bmatrix}...\end{bmatrix}, etc.)
         //    Backreference \1 ensures \begin{X} matches \end{X}, not the first \end{anything}.
         result = result.replace(/\\begin\{([^}]+)\}[\s\S]*?\\end\{\1\}/g, protectLatex);
-        // 2. Display math \[...\] — lookbehind rejects \\[Npt] line-spacing commands
-        result = result.replace(/(?<!\\)\\\[[\s\S]*?\\\]/g, protectLatex);
-        // 3. Inline math \(...\)
-        result = result.replace(/(?<!\\)\\\([\s\S]*?\\\)/g, protectLatex);
-        
+        // 2. Display math \[...\] — a preceding backslash (i.e. \\[Npt] line-spacing) must not match.
+        //    Written lookbehind-free for Safari/iOS < 16.4: match the preceding non-backslash
+        //    character (or start of string) explicitly and re-insert it.
+        result = result.replace(/(^|[^\\])(\\\[[\s\S]*?\\\])/g, function(m, pre, latex) {
+            return pre + protectLatex(latex);
+        });
+        // 3. Inline math \(...\) — same lookbehind-free construction.
+        result = result.replace(/(^|[^\\])(\\\([\s\S]*?\\\))/g, function(m, pre, latex) {
+            return pre + protectLatex(latex);
+        });
+
         // Markdown headings (# Heading) → bold+italic line, matching the
         // ***HEADING*** house style. The models occasionally emit hash
         // headings despite prompt instructions forbidding them.
@@ -2438,178 +1335,63 @@ function endCalculationSession() {
         result = result.replace(/\*((?!\*)[^*\n]+)\*/g, '<em>$1</em>');  // Handle italics
         // Underscore variants (__bold__, _italic_). LaTeX is already swapped for
         // \uE000LATEXBLOCKn\uE001 placeholders (markdown-inert, no underscores),
-        // and the boundary checks keep snake_case untouched.
+        // and the boundary checks keep snake_case untouched. The _italic_ rule is
+        // lookbehind-free for Safari/iOS < 16.4: the leading boundary character
+        // is matched explicitly and re-inserted via $1.
         result = result.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
-        result = result.replace(/(?<![\w\\])_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
+        result = result.replace(/(^|[^\w\\])_([^_\n]+)_(?!\w)/g, '$1<em>$2</em>');
         result = result.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-        
-        console.log('🔥 AFTER MARKDOWN PROCESSING (BEFORE BULLETS):', result.substring(0, 800));
-        
-        // Show raw lines to see exact formatting
-        const lines = result.split(/\r?\n/);
-        console.log('🔥 FIRST 20 LINES OF CONTENT:');
-        for (let i = 0; i < Math.min(20, lines.length); i++) {
-            console.log(`Line ${i}: "${lines[i]}"`);
-        }
-        
-        // Check for bullet point patterns in input - including indented ones
-        const bulletRegex = /^\s*[-*•]\s+(.+)$/gm;
-        const bulletMatches = result.match(bulletRegex);
-        console.log('🔥 BULLET POINT PATTERNS FOUND:', bulletMatches ? bulletMatches.length : 0);
-        if (bulletMatches) {
-            console.log('🔥 BULLET EXAMPLES:', bulletMatches.slice(0, 3));
-        }
-        
-        // Try different patterns to see what we're dealing with
-        const dashPattern = /^\s*-\s/gm;
-        const asteriskPattern = /^\s*\*\s/gm;
-        const bulletPattern = /^\s*•\s/gm;
-        console.log('🔥 DASH PATTERN MATCHES:', (result.match(dashPattern) || []).length);
-        console.log('🔥 ASTERISK PATTERN MATCHES:', (result.match(asteriskPattern) || []).length);
-        console.log('🔥 BULLET PATTERN MATCHES:', (result.match(bulletPattern) || []).length);
-        
+
         // Handle bullet points - more comprehensive patterns including indented ones
-        const beforeBulletConversion = result;
         result = result.replace(/^\s*[-*•]\s+(.+)$/gm, '<li>$1</li>');
-        result = result.replace(/^\s*(\d+\.)\s+(.+)$/gm, '<li>$2</li>'); // numbered lists
-        
-        console.log('🔥 BULLET CONVERSION CHANGED CONTENT:', beforeBulletConversion !== result);
-        console.log('🔥 AFTER BULLET CONVERSION:', result.substring(0, 800));
-        
+        // Numbered lists: keep the number in the visible text — the list CSS
+        // renders a dash via li::before, so dropping the number would lose it.
+        result = result.replace(/^\s*(\d+\.)\s+(.+)$/gm, '<li>$1 $2</li>');
+
         // Wrap consecutive list items in ul tags - handle multiline and spacing
-        const beforeUlWrapping = result;
         result = result.replace(/(<li>.*?<\/li>)(\s*<li>.*?<\/li>)*/gs, '<ul>$&</ul>');
-        // Clean up any extra whitespace around lists
+
+        result = result.replace(/\n/g, '<br>');
+
+        // Clean up stray <br> around lists. This must run AFTER the newline
+        // conversion above — before it there are no <br> tags to strip.
         result = result.replace(/<br>\s*<ul>/g, '<ul>');
         result = result.replace(/<\/ul>\s*<br>/g, '</ul><br>');
-        
-        console.log('🔥 UL WRAPPING CHANGED CONTENT:', beforeUlWrapping !== result);
-        console.log('🔥 AFTER UL WRAPPING:', result.substring(0, 800));
-        
-        // Check final HTML structure
-        const finalUlRegex = /<ul>.*?<\/ul>/gs;
-        const finalLiRegex = /<li>.*?<\/li>/g;
-        const finalUlMatches = result.match(finalUlRegex);
-        const finalLiMatches = result.match(finalLiRegex);
-        
-        console.log('🔥 FINAL UL ELEMENTS:', finalUlMatches ? finalUlMatches.length : 0);
-        console.log('🔥 FINAL LI ELEMENTS:', finalLiMatches ? finalLiMatches.length : 0);
-        if (finalUlMatches) {
-            console.log('🔥 FIRST FINAL UL:', finalUlMatches[0]);
-        }
-        
-        result = result.replace(/\n/g, '<br>');
-        
+
         // Restore protected LaTeX blocks in REVERSE order so that outer blocks
         // (which may contain inner-block placeholders) are restored first,
         // exposing those inner placeholders for subsequent restoration passes.
         for (let i = latexBlocks.length - 1; i >= 0; i--) {
             result = result.split(`\uE000LATEXBLOCK${i}\uE001`).join(latexBlocks[i]);
         }
-        
-        console.log('🔥 FINAL RESULT LENGTH:', result.length);
-        console.log('🔥🔥🔥 FORMATMESSAGESIMPLIFIED DEBUG END 🔥🔥🔥');
-        
+
         return result;
     }
 
     function addMessage(role, content) {
-        console.log('🔥🔥🔥 GLOBAL ADDMESSAGE DEBUG START 🔥🔥🔥');
-        console.log('🔥 Role:', role);
-        console.log('🔥 Content type:', typeof content);
-        console.log('🔥 Content length:', content ? content.length : 'null/undefined');
-        console.log('🔥 IS THIS CALCULATION QUESTION?', content && content.includes('CALCULATION QUESTION'));
-        console.log('🔥 IS THIS EXECUTIVE SUMMARY?', content && content.includes('Executive Summary'));
-        console.log('🔥🔥🔥 FULL RAW CONTENT (COMPLETE):');
-        console.log(content);
-        console.log('🔥🔥🔥 END FULL RAW CONTENT 🔥🔥🔥');
-        console.log('Contains LaTeX delimiters:');
-        console.log('  \\\\[:', content ? content.includes('\\\\[') : false);
-        console.log('  \\\\(:', content ? content.includes('\\\\(') : false);
-        console.log('  \\[:', content ? content.includes('\\[') : false);
-        console.log('  \\(:', content ? content.includes('\\(') : false);
-        console.log('  $:', content ? content.includes('$') : false);
-        console.log('  _:', content ? content.includes('_') : false);
-        
         const messagesDiv = document.getElementById('messages');
         const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${role} chat-message entering`;
-        console.log('🔥 MESSAGE DIV CLASSES:', messageDiv.className);
-        
+        messageDiv.className = `message ${role} chat-message`;
+
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
-        
+
         // Use simplified LaTeX formatting to fix multi-line rendering
-        console.log('🔥 ADDMESSAGE: Calling formatMessageSimplified...');
-        console.log('🔥 ADDMESSAGE: Input content sample:', content ? content.substring(0, 500) : 'null/undefined');
-        const formattedContent = formatMessageSimplified(content);
-        console.log('🔥 ADDMESSAGE: formatMessageSimplified returned (first 500 chars):', formattedContent ? formattedContent.substring(0, 500) : 'null/undefined');
-        console.log('Final formatted content contains placeholders:');
-        for (let i = 0; i < 10; i++) {
-            const placeholder = `\uE000LATEXBLOCK${i}\uE001`;
-            if (formattedContent && formattedContent.includes(placeholder)) {
-                console.log(`  🔍 FOUND PLACEHOLDER: ${placeholder}`);
-            }
-        }
-        
-        console.log('🔥 ADDMESSAGE: SETTING contentDiv.innerHTML...');
-        contentDiv.innerHTML = formattedContent;
-        console.log('🔥 ADDMESSAGE: contentDiv.innerHTML SET COMPLETE');
-        console.log('🔥 ADDMESSAGE: contentDiv.innerHTML ACTUAL CONTENT:', contentDiv.innerHTML.substring(0, 500));
-        
-        // Check if HTML lists were created
-        const ulElements = contentDiv.querySelectorAll('ul');
-        const liElements = contentDiv.querySelectorAll('li');
-        console.log('🔥 ADDMESSAGE: UL elements in DOM:', ulElements.length);
-        console.log('🔥 ADDMESSAGE: LI elements in DOM:', liElements.length);
-        if (ulElements.length > 0) {
-            console.log('🔥 ADDMESSAGE: First UL element HTML:', ulElements[0].outerHTML.substring(0, 200));
-            
-            // DEBUG UL SPACING - Check computed styles after DOM insertion
-            setTimeout(() => {
-                const firstUL = document.querySelector('.message ul, .message-content ul');
-                if (firstUL) {
-                    const computedStyle = window.getComputedStyle(firstUL);
-                    console.log('🔥 DEBUG UL SPACING: margin-top:', computedStyle.marginTop);
-                    console.log('🔥 DEBUG UL SPACING: margin-bottom:', computedStyle.marginBottom);
-                    console.log('🔥 DEBUG UL SPACING: background-color:', computedStyle.backgroundColor);
-                    console.log('🔥 DEBUG UL SPACING: border:', computedStyle.border);
-                    console.log('🔥 DEBUG UL SPACING: UL classList:', firstUL.classList.toString());
-                    console.log('🔥 DEBUG UL SPACING: UL parent classList:', firstUL.parentElement?.classList.toString());
-                } else {
-                    console.log('🔥 DEBUG UL SPACING: No UL found with .message or .message-content class');
-                }
-            }, 100);
-        }
-        
+        contentDiv.innerHTML = formatMessageSimplified(content);
+
         messageDiv.appendChild(contentDiv);
         messagesDiv.appendChild(messageDiv);
-        
-        console.log('🔥 MESSAGE DIV FINAL HTML:', messageDiv.outerHTML);
-        console.log('🔥 MESSAGE DIV FINAL CLASSES:', messageDiv.className);
-        console.log('🔥 CONTENT DIV FINAL HTML:', contentDiv.outerHTML);
-        
-        // Trigger smooth entrance animation
-        requestAnimationFrame(() => {
-            messageDiv.classList.remove('entering');
-            messageDiv.classList.add('entered');
-            console.log('🔥 MESSAGE DIV CLASSES AFTER ANIMATION:', messageDiv.className);
-        });
-        
-        // Check for math expressions (includes \begin{ for standalone environments)
-        const hasMath = content.includes('$') || content.includes('\\(') || content.includes('\\[') || content.includes('\\begin{');
-        console.log('Has math expressions:', hasMath);
-        
+
+        // Check for math expressions (includes \begin{ for standalone environments).
+        // '$' is deliberately not checked: $-delimiters are disabled in the MathJax
+        // config and finance content is full of dollar amounts.
+        const hasMath = content.includes('\\(') || content.includes('\\[') || content.includes('\\begin{');
+
         // Only render MathJax if content contains math expressions
         if (hasMath) {
-            console.log('Math detected, ensuring MathJax is loaded...');
             // Ensure MathJax is loaded before rendering
             loadMathJax().then(() => {
-                console.log('MathJax loaded, rendering math content...');
                 return renderMathInElement(messageDiv);
-            }).then(() => {
-                console.log('MathJax rendered for message');
-                console.log('Final messageDiv content after MathJax:', messageDiv.innerHTML);
             }).catch((err) => {
                 console.error('MathJax loading or rendering failed:', err);
                 // Try to render anyway in case MathJax was already available
@@ -2617,46 +1399,11 @@ function endCalculationSession() {
                     renderMathInElement(messageDiv).catch(console.error);
                 }
             });
-        } else {
-            console.log('No math expressions detected, skipping MathJax');
         }
-        
-        console.log('=== GLOBAL ADDMESSAGE DEBUG END ===');
     }
     
     function showLoading() {
         document.getElementById('loadingIndicator').style.display = 'block';
-    }
-    
-    function showInChatLoading() {
-        // Create loading message within chat
-        const messagesDiv = document.getElementById('messages');
-        const loadingDiv = document.createElement('div');
-        loadingDiv.className = 'message assistant';
-        loadingDiv.id = 'chatLoadingIndicator';
-        loadingDiv.innerHTML = `
-            <div class="message-content">
-                <div style="text-align: center; padding: 1rem; display: block;">
-                    <div class="spinner-border" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                </div>
-            </div>
-        `;
-        messagesDiv.appendChild(loadingDiv);
-        
-        // Scroll to show the loading indicator
-        window.scrollTo({
-            top: document.body.scrollHeight,
-            behavior: 'smooth'
-        });
-    }
-    
-    function hideInChatLoading() {
-        const loadingDiv = document.getElementById('chatLoadingIndicator');
-        if (loadingDiv) {
-            loadingDiv.remove();
-        }
     }
     
     function showQuickActions() {
@@ -2691,160 +1438,11 @@ function endCalculationSession() {
         }
     }
     
-    // Auto-scroll removed - users start at top of messages
-    
-    function scrollToBottom() {
-        // Scroll to bottom of page
-        window.scrollTo({
-            top: document.body.scrollHeight,
-            behavior: 'smooth'
-        });
-    }
-    
-    function animateProgressBar(progressBar, duration, startWidth = 0) {
-        let width = startWidth;
-        const increment = 2;
-        const remainingWidth = 100 - startWidth;
-        const interval = duration / (remainingWidth / increment);
-        
-        const timer = setInterval(() => {
-            width += increment;
-            progressBar.style.width = width + '%';
-            
-            if (width >= 100) {
-                clearInterval(timer);
-                // Keep the progress bar blue - no color change
-            }
-        }, interval);
-        
-        return timer;
-    }
-    
-    function handleKeyPress(event) {
-        if (event.key === 'Enter') {
-            aiTutor.sendMessage();
-        }
-    }
-    
-    // Quiz interaction functions
-    function submitQuizAnswer() {
-        const selectedAnswer = document.querySelector('input[name="answer"]:checked');
-        if (!selectedAnswer) {
-            alert('Please select an answer.');
-            return;
-        }
-        
-        fetch('/submit_answer', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ answer: selectedAnswer.value })
-        })
-        .then(response => parseJSONResponse(response))
-        .then(data => {
-            // Check for API errors
-            if (data.error) {
-                alert('Error: ' + data.error);
-                return;
-            }
-            
-            // Validate response structure
-            if (typeof data.correct === 'undefined' || !data.explanation) {
-                alert('Invalid response from server. Please try again.');
-                return;
-            }
-            
-            if (data.correct) {
-                window.currentQuizData.score = (window.currentQuizData.score || 0) + 1;
-            }
-            
-            // Show result with explanation
-            const quizContent = document.getElementById('quizContent');
-            quizContent.innerHTML += `
-                <div class="alert ${data.correct ? 'alert-success' : 'alert-danger'} mt-3">
-                    <strong>${data.explanation}</strong>
-                </div>
-            `;
-            
-            if (data.quiz_complete) {
-                // Show final score
-                quizContent.innerHTML += `
-                    <div class="alert alert-info mt-3">
-                        <strong>Quiz Complete!</strong><br>
-                        Final Score: ${data.final_score}/${data.total_questions}
-                    </div>
-                    <div class="text-center mt-3">
-                        <button class="btn btn-primary" onclick="endQuiz()">Back to Chat</button>
-                    </div>
-                `;
-            } else {
-                // Show next question button
-                quizContent.innerHTML += `
-                    <div class="text-center mt-3">
-                        <button class="btn btn-primary" onclick="nextQuestion()">Next Question</button>
-                    </div>
-                `;
-                
-                // Store next question data
-                window.currentQuizData.current_question = data.next_question;
-                window.currentQuizData.question_number = data.question_number;
-            }
-        })
-        .catch(error => {
-            alert('Error submitting answer: ' + error.message);
-        });
-    }
-    
-    function nextQuestion() {
-        const quizData = window.currentQuizData;
-        showInteractiveQuiz(quizData);
-    }
-    
-    function endQuiz() {
-        console.log('📝 DEBUG: Legacy endQuiz() function called');
-        
-        // Hide quiz container and show chat container
-        document.getElementById('quizContainer').style.display = 'none';
-        document.getElementById('chatContainer').style.display = 'block';
-        
-        // FORCE QUICK ACTIONS TO SHOW - BRUTE FORCE APPROACH
-        const quickActions = document.getElementById('revisionTechniques');
-        console.log('📝 DEBUG: Found Quick Actions element:', !!quickActions);
-        
-        if (quickActions) {
-            // Remove all potential hiding styles
-            quickActions.style.display = 'block';
-            quickActions.style.visibility = 'visible';
-            quickActions.style.opacity = '1';
-            quickActions.style.height = 'auto';
-            quickActions.style.overflow = 'visible';
-            quickActions.classList.remove('d-none', 'hidden');
-            
-            // Force important display
-            quickActions.style.cssText = 'display: block !important; visibility: visible !important; opacity: 1 !important;';
-            
-            console.log('📝 DEBUG: FORCED Quick Actions panel visible with brute force (legacy function)');
-            console.log('📝 DEBUG: Quick Actions computed style:', window.getComputedStyle(quickActions).display);
-        } else {
-            console.error('📝 ERROR: Quick Actions element not found!');
-        }
-        
-        // Show chat input
-        const chatInput = document.querySelector('.chat-input');
-        if (chatInput) {
-            chatInput.style.display = 'block';
-            console.log('📝 DEBUG: Showed chat input');
-        }
-        
-        // Clear quiz data
-        window.currentQuizData = null;
-        
-        // Add completion message
-        addMessage('assistant', '🎯 Quiz completed! You can start another quiz or ask me any questions about your lecture notes.');
-    }
-    
-    // Centralized JSON response parsing function
+    // Note: animateProgressBar comes from base.html (its version keeps
+    // aria-valuenow updated for assistive technology). The duplicate that
+    // previously lived here (and dropped the aria updates) was removed.
+
+// Centralized JSON response parsing function
     function parseJSONResponse(response) {
         // Check if response is OK and contains JSON
         if (!response.ok) {
@@ -2885,212 +1483,7 @@ function endCalculationSession() {
         }
     }
     
-    // Global function for calculation answer polling
-    function pollCalculationAnswerTask(taskId) {
-        console.log('🔢 Starting calculation answer check polling for task:', taskId);
-        
-        const pollInterval = 2000; // 2 seconds between polls
-        const maxAttempts = 45; // Maximum 45 attempts (90 seconds)
-        let attempts = 0;
-        
-        const poll = () => {
-            attempts++;
-            console.log(`🔢 Calculation answer polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
-            
-            fetch(`/calculation_answer_status/${taskId}`)
-            .then(response => response.json())
-            .then(data => {
-                console.log('🔢 Calculation answer poll response:', data);
-                
-                if (data.status === 'complete' && data.success) {
-                    console.log('✓ Calculation answer evaluation completed');
-                    
-                    hideInChatLoading();
-                    
-                    // Add the evaluation response to the chat
-                    addMessage('assistant', data.data);
-                    
-                } else if (data.status === 'failed' || data.status === 'error') {
-                    console.error('✗ Calculation answer evaluation failed:', data.error);
-                    
-                    hideInChatLoading();
-                    addMessage('assistant', '❌ Error evaluating answer: ' + (data.error || 'Evaluation failed'));
-                    
-                } else if (data.status === 'pending') {
-                    // Task still running, continue polling
-                    if (attempts < maxAttempts) {
-                        setTimeout(poll, pollInterval);
-                    } else {
-                        console.error('✗ Calculation answer polling timeout');
-                        
-                        hideInChatLoading();
-                        addMessage('assistant', '⏰ Answer evaluation is taking longer than expected. Please try again.');
-                    }
-                } else {
-                    console.error('✗ Unknown calculation answer status:', data.status);
-                    
-                    hideInChatLoading();
-                    addMessage('assistant', '❌ Unknown error occurred during answer evaluation');
-                }
-            })
-            .catch(error => {
-                console.error('✗ Calculation answer polling error:', error);
-                
-                if (attempts < maxAttempts) {
-                    // Retry on network error
-                    setTimeout(poll, pollInterval);
-                } else {
-                    hideInChatLoading();
-                    addMessage('assistant', 'Network error during answer evaluation. Please try again.');
-                }
-            });
-        };
-        
-        // Start polling immediately
-        poll();
-    }
-    
-    // Initialize aiTutor when the page loads
-    let aiTutor = null;
-    
-    function initializeAITutor() {
-        console.log('🔧 Checking for AITutor class...');
-        if (typeof AITutor !== 'undefined') {
-            console.log('✅ AITutor class found, initializing...');
-            aiTutor = new AITutor();
-            window.aiTutor = aiTutor; // Make it globally available
-            console.log('✅ AITutor initialized successfully');
-        } else {
-            console.error('❌ AITutor class not found! Will retry in 1 second...');
-            // Retry after a short delay to allow JavaScript to load
-            setTimeout(() => {
-                console.log('🔧 Retrying AITutor initialization...');
-                if (typeof AITutor !== 'undefined') {
-                    console.log('✅ AITutor class found on retry, initializing...');
-                    aiTutor = new AITutor();
-                    window.aiTutor = aiTutor;
-                    console.log('✅ AITutor initialized successfully on retry');
-                } else {
-                    console.error('❌ AITutor class still not found after retry');
-                }
-            }, 1000);
-        }
-    }
-    
-    // Handle Enter key press in chat input
-    function handleKeyPress(event) {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            sendMessageHandler();
-        }
-    }
-    
-    // Make handleKeyPress globally available
-    window.handleKeyPress = handleKeyPress;
-    
-    // Simple send message handler for button clicks
-    window.sendMessageHandler = function() {
-        console.log('🔥 sendMessageHandler called');
-        console.log('🔥 window.aiTutor exists:', !!window.aiTutor);
-        console.log('🔥 window.aiTutor.sendMessage exists:', !!(window.aiTutor && window.aiTutor.sendMessage));
-        
-        if(window.aiTutor && window.aiTutor.sendMessage) { 
-            console.log('🔥 Using aiTutor.sendMessage');
-            window.aiTutor.sendMessage(); 
-        } else { 
-            console.log('🔥 Using fallback sendMessage');
-            
-            // Set loading state manually since fallback doesn't have loading management
-            const sendBtn = document.getElementById('sendBtn');
-            const chatInput = document.getElementById('chatInput');
-            if (sendBtn) {
-                sendBtn.disabled = true;
-                sendBtn.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div>';
-            }
-            if (chatInput) {
-                chatInput.disabled = true;
-            }
-            
-            window.fallbackSendMessage().finally(() => {
-                // Clear loading state after fallback completes
-                if (sendBtn) {
-                    sendBtn.disabled = false;
-                    sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
-                }
-                if (chatInput) {
-                    chatInput.disabled = false;
-                }
-            });
-        }
-    };
-
-    // Fallback sendMessage function in case aiTutor isn't initialized
-    window.fallbackSendMessage = async function() {
-        console.log('🔥 Using fallback sendMessage function');
-        const chatInput = document.getElementById('chatInput');
-        const message = chatInput.value.trim();
-        if (!message) return;
-        
-        chatInput.value = '';
-        addMessage('user', message);
-        
-        try {
-            const response = await fetch('/chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ message: message })
-            });
-            
-            let data;
-            try {
-                data = await response.json();
-            } catch (parseError) {
-                console.error('🔥 Failed to parse JSON response:', parseError);
-                throw new Error('Load failed');
-            }
-            
-            if (response.ok) {
-                if (data.start_async_chat) {
-                    addMessage('assistant', data.response);
-                    // Start chat polling
-                    if (window.aiTutor && window.aiTutor.startChatPolling) {
-                        window.aiTutor.startChatPolling(data.user_message);
-                    } else {
-                        // Fallback: create a simple implementation
-                        console.log('🔥 FALLBACK: No aiTutor.startChatPolling found, using basic fallback');
-                        addMessage('assistant', 'Chat processing completed. The AI response system is currently initializing.');
-                    }
-                } else if (data.start_answer_check) {
-                    addMessage('assistant', data.response);
-                    // Start answer check polling
-                    if (window.aiTutor && window.aiTutor.pollCalculationAnswerTask) {
-                        window.aiTutor.pollCalculationAnswerTask(data.challenge_question, data.user_answer);
-                    } else {
-                        pollCalculationAnswerTask(data.challenge_question, data.user_answer);
-                    }
-                } else {
-                    addMessage('assistant', data.response);
-                }
-            } else {
-                addMessage('assistant', `Error: ${data.error}`);
-            }
-        } catch (error) {
-            console.error('Error in fallback sendMessage:', error);
-            addMessage('assistant', `Error: ${error.message}`);
-        }
-    };
-
-    // Make functions globally available
+    // Make the shared chat renderer globally available (app.js delegates to it)
     window.addMessage = addMessage;
-    window.pollCalculationAnswerTask = pollCalculationAnswerTask;
-    
-    // Try to initialize immediately if DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initializeAITutor);
-    } else {
-        initializeAITutor();
-    }
 </script>
 {% endblock %}

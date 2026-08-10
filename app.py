@@ -1060,7 +1060,7 @@ def calculation_stream():
 
                     current_q = exam_questions[current_index]
                     logging.info(f"CALCULATION STREAM: Streaming worked example for exam Q{current_q.get('id', current_index+1)} ({current_index + 1}/{len(exam_questions)})")
-                    context_truncated = pdf_content[:80000] if len(pdf_content) > 80000 else pdf_content
+                    context_truncated = tutor_ai._get_truncated_context()
                     async for chunk in tutor_ai._generate_exam_worked_example_stream(context_truncated, current_q):
                         full_response += chunk
                         q.put(chunk)

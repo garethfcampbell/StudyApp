@@ -9,7 +9,33 @@ import openai
 from openai import AsyncOpenAI
 
 # Maximum number of document characters sent to the model as context.
-MAX_CONTEXT_CHARS = 80000
+# Whole-document features (summary, key concepts, quiz, equation extraction)
+# get a large budget - their outputs are cached per document in app.py, so the
+# cost is paid roughly once per upload. This covers all but extreme decks.
+MAX_CONTEXT_CHARS = 320000
+
+# Chat resends context on every message, so it uses a smaller budget; when a
+# document exceeds it, the pages most relevant to the student's question are
+# selected (see _select_relevant_context) so any page remains reachable and
+# citable regardless of document length.
+CHAT_CONTEXT_CHARS = 120000
+
+# Answer checking grades a self-contained challenge question; the notes are
+# only needed for terminology, so a small slice suffices.
+ANSWER_CHECK_CONTEXT_CHARS = 20000
+
+# Page/slide markers emitted by pdf_processor ("--- Page 4 ---", "--- Slide 12 ---").
+_PAGE_MARKER_SPLIT = re.compile(r'(?m)^(?=--- (?:Page|Slide) \d+ ---$)')
+
+# Words too common to signal relevance when matching a question against pages.
+_STOPWORDS = frozenset((
+    'the', 'and', 'for', 'with', 'this', 'that', 'what', 'how', 'why', 'when',
+    'where', 'which', 'does', 'can', 'could', 'would', 'should', 'you', 'your',
+    'are', 'was', 'were', 'has', 'have', 'had', 'not', 'but', 'they', 'them',
+    'there', 'their', 'then', 'than', 'its', 'about', 'from', 'into', 'out',
+    'please', 'explain', 'tell', 'show', 'give', 'help', 'notes', 'lecture',
+    'mean', 'means', 'more', 'some', 'any', 'all', 'also', 'just', 'like',
+))
 
 # Primary and fallback model names used across all features.
 MODEL_PRIMARY = "gpt-5.6-terra"
@@ -118,9 +144,64 @@ class TutorAI:
     # _make_async_openai_streaming_call: MODEL_PRIMARY first, MODEL_FALLBACK
     # as the fallback.
 
-    def _get_truncated_context(self):
-        """Return the document context truncated to MAX_CONTEXT_CHARS."""
-        return self.context[:MAX_CONTEXT_CHARS] if len(self.context) > MAX_CONTEXT_CHARS else self.context
+    def _get_truncated_context(self, limit=MAX_CONTEXT_CHARS):
+        """Return the document context within `limit` characters.
+
+        Documents over the limit keep their head and tail with an explicit
+        elision note, so later pages stay visible and the model knows
+        material was omitted (rather than silently losing the tail).
+        """
+        if len(self.context) <= limit:
+            return self.context
+        head = self.context[:int(limit * 0.8)]
+        tail = self.context[-int(limit * 0.15):]
+        return (head
+                + "\n\n[NOTE: a middle section of the document was omitted here "
+                "because the document is too long to include in full.]\n\n"
+                + tail)
+
+    def _select_relevant_context(self, query, limit=CHAT_CONTEXT_CHARS):
+        """Context for chat: the whole document when it fits, otherwise the
+        pages/slides most relevant to the query.
+
+        Pages are scored by occurrences of the query's content words, then
+        packed in document order (markers intact, so citations stay valid).
+        The first page is always kept as an anchor for module/topic framing.
+        Falls back to head+tail truncation when there are no page markers or
+        the query has no usable content words.
+        """
+        if len(self.context) <= limit:
+            return self.context
+        chunks = [c for c in _PAGE_MARKER_SPLIT.split(self.context) if c.strip()]
+        if len(chunks) < 2:
+            return self._get_truncated_context(limit)
+        terms = set(re.findall(r'[a-z0-9]{3,}', (query or '').lower())) - _STOPWORDS
+        if not terms:
+            return self._get_truncated_context(limit)
+
+        scored = []
+        for idx, chunk in enumerate(chunks):
+            low = chunk.lower()
+            scored.append((sum(low.count(t) for t in terms), idx))
+
+        keep = {0}
+        used = len(chunks[0])
+        for score, idx in sorted(scored, key=lambda s: (-s[0], s[1])):
+            if score <= 0 or idx in keep:
+                continue
+            if used + len(chunks[idx]) > limit:
+                continue
+            keep.add(idx)
+            used += len(chunks[idx])
+
+        if len(keep) < 2:
+            # Nothing scored: the question doesn't match page text
+            return self._get_truncated_context(limit)
+        logging.info(f"CHAT CONTEXT: selected {len(keep)}/{len(chunks)} pages ({used} chars) for query")
+        return ("[NOTE: only the pages of the lecture notes most relevant to the "
+                "student's question are included below; the document has more pages "
+                "that are omitted here.]\n\n"
+                + "\n".join(chunks[i] for i in sorted(keep)))
 
     def _build_feature_messages(self, persona, prompt):
         """Build the standard system+user message pair for a document feature."""
@@ -347,7 +428,7 @@ class TutorAI:
         if not self.context:
             return None
 
-        truncated_context = self._get_truncated_context()
+        truncated_context = self._select_relevant_context(user_message)
         system_content = f"{self.system_prompt}\n\nLecture Notes Context:\n{truncated_context}"
 
         if self.conversation_history:
@@ -1574,7 +1655,7 @@ CORRECT:
         if not self.context:
             return "No document context available."
 
-        prompt = self._get_answer_check_prompt(self._get_truncated_context(), challenge_question, user_answer)
+        prompt = self._get_answer_check_prompt(self._get_truncated_context(ANSWER_CHECK_CONTEXT_CHARS), challenge_question, user_answer)
         messages = [{"role": "user", "content": prompt}]
 
         try:
@@ -1621,7 +1702,7 @@ CORRECT:
             yield "No document context available."
             return
 
-        prompt = self._get_answer_check_prompt(self._get_truncated_context(), challenge_question, user_answer)
+        prompt = self._get_answer_check_prompt(self._get_truncated_context(ANSWER_CHECK_CONTEXT_CHARS), challenge_question, user_answer)
         messages = [{"role": "user", "content": prompt}]
 
         emitted = False

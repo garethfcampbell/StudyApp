@@ -73,7 +73,12 @@ def _get_async_openai_client():
 
 _STUDY_HEADINGS = frozenset((
     'OVERVIEW', 'KEY CONCEPTS', 'KEY CONCEPTS EXPLAINED',
-    'EXECUTIVE SUMMARY', 'SUMMARY',
+    'EXECUTIVE SUMMARY', 'SUMMARY', 'ESSAY QUESTION',
+))
+
+# Essay section headings whose canonical style is **bold** (not ***bold-italic***).
+_ESSAY_BOLD_HEADINGS = frozenset((
+    'MAIN QUESTION', 'SUB-QUESTIONS', 'SUB QUESTIONS', 'ASSESSMENT CRITERIA',
 ))
 
 _NUMBER_WORDS = {
@@ -87,27 +92,45 @@ _WORD_CATEGORY_RE = re.compile(
 _CONCEPT_BULLET_RE = re.compile(r'^(\s*)[-•]\s+(?![*\d])([^:*`]{2,60}):\s+(.*)$')
 
 
-def _normalize_study_line(line):
-    """Repair one line of summary/key-concepts output to the house markdown style."""
+def _normalize_study_line(line, mode='study'):
+    """Repair one line of summary/key-concepts/essay output to the house markdown style.
+
+    mode='study': numbered headers repair to **1. Name** (summary, key concepts).
+    mode='essay': numbered sub-questions repair to *1: Question* (essay canonical).
+    """
     s = line.strip()
     if not s:
         return line
 
-    # Heading lines: OVERVIEW / KEY CONCEPTS EXPLAINED: etc. -> ***HEADING***
+    # Heading lines: OVERVIEW / ESSAY QUESTION etc. -> ***HEADING***;
+    # essay section headings (MAIN QUESTION, SUB-QUESTIONS, ...) -> **HEADING**
     bare = s.strip('#*').strip()
-    if bare.rstrip(':').upper() in _STUDY_HEADINGS:
+    key = bare.rstrip(':').upper()
+    if key in _STUDY_HEADINGS:
         return f'***{bare}***'
+    if key in _ESSAY_BOLD_HEADINGS or key.startswith('ASSESSMENT CRITERIA'):
+        return f'**{bare}**'
 
-    # Category headers written as words: "One: Compound Interest" -> "**1. Compound Interest**"
+    # Numbered headers/sub-questions only ever start at column 0; indented
+    # lines are guidance/sub-bullets and must not be touched.
+    indented = line[:1].isspace()
+
+    # Headers numbered as words: "One: ..." -> digits with house emphasis.
     m = _WORD_CATEGORY_RE.match(s)
-    if m and '**' not in s and len(s) < 90:
-        return f'**{_NUMBER_WORDS[m.group(1).lower()]}. {m.group(2)}**'
+    if m and '*' not in s and not indented:
+        num = _NUMBER_WORDS[m.group(1).lower()]
+        if mode == 'essay':
+            return f'*{num}: {m.group(2)}*'
+        if len(s) < 90:
+            return f'**{num}. {m.group(2)}**'
 
-    # Numbered category headers missing bold: "1. Time Value of Money" -> bold.
-    # Kept short to avoid catching numbered prose; bulleted lines never match.
+    # Digit-numbered headers missing emphasis.
     m = _CATEGORY_LINE_RE.match(s)
-    if m and '**' not in s and len(s) < 90:
-        return f'**{m.group(1)}. {m.group(2)}**'
+    if m and '*' not in s and not indented:
+        if mode == 'essay':
+            return f'*{m.group(1)}: {m.group(2)}*'
+        if len(s) < 90:
+            return f'**{m.group(1)}. {m.group(2)}**'
 
     # Concept bullets missing the italic label: "- Concept: text" -> "- *Concept:* text"
     m = _CONCEPT_BULLET_RE.match(line)
@@ -117,23 +140,23 @@ def _normalize_study_line(line):
     return line
 
 
-def _normalize_study_formatting(text):
-    """Apply _normalize_study_line across a complete summary/key-concepts response."""
+def _normalize_study_formatting(text, mode='study'):
+    """Apply _normalize_study_line across a complete response."""
     if not text:
         return text
-    return '\n'.join(_normalize_study_line(l) for l in text.split('\n'))
+    return '\n'.join(_normalize_study_line(l, mode) for l in text.split('\n'))
 
 
-async def _normalize_study_stream(agen):
+async def _normalize_study_stream(agen, mode='study'):
     """Line-buffered streaming wrapper around _normalize_study_line."""
     buffer = ''
     async for chunk in agen:
         buffer += chunk
         while '\n' in buffer:
             line, buffer = buffer.split('\n', 1)
-            yield _normalize_study_line(line) + '\n'
+            yield _normalize_study_line(line, mode) + '\n'
     if buffer:
-        yield _normalize_study_line(buffer)
+        yield _normalize_study_line(buffer, mode)
 
 
 def _strip_code_fences(text):
@@ -730,7 +753,7 @@ End your response with: "Would you like to explore any of these topics in more d
                 )
                 if result and result.strip():
                     logging.info(f"ASYNC ESSAY: {MODEL_PRIMARY} succeeded")
-                    return _strip_code_fences(result)
+                    return _normalize_study_formatting(_strip_code_fences(result), mode='essay')
                 raise ValueError(f"{MODEL_PRIMARY} returned an empty response")
             except Exception as mini_error:
                 logging.error(f"ASYNC ESSAY: {MODEL_PRIMARY} failed: {mini_error}")
@@ -742,7 +765,7 @@ End your response with: "Would you like to explore any of these topics in more d
                     messages=messages, model=MODEL_FALLBACK, temperature=0.4, max_tokens=15000, timeout=60
                 )
                 logging.info(f"ASYNC ESSAY: {MODEL_FALLBACK} fallback succeeded")
-                return _strip_code_fences(result)
+                return _normalize_study_formatting(_strip_code_fences(result), mode='essay')
             except Exception as nano_error:
                 logging.error(f"ASYNC ESSAY: All models failed: {nano_error}")
                 return "I'm having trouble generating an essay question right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
@@ -768,11 +791,11 @@ End your response with: "Would you like to explore any of these topics in more d
                     messages=messages, model=model, temperature=0.4, max_tokens=15000, timeout=60
                 )
 
-            async for chunk in self._stream_with_fallback(
+            async for chunk in _normalize_study_stream(self._stream_with_fallback(
                 factory,
                 "STREAM ESSAY",
                 "I'm having trouble generating an essay question right now. Please try again in a moment."
-            ):
+            ), mode='essay'):
                 yield chunk
         except Exception as e:
             logging.error(f"STREAM ESSAY: Critical error: {e}")
@@ -791,6 +814,7 @@ End your response with: "Would you like to explore any of these topics in more d
             - NEVER use HTML tags - only use markdown formatting
             - ONLY USE HYPHENS FOR BULLETS (-) - never use asterisks (*) or dots (•)
             - Each bullet point must be on its own line with consistent hyphen formatting
+            - Number sub-questions with DIGITS in the format *1: [question]* - NEVER spell numbers as words (never "One:", "Two:", "Three:")
             - Use ONLY plain English words to describe ALL mathematical concepts
             - Always respond in plain text with markdown formatting only
 

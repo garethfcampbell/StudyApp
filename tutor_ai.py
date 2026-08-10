@@ -657,13 +657,15 @@ class TutorAI:
         """Return the summary/cheat sheet prompt text (single source for streaming and non-streaming)."""
         return r"""
 
-Create a comprehensive study aid from the lecture notes I provide. Your output should begin with a concise overview, followed by a detailed bullet-point revision sheet.
+Create a concise executive summary from the lecture notes I provide. Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering only the MOST important ideas - this is a quick-reference revision aid, not exhaustive notes.
 
 ### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
+- **BE CONCISE AND SELECTIVE:** Use 3 to 5 categories, with AT MOST 3 concepts per category. Choose only the concepts a student must know for an exam - leave out supporting detail, restatements, and minor variations of the same idea.
+- **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence.
+- **SHORT OVERVIEW:** The overview must be no more than 3 sentences.
 - **ONLY USE HYPHENS FOR BULLETS:** You MUST use only hyphens (`-`) for ALL bullet points. Do NOT use asterisks (*), bullet symbols (•), or any other characters. EVERY bullet point must start with a hyphen.
 - **Bullet Point Format:** Each bullet point must follow this exact format: `- *Concept:* Brief explanation`
 - **New Lines:** Ensure every bullet point is on a new line with proper spacing.
-- **Logical Structure:** Organize information logically. Use indentation for sub-bullets to create a clear hierarchy.
 - **Readability:** The final output must be scan-friendly and easy to reference quickly.
 - **ABSOLUTELY NO MATHEMATICAL NOTATION:** You MUST NOT include ANY mathematical equations, formulas, symbols, or LaTeX notation of any kind. This is CRITICAL - do NOT use:
   * Dollar signs around variables: NO $x$, $\delta$, $P_t$, $\alpha$, etc.

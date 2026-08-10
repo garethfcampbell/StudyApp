@@ -1,0 +1,38 @@
+name: Keep app warm
+
+# Pings the deployed app's /health endpoint so the Replit Autoscale
+# container never hits its 15-minute idle spin-down during study hours.
+# Cost: ~pennies/month of Replit compute; free on GitHub (public repo).
+#
+# Requires the repository variable PING_URL to be set to the deployed
+# app's base URL (Settings -> Secrets and variables -> Actions -> Variables),
+# e.g. https://your-app-name.replit.app - the workflow skips quietly if unset.
+#
+# Note: GitHub disables scheduled workflows after 60 days without repo
+# activity; any commit re-enables them.
+
+on:
+  schedule:
+    # Every 10 minutes, 05:00-23:59 UTC (~06:00-01:00 UK summer time).
+    # No pings in the small hours - the first insomniac student eats one
+    # cold start, which is fine.
+    - cron: '*/10 5-23 * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping /health
+        env:
+          PING_URL: ${{ vars.PING_URL }}
+        run: |
+          if [ -z "$PING_URL" ]; then
+            echo "PING_URL repository variable not set - skipping"
+            exit 0
+          fi
+          url="${PING_URL%/}/health"
+          echo "Pinging $url"
+          curl --fail --silent --show-error --max-time 30 "$url"
+          echo "OK"

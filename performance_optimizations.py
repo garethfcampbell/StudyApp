@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta
-from functools import lru_cache, wraps
+from functools import wraps
 from typing import Optional, Dict, Any
 from flask import current_app
 from models import SessionData
@@ -81,9 +81,7 @@ class OptimizedStorageManager:
         from database import postgres_db
         self.db = postgres_db
         self.cache = SessionCache()
-        self._batch_operations = []
-        self._batch_lock = threading.Lock()
-        
+
     def _get_cache_key(self, session_id: str, content_type: str) -> str:
         """Generate cache key"""
         return f"cache_{session_id}_{content_type}"
@@ -279,121 +277,79 @@ class OptimizedStorageManager:
         expired_count = self.cache.clear_expired()
         logging.debug(f"Cleaned up {expired_count} expired cache entries")
 
-class ConnectionPool:
-    """Simple connection pool for AI clients"""
-    
-    def __init__(self, max_size: int = 10):
-        self.max_size = max_size
-        self._pool = []
-        self._lock = threading.Lock()
-        self._created_count = 0
-    
-    def get_client(self, client_factory):
-        """Get a client from pool or create new one"""
-        with self._lock:
-            if self._pool:
-                return self._pool.pop()
-            elif self._created_count < self.max_size:
-                client = client_factory()
-                self._created_count += 1
-                return client
-            else:
-                # Pool is full, return a new temporary client
-                return client_factory()
-    
-    def return_client(self, client):
-        """Return client to pool"""
-        with self._lock:
-            if len(self._pool) < self.max_size:
-                self._pool.append(client)
-
 def rate_limit(calls_per_minute: int = 60, use_session: bool = False):
-    """Enhanced rate limiting with IP and session-based tracking"""
+    """Rate limiting with IP and session-based tracking.
+
+    - The wrapped view is always invoked OUTSIDE the bookkeeping lock and at
+      most ONCE per request; exceptions raised by the view propagate normally.
+    - Internal rate-limiter errors fail open (the view still runs once).
+    - Stale identifiers are pruned periodically so the tracking dict cannot
+      grow without bound.
+    """
     def decorator(func):
-        # Global storage for rate limiting data
+        # Per-endpoint storage for rate limiting data
         rate_limit_data = {}
         lock = threading.Lock()
-        
+        last_prune = [0.0]
+
         @wraps(func)
         def wrapper(*args, **kwargs):
+            from flask import session, request, jsonify
+
+            limited = False
             try:
-                from flask import session, request, jsonify
-                
                 now = time.time()
-                
+
                 # Choose identifier: session ID if available and requested, otherwise IP
                 if use_session and 'session_id' in session:
                     identifier = session.get('session_id')
                     key_type = "session"
-                    logging.debug(f"Rate limiting by session: {identifier}")
                 else:
-                    # Simple IP extraction
-                    identifier = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'unknown'))
-                    if ',' in identifier:
-                        identifier = identifier.split(',')[0].strip()
+                    # remote_addr is proxy-corrected by ProxyFix (x_for=1) in app.py
+                    identifier = request.remote_addr or 'unknown'
                     key_type = "IP"
-                    logging.debug(f"Rate limiting by IP: {identifier}")
-                
+
                 key = f"{key_type}_{identifier}"
-                
+
                 with lock:
-                    # Get existing call data for this identifier
-                    if key not in rate_limit_data:
-                        rate_limit_data[key] = []
-                    
-                    calls = rate_limit_data[key]
-                    
+                    # Periodically prune identifiers that have gone quiet
+                    if now - last_prune[0] > 300:
+                        stale_keys = [k for k, times in rate_limit_data.items()
+                                      if not times or now - times[-1] > 60]
+                        for stale_key in stale_keys:
+                            rate_limit_data.pop(stale_key, None)
+                        last_prune[0] = now
+
+                    calls = rate_limit_data.setdefault(key, [])
+
                     # Remove calls older than 1 minute
                     calls[:] = [call_time for call_time in calls if now - call_time < 60]
-                    
+
                     if len(calls) >= calls_per_minute:
-                        # Enhanced security logging for rate limit violations
-                        logging.warning(f"SECURITY: Rate limit exceeded for {key_type} {identifier}: {len(calls)} requests in last minute for endpoint {func.__name__}")
-                        # Log additional context
-                        logging.warning(f"SECURITY: User-Agent: {request.headers.get('User-Agent', 'Unknown')}")
-                        logging.warning(f"SECURITY: Request path: {request.path}")
-                        
-                        if request.is_json and hasattr(request, 'get_json'):
-                            try:
-                                data = request.get_json(silent=True)
-                                if data:
-                                    logging.warning(f"SECURITY: Request contained JSON data: {type(data)}")
-                            except:
-                                pass
-                        
-                        raise Exception(f"Rate limit exceeded: {calls_per_minute} calls per minute")
-                    
-                    # Add current request
-                    calls.append(now)
-                    rate_limit_data[key] = calls
-                    
-                    logging.debug(f"Rate limit check passed: {len(calls)}/{calls_per_minute} requests for {identifier}")
-                    return func(*args, **kwargs)
-                    
-            except Exception as e:
-                # Log security violations
-                if "Rate limit exceeded" in str(e):
+                        limited = True
+                    else:
+                        calls.append(now)
+
+                if limited:
                     resource_monitor.increment('security_violations')
-                    logging.error(f"SECURITY: Rate limit violation - {e}")
+                    logging.warning(f"SECURITY: Rate limit exceeded for {key_type} {identifier}: "
+                                    f"{calls_per_minute}/min on endpoint {func.__name__} "
+                                    f"(path {request.path}, UA {request.headers.get('User-Agent', 'Unknown')})")
                     return jsonify({
                         'error': 'Rate limit exceeded',
                         'retry_after': 60,
                         'message': 'Too many requests. Please wait before trying again.'
                     }), 429
-                else:
-                    logging.error(f"Rate limiting error: {e}")
-                    # Continue with the original function if rate limiting fails
-                    return func(*args, **kwargs)
-        
+
+            except Exception as e:
+                # Rate-limiter internal failure: fail open (view still called once below)
+                logging.error(f"Rate limiting error in {func.__name__}: {e}")
+
+            # Invoke the view exactly once, outside the lock; its exceptions propagate
+            return func(*args, **kwargs)
+
         return wrapper
     return decorator
-
-@lru_cache(maxsize=128)
-def cached_pdf_processing(content_hash: str, content: str) -> str:
-    """Cache PDF processing results"""
-    # This would be called with a hash of the PDF content
-    # to avoid reprocessing the same document
-    return content  # Simplified - actual processing would happen here
 
 class ResourceMonitor:
     """Monitor resource usage and performance metrics"""
@@ -431,7 +387,18 @@ class ResourceMonitor:
 # Global instances
 optimized_storage = OptimizedStorageManager()
 resource_monitor = ResourceMonitor()
-ai_connection_pool = ConnectionPool(max_size=5)
+
+def invalidate_optimized_cache(session_id: str, content_type: str) -> None:
+    """Invalidate the in-memory cache entry for (session_id, content_type).
+
+    Called by DatabaseStorageManager after direct DB writes so the optimized
+    cache never serves stale data for content written through the other path.
+    """
+    try:
+        cache_key = optimized_storage._get_cache_key(session_id, content_type)
+        optimized_storage.cache.delete(cache_key)
+    except Exception as e:
+        logging.debug(f"Cache invalidation failed for {session_id}/{content_type}: {e}")
 
 # Cleanup task that runs periodically
 def periodic_cleanup():
@@ -453,9 +420,23 @@ def periodic_db_cleanup():
     except Exception as e:
         logging.error(f"Error in DB session cleanup: {e}")
 
-import threading
+_cleanup_started = False
+_cleanup_start_lock = threading.Lock()
+
 def start_periodic_cleanup():
-    """Start the periodic cleanup threads"""
+    """Start the periodic cleanup threads (idempotent within a process).
+
+    Called at import time in app.py so `python main.py` (dev) gets cleanup
+    threads. Under gunicorn with preload_app the import-time threads live in
+    the master and do NOT survive fork, so gunicorn's post_fork hook calls
+    restart_periodic_cleanup_after_fork() to start them in each worker.
+    """
+    global _cleanup_started
+    with _cleanup_start_lock:
+        if _cleanup_started:
+            return
+        _cleanup_started = True
+
     def cache_cleanup_loop():
         while True:
             time.sleep(300)  # 5 minutes
@@ -465,8 +446,19 @@ def start_periodic_cleanup():
         while True:
             time.sleep(1800)  # 30 minutes
             periodic_db_cleanup()
-    
+
     cache_thread = threading.Thread(target=cache_cleanup_loop, daemon=True)
     cache_thread.start()
     db_thread = threading.Thread(target=db_cleanup_loop, daemon=True)
     db_thread.start()
+
+def restart_periodic_cleanup_after_fork():
+    """Reset the started flag and start cleanup threads in a forked worker.
+
+    Threads never survive fork(), so the flag inherited from the master is
+    stale; clear it and start fresh threads in this process.
+    """
+    global _cleanup_started
+    with _cleanup_start_lock:
+        _cleanup_started = False
+    start_periodic_cleanup()

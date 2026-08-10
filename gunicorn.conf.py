@@ -51,8 +51,35 @@ raw_env = [
 ]
 
 def post_fork(server, worker):
-    """Called just after a worker has been forked"""
+    """Called just after a worker has been forked.
+
+    With preload_app=True the SQLAlchemy engine is created in the master
+    before forking; forked workers would otherwise share the master's pooled
+    DB sockets, which is the root cause of intermittent SSL-EOF errors.
+    Dispose the inherited pool so each worker builds fresh connections.
+    """
     server.log.info("Worker spawned (pid: %s)", worker.pid)
+    try:
+        from app import app
+        from database import postgres_db
+        with app.app_context():
+            try:
+                # SQLAlchemy >= 1.4.33: discard inherited connections without
+                # closing them (they still belong to the master process)
+                postgres_db.engine.dispose(close=False)
+            except TypeError:
+                postgres_db.engine.dispose()
+        server.log.info("SQLAlchemy engine disposed in worker (pid: %s)", worker.pid)
+    except Exception as e:
+        server.log.warning("Could not dispose SQLAlchemy engine in worker: %s", e)
+
+    # Cleanup threads started at import time live in the master and do not
+    # survive fork — restart them inside each worker.
+    try:
+        from performance_optimizations import restart_periodic_cleanup_after_fork
+        restart_periodic_cleanup_after_fork()
+    except Exception as e:
+        server.log.warning("Could not restart periodic cleanup in worker: %s", e)
 
 def pre_fork(server, worker):
     """Called just before a worker is forked"""
@@ -75,10 +102,10 @@ def post_worker_init(worker):
     worker.log.info("Worker initialized")
 
 def worker_exit(server, worker):
-    """Called just after a worker has been exited — close all async HTTP clients"""
-    try:
-        from speed_optimizations import close_async_clients
-        close_async_clients()
-        server.log.info("Async clients closed for worker pid: %s", worker.pid)
-    except Exception as e:
-        server.log.warning("Error closing async clients on worker exit: %s", e)
+    """Called just after a worker has exited.
+
+    No explicit async-client cleanup is required: TutorAI manages its own
+    client lifecycle (close_async_clients() is a safe no-op) and the process
+    teardown releases any remaining sockets.
+    """
+    server.log.info("Worker exited (pid: %s)", worker.pid)

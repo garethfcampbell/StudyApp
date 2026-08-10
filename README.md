@@ -49,8 +49,14 @@ Create the following secrets/environment variables before running:
 
 ### Installation
 
+Dependencies are declared in `pyproject.toml` (with a `uv.lock` lockfile):
+
 ```bash
-pip install -r requirements.txt
+# With uv (recommended)
+uv sync
+
+# Or with pip
+pip install .
 ```
 
 ### Running Locally
@@ -77,8 +83,7 @@ The app will be available at `http://localhost:5000`.
 ├── database.py                 # Database initialisation
 ├── database_storage_manager.py # PostgreSQL session storage
 ├── performance_optimizations.py# In-memory caching and rate limiting
-├── speed_optimizations.py      # Connection pooling and async cleanup
-├── deployment_config.py        # HTTPS redirect and security headers
+├── deployment_config.py        # Health check, HTTPS redirect and security headers
 ├── gunicorn.conf.py            # Gunicorn worker configuration
 ├── main.py                     # Application entry point
 ├── templates/                  # Jinja2 HTML templates
@@ -119,7 +124,8 @@ Session data is stored in PostgreSQL with an in-memory cache (10-minute TTL) sit
 - Deferred loading of non-critical JavaScript
 - MathJax loaded only when calculation questions are displayed
 - Background task polling for all AI-powered operations
-- 30 requests/minute rate limiting per session on chat endpoints
+- Per-worker in-memory caching of deterministic AI results (summary, key concepts, quiz, essay questions) keyed by document hash, 1-hour TTL
+- Per-session rate limiting: 30 requests/minute on chat endpoints, 10/minute on generation endpoints, 5/minute on uploads
 
 ---
 
@@ -131,26 +137,30 @@ Key configuration:
 
 ```python
 # gunicorn.conf.py
-worker_class = "gthread"   # Thread-based workers for concurrent requests
-threads = 4                # Threads per worker
-workers = min(cpu+1, 4)    # Auto-scaled to available CPUs
+worker_class = "gthread"   # Thread-based workers required for SSE streaming
+threads = 12               # Threads per worker
+workers = min(cpu, 6)      # Auto-scaled to available CPUs (max 6)
 timeout = 300              # Extended for long AI generation tasks
-max_requests = 1000        # Recycle workers to prevent memory leaks
+max_requests = 3000        # Recycle workers to prevent memory leaks
+preload_app = True         # App loaded in master; DB pool disposed per worker in post_fork
 ```
 
-Health check available at `/health`.
+Health check available at `/health` (registered in all environments).
 
 ---
 
 ## Security
 
+The app is session-based with no user accounts; the JSON API endpoints are exempt from CSRF tokens and are protected by per-session rate limiting and strict input validation instead.
+
 - All API keys and secrets stored as environment variables — never hardcoded
-- CSRF protection via Flask-WTF on all form submissions
-- Content Security Policy headers to prevent XSS
-- Input validation with message length limits (5,000 characters)
-- Secure filename handling for all uploads
-- HTTPS enforced in production
-- Rate limiting on all AI endpoints
+- Per-session rate limiting on every AI endpoint (30/min chat, 10/min generation, 5/min upload)
+- Content Security Policy and security headers (HSTS, X-Frame-Options, nosniff) in production
+- Input validation with message length limits (5,000 characters) and type checks
+- Filenames sanitised with `secure_filename` and HTML-escaped before being returned to the client
+- Generic error messages to clients; full exception detail only in server logs
+- Secure (HTTPS-only) session cookies and HTTPS redirection in production
+- `/metrics` and `/security_metrics` restricted to localhost, with a single trusted proxy hop (`ProxyFix` applied exactly once)
 
 ---
 

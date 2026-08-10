@@ -57,7 +57,17 @@ class DatabaseStorageManager:
         
     def generate_session_id(self):
         return str(uuid.uuid4())
-    
+
+    @staticmethod
+    def _invalidate_optimized_cache(session_id, content_type):
+        """Keep OptimizedStorageManager's in-memory cache coherent with direct
+        DB writes made through this manager. Lazy import avoids circularity."""
+        try:
+            from performance_optimizations import invalidate_optimized_cache
+            invalidate_optimized_cache(session_id, content_type)
+        except Exception as e:
+            logging.debug(f"Optimized cache invalidation skipped: {e}")
+
     def store_content(self, session_id, content_type, content):
         """Store content for a session in database with retry"""
         def _do_store():
@@ -84,6 +94,8 @@ class DatabaseStorageManager:
 
         try:
             self._retry_db_operation(_do_store, operation_name="db_store")
+            # Invalidate the optimized in-memory cache so readers don't see stale data
+            self._invalidate_optimized_cache(session_id, content_type)
         except Exception as e:
             logging.error(f"Error storing content in DB after retries: {e}")
             raise Exception(f"Failed to store content: {str(e)}")
@@ -129,6 +141,7 @@ class DatabaseStorageManager:
 
         try:
             self._retry_db_operation(_do_delete, operation_name="db_delete")
+            self._invalidate_optimized_cache(session_id, content_type)
         except Exception as e:
             logging.error(f"Error deleting content from DB after retries: {e}")
     

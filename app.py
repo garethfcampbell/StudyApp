@@ -1,22 +1,22 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, Response
 from flask_compress import Compress
 from werkzeug.middleware.proxy_fix import ProxyFix
+from markupsafe import escape
 from database import postgres_db
 from werkzeug.utils import secure_filename
-from flask_wtf.csrf import CSRFProtect, validate_csrf
-from flask_wtf import FlaskForm
+from flask_wtf.csrf import CSRFProtect
 import os
 import json
+import time
+import hashlib
 import logging
+import asyncio
 import threading
 import uuid as uuid_module
 from pdf_processor import extract_text_from_file
 from tutor_ai import TutorAI
 from database_storage_manager import DatabaseStorageManager as StorageManager
 from performance_optimizations import optimized_storage, resource_monitor, rate_limit, start_periodic_cleanup
-from speed_optimizations import fast_ai_client, preload_critical_resources, optimize_json_responses, speed_metrics
-import tempfile
-# ReplitDB no longer needed - using PostgreSQL for task tracking
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +26,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET")
 if not app.secret_key:
     raise RuntimeError("SESSION_SECRET environment variable must be set")
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)  # needed for url_for to generate with https
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # trust one proxy hop for scheme/host/client IP
 
 # Configure PostgreSQL database
 app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
@@ -50,22 +50,16 @@ Compress(app)
 
 # Performance optimizations for Autoscale deployment
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 86400  # 24 hours cache for static files
-app.config['SESSION_COOKIE_SECURE'] = True
+# Secure cookies only in production (HTTPS); allow plain HTTP in local development
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV') == 'production'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour session timeout
-
-# Configure session
-app.config['SESSION_TYPE'] = 'filesystem'
-app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Security configuration
 MAX_MESSAGE_LENGTH = 5000  # Maximum characters for chat messages
 MAX_FILENAME_LENGTH = 255  # Maximum filename length
-
-# Ensure upload folder exists
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Initialize storage managers - use optimized version for better performance
 storage_manager = StorageManager()  # Keep for backward compatibility
@@ -75,13 +69,64 @@ primary_storage = optimized_storage  # Use optimized version as primary
 start_periodic_cleanup()
 
 # Configure for production deployment
-from deployment_config import configure_for_production
-import os
+from deployment_config import configure_for_production, register_health_endpoint
 from datetime import datetime
-from flask import request
+
+# /health must be available in every environment (dev and production)
+register_health_endpoint(app)
 
 if os.environ.get('FLASK_ENV') == 'production':
     app = configure_for_production(app)
+
+# ---------------------------------------------------------------------------
+# In-memory TTL cache for deterministic AI generations (per worker process).
+# Keyed by (sha256(document_text)[:16], feature) so repeated requests for the
+# same document skip the AI call entirely.
+# ---------------------------------------------------------------------------
+_AI_RESULT_CACHE = {}
+_AI_RESULT_CACHE_LOCK = threading.Lock()
+AI_RESULT_CACHE_TTL = 3600  # 1 hour
+AI_RESULT_CACHE_MAX_ENTRIES = 100
+
+def _ai_cache_key(document_text, feature):
+    digest = hashlib.sha256(document_text.encode('utf-8', errors='ignore')).hexdigest()[:16]
+    return (digest, feature)
+
+def get_cached_ai_result(document_text, feature):
+    """Return a cached AI generation for this document/feature, or None."""
+    if not document_text:
+        return None
+    key = _ai_cache_key(document_text, feature)
+    with _AI_RESULT_CACHE_LOCK:
+        entry = _AI_RESULT_CACHE.get(key)
+        if not entry:
+            return None
+        value, stored_at = entry
+        if time.time() - stored_at > AI_RESULT_CACHE_TTL:
+            del _AI_RESULT_CACHE[key]
+            return None
+        return value
+
+def store_cached_ai_result(document_text, feature, value):
+    """Cache a successful AI generation (simple oldest-entry eviction)."""
+    if not document_text or not value:
+        return
+    key = _ai_cache_key(document_text, feature)
+    with _AI_RESULT_CACHE_LOCK:
+        if key not in _AI_RESULT_CACHE and len(_AI_RESULT_CACHE) >= AI_RESULT_CACHE_MAX_ENTRIES:
+            oldest_key = min(_AI_RESULT_CACHE.items(), key=lambda kv: kv[1][1])[0]
+            del _AI_RESULT_CACHE[oldest_key]
+        _AI_RESULT_CACHE[key] = (value, time.time())
+
+def stream_cached_sse(cached_text, chunk_size=800):
+    """Stream previously cached text back over SSE using the same wire format
+    as a live AI stream (JSON-encoded data events followed by [DONE])."""
+    def generate_cached():
+        for i in range(0, len(cached_text), chunk_size):
+            yield f"data: {json.dumps(cached_text[i:i + chunk_size])}\n\n"
+        yield "data: [DONE]\n\n"
+    return Response(generate_cached(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 # Initialize session state helper functions
 def init_session():
@@ -168,16 +213,12 @@ def get_pdf_content_with_fallback():
     return None
 
 def get_tutor_ai():
-    """Get or create TutorAI instance"""
-    if session.get('tutor_ai') is None:
-        try:
-            tutor_ai = TutorAI()
-            session['tutor_ai'] = True  # Just mark as initialized
-            return tutor_ai
-        except Exception as e:
-            logging.error(f"Failed to initialize TutorAI: {e}")
-            return None
-    return TutorAI()
+    """Create a TutorAI instance (returns None if initialization fails)"""
+    try:
+        return TutorAI()
+    except Exception as e:
+        logging.error(f"Failed to initialize TutorAI: {e}")
+        return None
 
 # Task handling helper functions for PostgreSQL migration
 def create_task(task_id, status='pending'):
@@ -275,8 +316,6 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
             doc_type = _storage.retrieve_content(session_id, 'calc_doc_type')
             current_index = _storage.retrieve_content(session_id, 'current_equation_index') or 0
 
-            import asyncio
-
             async def async_generation():
                 nonlocal equation_list, exam_questions, doc_type, current_index
                 try:
@@ -339,7 +378,7 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
             logging.error(f"BACKGROUND TASK: Error in task {task_id}: {e}")
             import traceback
             logging.error(traceback.format_exc())
-            update_task_failed(task_id, str(e))
+            update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 def run_calculation_answer_check_background(task_id, challenge_question, user_answer, pdf_content):
     """
@@ -354,8 +393,6 @@ def run_calculation_answer_check_background(task_id, challenge_question, user_an
         tutor_ai.set_context(pdf_content)
         
         # Check calculation answer using async method with gpt-5.6-terra
-        import asyncio
-        
         async def async_answer_check():
             try:
                 return await tutor_ai.check_calculation_answer_async(challenge_question, user_answer)
@@ -375,7 +412,7 @@ def run_calculation_answer_check_background(task_id, challenge_question, user_an
         
     except Exception as e:
         logging.error(f"CALC ANSWER BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, str(e))
+        update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 def run_summary_generation_background(task_id, pdf_content):
     """
@@ -389,9 +426,7 @@ def run_summary_generation_background(task_id, pdf_content):
         tutor_ai = TutorAI()
         tutor_ai.set_context(pdf_content)
         
-        # Generate summary using async method with Gemini
-        import asyncio
-        
+        # Generate summary using async method
         async def async_summary_generation():
             try:
                 return await tutor_ai.generate_cheat_sheet_async()
@@ -405,13 +440,14 @@ def run_summary_generation_background(task_id, pdf_content):
         loop.close()
         
         logging.info(f"SUMMARY BACKGROUND: Generation completed for task {task_id}")
-        
-        # Store the final result in PostgreSQL Database
+
+        # Cache the deterministic result and store it in PostgreSQL Database
+        store_cached_ai_result(pdf_content, 'summary', result)
         update_task_complete(task_id, success=True, data=result)
-        
+
     except Exception as e:
         logging.error(f"SUMMARY BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, str(e))
+        update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 def run_essay_generation_background(task_id, pdf_content):
     """
@@ -425,9 +461,7 @@ def run_essay_generation_background(task_id, pdf_content):
         tutor_ai = TutorAI()
         tutor_ai.set_context(pdf_content)
         
-        # Generate essay using async method with Gemini
-        import asyncio
-        
+        # Generate essay using async method
         async def async_essay_generation():
             try:
                 return await tutor_ai.generate_essay_question_async()
@@ -441,13 +475,14 @@ def run_essay_generation_background(task_id, pdf_content):
         loop.close()
         
         logging.info(f"ESSAY BACKGROUND: Generation completed for task {task_id}")
-        
-        # Store the final result in PostgreSQL Database
+
+        # Cache the deterministic result and store it in PostgreSQL Database
+        store_cached_ai_result(pdf_content, 'essay', result)
         update_task_complete(task_id, success=True, data=result)
-        
+
     except Exception as e:
         logging.error(f"ESSAY BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, str(e))
+        update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 def run_key_concepts_generation_background(task_id, pdf_content):
     """
@@ -461,9 +496,7 @@ def run_key_concepts_generation_background(task_id, pdf_content):
         tutor_ai = TutorAI()
         tutor_ai.set_context(pdf_content)
         
-        # Generate key concepts using async method with Gemini
-        import asyncio
-        
+        # Generate key concepts using async method
         async def async_key_concepts_generation():
             try:
                 return await tutor_ai.explain_key_concepts_async()
@@ -477,13 +510,14 @@ def run_key_concepts_generation_background(task_id, pdf_content):
         loop.close()
         
         logging.info(f"KEY CONCEPTS BACKGROUND: Generation completed for task {task_id}")
-        
-        # Store the final result in PostgreSQL Database
+
+        # Cache the deterministic result and store it in PostgreSQL Database
+        store_cached_ai_result(pdf_content, 'key_concepts', result)
         update_task_complete(task_id, success=True, data=result)
-        
+
     except Exception as e:
         logging.error(f"KEY CONCEPTS BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, str(e))
+        update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 def run_chat_response_background(task_id, user_message, pdf_content, conversation_history):
     """
@@ -499,8 +533,6 @@ def run_chat_response_background(task_id, user_message, pdf_content, conversatio
         tutor_ai.conversation_history = conversation_history or []
         
         # Generate chat response using async method
-        import asyncio
-        
         async def async_chat_generation():
             try:
                 return await tutor_ai.get_response_async(user_message)
@@ -520,7 +552,7 @@ def run_chat_response_background(task_id, user_message, pdf_content, conversatio
         
     except Exception as e:
         logging.error(f"CHAT BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, str(e))
+        update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 @app.route('/')
 def index():
@@ -539,25 +571,17 @@ def index():
                          quiz_active=session.get('quiz_active', False),
                          equation_active=session.get('equation_active', False))
 
-@app.route('/load_messages')
-def load_messages():
-    """DISABLED: This endpoint was causing content reloading issues"""
-    logging.info("LOAD_MESSAGES: Endpoint disabled to prevent content reloading")
-    return jsonify({'success': False, 'messages': []}), 200
-
 @app.route('/simple_chat', methods=['POST'])
 @csrf.exempt
 @rate_limit(calls_per_minute=30, use_session=True)  # Session-based rate limiting for chat
 def simple_chat():
-    """Simple async chat endpoint that calls Gemini asynchronously using asyncio"""
-    import asyncio
-    
+    """Simple async chat endpoint that calls the AI asynchronously using asyncio"""
     async def async_chat_handler():
         """Async handler for chat processing"""
+        tutor_ai = None
         try:
             init_session()
-            
-            tutor_ai = None
+
             data = request.get_json()
             if not data or 'message' not in data:
                 return {'success': False, 'error': 'No message provided'}, 400
@@ -725,25 +749,25 @@ def simple_chat():
                         'error': 'Failed to get response from AI'
                     }, 500
                 
-        except Exception as e:
-            logging.error(f"SIMPLE_CHAT: Error processing chat: {e}")
+        except Exception:
+            logging.exception("SIMPLE_CHAT: Error processing chat")
             return {
                 'success': False,
-                'error': str(e)
+                'error': 'An internal error occurred. Please try again.'
             }, 500
         finally:
             if tutor_ai:
                 await tutor_ai.close_async_clients()
-    
+
     # Run async function in event loop
     try:
         result, status_code = asyncio.run(async_chat_handler())
         return jsonify(result), status_code
-    except Exception as e:
-        logging.error(f"SIMPLE_CHAT: Error in asyncio.run: {e}")
+    except Exception:
+        logging.exception("SIMPLE_CHAT: Error in asyncio.run")
         return jsonify({
             'success': False,
-            'error': f'Async processing error: {str(e)}'
+            'error': 'An internal error occurred. Please try again.'
         }), 500
 
 @app.route('/simple_chat_stream', methods=['POST'])
@@ -751,7 +775,6 @@ def simple_chat():
 @rate_limit(calls_per_minute=30, use_session=True)
 def simple_chat_stream():
     """Streaming chat endpoint using Server-Sent Events."""
-    import asyncio
     import queue
 
     init_session()
@@ -841,32 +864,33 @@ def simple_chat_stream():
     q = queue.Queue()
 
     def _run_stream():
-        async def _consume():
-            full_response = ""
-            try:
-                async for chunk in tutor_ai.get_response_stream_async(user_message):
-                    full_response += chunk
-                    q.put(chunk)
-            except Exception as e:
-                logging.error(f"STREAM: Error during streaming: {e}")
-                if not full_response:
-                    q.put("I'm having trouble connecting to the AI service right now. Please try again.")
-            finally:
-                # Store complete conversation after streaming finishes
+        with app.app_context():
+            async def _consume():
+                full_response = ""
                 try:
-                    msgs = storage_manager.retrieve_content(session_id, 'messages') or []
-                    msgs.append({'role': 'user', 'content': user_message})
-                    msgs.append({'role': 'assistant', 'content': full_response})
-                    storage_manager.store_content(session_id, 'messages', msgs)
+                    async for chunk in tutor_ai.get_response_stream_async(user_message):
+                        full_response += chunk
+                        q.put(chunk)
                 except Exception as e:
-                    logging.error(f"STREAM: Error storing messages: {e}")
-                try:
-                    await tutor_ai.close_async_clients()
-                except Exception:
-                    pass
-                q.put(None)  # sentinel
+                    logging.error(f"STREAM: Error during streaming: {e}")
+                    if not full_response:
+                        q.put("I'm having trouble connecting to the AI service right now. Please try again.")
+                finally:
+                    # Store complete conversation after streaming finishes
+                    try:
+                        msgs = storage_manager.retrieve_content(session_id, 'messages') or []
+                        msgs.append({'role': 'user', 'content': user_message})
+                        msgs.append({'role': 'assistant', 'content': full_response})
+                        storage_manager.store_content(session_id, 'messages', msgs)
+                    except Exception as e:
+                        logging.error(f"STREAM: Error storing messages: {e}")
+                    try:
+                        await tutor_ai.close_async_clients()
+                    except Exception:
+                        pass
+                    q.put(None)  # sentinel
 
-        asyncio.run(_consume())
+            asyncio.run(_consume())
 
     thread = threading.Thread(target=_run_stream, daemon=True)
     thread.start()
@@ -890,7 +914,6 @@ def simple_chat_stream():
 @rate_limit(calls_per_minute=30, use_session=True)
 def quickaction_stream():
     """Streaming SSE endpoint for Key Concepts and Essay quick actions."""
-    import asyncio
     import queue as queue_mod
 
     init_session()
@@ -905,11 +928,27 @@ def quickaction_stream():
     if not pdf_content:
         return jsonify({'success': False, 'error': 'No document content found. Please upload lecture notes first.'}), 400
 
+    # Serve from the AI result cache when this document was already processed
+    cached = get_cached_ai_result(pdf_content, action)
+    if cached:
+        try:
+            _storage = StorageManager()
+            msgs = _storage.retrieve_content(session_id, 'messages') or []
+            msgs.append({'role': 'user', 'content': 'Explanation of key concepts' if action == 'key_concepts' else 'Essay question'})
+            msgs.append({'role': 'assistant', 'content': cached})
+            _storage.store_content(session_id, 'messages', msgs)
+        except Exception as e:
+            logging.error(f"QUICKACTION STREAM: Error storing cached messages: {e}")
+        return stream_cached_sse(cached)
+
     q = queue_mod.Queue()
 
     def _run_stream():
+      with app.app_context():
         async def _consume():
             full_response = ""
+            stream_ok = False
+            tutor_ai = None
             try:
                 tutor_ai = TutorAI()
                 tutor_ai.set_context(pdf_content)
@@ -922,11 +961,14 @@ def quickaction_stream():
                 async for chunk in gen:
                     full_response += chunk
                     q.put(chunk)
+                stream_ok = True
             except Exception as e:
                 logging.error(f"QUICKACTION STREAM: Error during streaming ({action}): {e}")
                 if not full_response:
-                    q.put(f"I'm having trouble right now. Please try again in a moment.")
+                    q.put("I'm having trouble right now. Please try again in a moment.")
             finally:
+                if stream_ok and full_response:
+                    store_cached_ai_result(pdf_content, action, full_response)
                 # Store the response in message history
                 try:
                     storage_manager = StorageManager()
@@ -937,7 +979,8 @@ def quickaction_stream():
                 except Exception as e:
                     logging.error(f"QUICKACTION STREAM: Error storing messages: {e}")
                 try:
-                    await tutor_ai.close_async_clients()
+                    if tutor_ai:
+                        await tutor_ai.close_async_clients()
                 except Exception:
                     pass
                 q.put(None)
@@ -961,9 +1004,9 @@ def quickaction_stream():
 
 @app.route('/calculation_stream', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=10, use_session=True)
 def calculation_stream():
     """Streaming SSE endpoint for calculation question generation (exam & lecture notes)."""
-    import asyncio
     import queue as queue_mod
 
     init_session()
@@ -1087,44 +1130,54 @@ def calculation_stream():
 
 @app.route('/summary_stream', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=10, use_session=True)
 def summary_stream():
     """Streaming SSE endpoint for executive summary generation."""
-    import asyncio
     import queue as queue_mod
 
     init_session()
 
     session_id = session.get('session_id')
 
-    # Try to retrieve PDF content (should already be stored from upload)
+    # Retrieve PDF content (already stored by the time the upload completes)
     pdf_content = get_pdf_content_with_fallback()
     if not pdf_content:
-        storage_manager_local = StorageManager()
-        pdf_content = storage_manager_local.retrieve_content(session_id, 'pdf_content')
-    if not pdf_content:
-        # Brief retry in case of storage propagation delay
-        import time as time_mod
-        time_mod.sleep(1.0)
-        pdf_content = get_pdf_content_with_fallback()
-    if not pdf_content:
         return jsonify({'success': False, 'error': 'Document content not available. Please try uploading your file again.'}), 400
+
+    # Serve from the AI result cache when this document was already summarised
+    cached = get_cached_ai_result(pdf_content, 'summary')
+    if cached:
+        try:
+            _storage = StorageManager()
+            msgs = _storage.retrieve_content(session_id, 'messages') or []
+            msgs.append({'role': 'assistant', 'content': cached})
+            _storage.store_content(session_id, 'messages', msgs)
+        except Exception as e:
+            logging.error(f"SUMMARY STREAM: Error storing cached messages: {e}")
+        return stream_cached_sse(cached)
 
     q = queue_mod.Queue()
 
     def _run_stream():
+      with app.app_context():
         async def _consume():
             full_response = ""
+            stream_ok = False
+            tutor_ai = None
             try:
                 tutor_ai = TutorAI()
                 tutor_ai.set_context(pdf_content)
                 async for chunk in tutor_ai.generate_cheat_sheet_stream_async():
                     full_response += chunk
                     q.put(chunk)
+                stream_ok = True
             except Exception as e:
                 logging.error(f"SUMMARY STREAM: Error: {e}")
                 if not full_response:
                     q.put("I'm having trouble generating a summary right now. Please try again.")
             finally:
+                if stream_ok and full_response:
+                    store_cached_ai_result(pdf_content, 'summary', full_response)
                 try:
                     storage_manager = StorageManager()
                     msgs = storage_manager.retrieve_content(session_id, 'messages') or []
@@ -1133,7 +1186,8 @@ def summary_stream():
                 except Exception as e:
                     logging.error(f"SUMMARY STREAM: Error storing messages: {e}")
                 try:
-                    await tutor_ai.close_async_clients()
+                    if tutor_ai:
+                        await tutor_ai.close_async_clients()
                 except Exception:
                     pass
                 q.put(None)
@@ -1155,101 +1209,46 @@ def summary_stream():
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
-def generate_summary_with_fallback(tutor_ai, pdf_content, max_retries=3):
-    """
-    Generate executive summary with fallback mechanism
-    Returns: (success, summary, error_message)
-    """
-    for attempt in range(max_retries):
-        try:
-            # Set context and generate summary
-            tutor_ai.set_context(pdf_content)
-            summary = tutor_ai.generate_cheat_sheet()
-            
-            if summary and summary.strip():
-                return True, summary, None
-            else:
-                if attempt < max_retries - 1:
-                    continue
-                else:
-                    return False, None, "Generated summary was empty"
-                    
-        except Exception as e:
-            logging.error(f"Summary generation attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                continue
-            else:
-                return False, None, f"Error generating summary after {max_retries} attempts: {str(e)}"
-    
-    return False, None, "Maximum retries exceeded"
-
 @app.route('/start_summary_generation', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=10, use_session=True)
 def start_summary_generation():
     """Start background summary generation using polling pattern"""
-    # Import db at function level to avoid scoping issues
-    # ReplitDB no longer needed - using PostgreSQL for task tracking
-    
     try:
         init_session()
-        
-        # Set context from stored content with fallback
-        session_id = session.get('session_id')
-        
-        # Add delay to handle race condition with file upload
-        import time
-        time.sleep(2.0)  # 2 second delay to allow file storage to complete and database consistency
-        
+
         pdf_content = get_pdf_content_with_fallback()
-        
+
         if not pdf_content:
             logging.error("No document content found for summary generation")
-            
-            # Check if content exists with direct database query using storage manager
-            try:
-                storage_manager = StorageManager()
-                pdf_content = storage_manager.retrieve_content(session_id, 'pdf_content')
-            except Exception as storage_error:
-                logging.error(f"Storage manager query error: {storage_error}")
-            
-            if not pdf_content:
-                # Since summary generation now only starts AFTER upload completion confirmation,
-                # we should always have content available. One more retry with longer delay.
-                time.sleep(5.0)
-                pdf_content = get_pdf_content_with_fallback()
-                
-                if not pdf_content:
-                    # Try one more time with storage manager directly
-                    try:
-                        storage_manager = StorageManager()
-                        pdf_content = storage_manager.retrieve_content(session_id, 'pdf_content')
-                    except:
-                        pass
-                    
-                    if not pdf_content:
-                        logging.error("No content found even after upload confirmation")
-                        # Return 200 with error message instead of 400 to prevent HTTP errors in frontend
-                        return jsonify({'success': False, 'error': 'Document content not available. Please try uploading your file again.'}), 200
-        
+            # Return 200 with error message instead of 400 to prevent HTTP errors in frontend
+            return jsonify({'success': False, 'error': 'Document content not available. Please try uploading your file again.'}), 200
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
-        
+
         # Set initial status in PostgreSQL Database
         create_task(task_id, "pending")
-        
+
+        # Serve from the AI result cache when this document was already summarised
+        cached = get_cached_ai_result(pdf_content, 'summary')
+        if cached:
+            update_task_complete(task_id, success=True, data=cached)
+            return jsonify({"task_id": task_id}), 202
+
         # Start background task in separate thread
         thread = threading.Thread(
-            target=run_summary_generation_background, 
-            args=(task_id, pdf_content)
+            target=run_summary_generation_background,
+            args=(task_id, pdf_content),
+            daemon=True
         )
         thread.start()
-        
-        
+
         return jsonify({"task_id": task_id}), 202
-        
-    except Exception as e:
-        logging.error(f"Critical error in summary generation: {e}")
-        return jsonify({'error': str(e)}), 500
+
+    except Exception:
+        logging.exception("Critical error in summary generation")
+        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
 @app.route('/summary_status/<task_id>', methods=['GET'])
 def get_summary_status(task_id):
@@ -1260,10 +1259,9 @@ def get_summary_status(task_id):
         
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-        
-        # Convert ObservedDict to regular dict for JSON serialization
-        result_dict = dict(task_result)
-        
+
+        result_dict = task_result
+
         # If task is complete, clear the summary flag but don't store in messages
         # (the frontend will handle displaying it to avoid duplication)
         if result_dict.get("status") == "complete" and result_dict.get("success"):
@@ -1271,39 +1269,23 @@ def get_summary_status(task_id):
             if session_id:
                 # Clear the summary flag
                 session['needs_summary'] = False
-                
+
                 logging.info(f"SUMMARY POLLING: Summary completed for task {task_id}")
-                
+
                 # Clean up the task from database after successful completion
                 try:
                     cleanup_task(task_id)
                 except:
                     pass
-        
+
         return jsonify(result_dict)
-        
-    except Exception as e:
-        logging.error(f"SUMMARY POLLING: Error checking task status: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
 
-# Keep old route for backward compatibility, but redirect to new async approach
-@app.route('/generate_summary', methods=['POST'])
-def generate_summary():
-    """Legacy route - redirects to new async approach"""
-    return start_summary_generation()
-
-
-
-@app.route('/explain_concepts', methods=['POST'])
-def explain_concepts():
-    """Legacy route - redirects to new async approach"""
-    return start_key_concepts_generation()
+    except Exception:
+        logging.exception("SUMMARY POLLING: Error checking task status")
+        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
 def run_quiz_generation_background(task_id, pdf_content):
     """Background task to generate retrieval quiz using async methods"""
-    import asyncio
-    import threading
-    
     def run_async():
         # Create a new event loop for this thread
         loop = asyncio.new_event_loop()
@@ -1339,68 +1321,64 @@ async def run_quiz_generation_async(task_id, pdf_content):
         
         if quiz_questions:
             logging.info(f"ASYNC QUIZ WORKER: Successfully generated {len(quiz_questions)} questions for task {task_id}")
-            # Convert to regular Python objects if they're ObservedList/ObservedDict to avoid JSON serialization errors
-            def convert_observed_objects(obj):
-                """Recursively convert ObservedList/ObservedDict to regular Python objects"""
-                if hasattr(obj, '__iter__') and not isinstance(obj, str):
-                    if hasattr(obj, 'items'):  # dict-like
-                        return {k: convert_observed_objects(v) for k, v in obj.items()}
-                    else:  # list-like
-                        return [convert_observed_objects(item) for item in obj]
-                return obj
-            
-            quiz_questions = convert_observed_objects(quiz_questions)
-            # Store successful result
+            # Cache the deterministic result and store it in PostgreSQL Database
+            store_cached_ai_result(pdf_content, 'quiz', quiz_questions)
             update_task_complete(task_id, success=True, data=quiz_questions)
         else:
             logging.error(f"ASYNC QUIZ WORKER: No questions generated for task {task_id}")
             update_task_failed(task_id, "No quiz questions could be generated. Please try again.")
-            
+
     except Exception as e:
         logging.error(f"ASYNC QUIZ WORKER: Error in quiz generation for task {task_id}: {e}")
-        update_task_failed(task_id, f"Quiz generation failed: {str(e)}")
+        update_task_failed(task_id, "Quiz generation failed. Please try again.")
 
 @app.route('/start_quiz_generation', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=10, use_session=True)
 def start_quiz_generation():
     """Start background retrieval quiz generation using polling pattern"""
     try:
         logging.info("QUIZ POLLING: Starting quiz generation")
         init_session()
-        
+
         # Set context from stored content with fallback
         session_id = session.get('session_id')
         logging.info(f"QUIZ POLLING: Current session_id: {session_id}")
-        
+
         pdf_content = get_pdf_content_with_fallback()
         logging.info(f"QUIZ POLLING: PDF content retrieved: {pdf_content is not None}")
-        
+
         if not pdf_content:
             logging.error("QUIZ POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
-        
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
-        
+
         # Set initial status in PostgreSQL Database
         create_task(task_id, "pending")
-        
+
+        # Serve from the AI result cache when a quiz was already generated for this document
+        cached = get_cached_ai_result(pdf_content, 'quiz')
+        if cached:
+            update_task_complete(task_id, success=True, data=cached)
+            return jsonify({"task_id": task_id}), 202
+
         # Start background task in separate thread
         thread = threading.Thread(
-            target=run_quiz_generation_background, 
-            args=(task_id, pdf_content)
+            target=run_quiz_generation_background,
+            args=(task_id, pdf_content),
+            daemon=True
         )
         thread.start()
-        
+
         logging.info(f"QUIZ POLLING: Background task started with ID: {task_id}")
-        
+
         return jsonify({"task_id": task_id}), 202
-        
-    except Exception as e:
-        logging.error(f"QUIZ POLLING: Critical error: {e}")
-        import traceback
-        logging.error(f"QUIZ POLLING: Traceback: {traceback.format_exc()}")
-        return jsonify({'error': str(e)}), 500
+
+    except Exception:
+        logging.exception("QUIZ POLLING: Critical error")
+        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
 @app.route('/quiz_status/<task_id>', methods=['GET'])
 def get_quiz_status(task_id):
@@ -1411,19 +1389,9 @@ def get_quiz_status(task_id):
         
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-        
-        # Convert ObservedDict/ObservedList to regular Python objects for JSON serialization
-        def convert_observed_objects(obj):
-            """Recursively convert ObservedList/ObservedDict to regular Python objects"""
-            if hasattr(obj, '__iter__') and not isinstance(obj, str):
-                if hasattr(obj, 'items'):  # dict-like
-                    return {k: convert_observed_objects(v) for k, v in obj.items()}
-                else:  # list-like
-                    return [convert_observed_objects(item) for item in obj]
-            return obj
-        
-        result_dict = convert_observed_objects(task_result)
-        
+
+        result_dict = task_result
+
         # If task is complete, also update session storage
         if result_dict.get("status") == "complete" and result_dict.get("success"):
             session_id = session.get('session_id')
@@ -1445,28 +1413,14 @@ def get_quiz_status(task_id):
                     pass
         
         return jsonify(result_dict)
-        
-    except Exception as e:
-        logging.error(f"Error checking quiz task status: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
 
-# Keep old route for backward compatibility, but redirect to new async approach
-@app.route('/generate_quiz', methods=['POST'])
-def generate_quiz():
-    """Legacy route - redirects to new async approach"""
-    return start_quiz_generation()
-
-@app.route('/generate_essay', methods=['POST'])
-def generate_essay():
-    """Legacy route - redirects to new async approach"""
-    return start_essay_generation()
-
-# Removed list_equations route - now using simplified direct calculation approach
-
-# Removed old calculation quiz routes - now using simplified chat-based approach
+    except Exception:
+        logging.exception("Error checking quiz task status")
+        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
 @app.route('/start_calculation_generation', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=10, use_session=True)
 def start_calculation_generation():
     """Start background calculation question generation using polling pattern"""
     try:
@@ -1502,19 +1456,18 @@ def start_calculation_generation():
         # Start background task in separate thread
         thread = threading.Thread(
             target=run_calculation_generation_background,
-            args=(task_id, session_id, pdf_content)
+            args=(task_id, session_id, pdf_content),
+            daemon=True
         )
         thread.start()
-        
+
         logging.info(f"POLLING: Background task started with ID: {task_id}")
-        
+
         return jsonify({"task_id": task_id}), 202
-        
-    except Exception as e:
-        logging.error(f"POLLING: Critical error: {e}")
-        import traceback
-        logging.error(f"POLLING: Traceback: {traceback.format_exc()}")
-        return jsonify({'error': str(e)}), 500
+
+    except Exception:
+        logging.exception("POLLING: Critical error")
+        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
 @app.route('/calculation_status/<task_id>', methods=['GET'])
 def get_calculation_status(task_id):
@@ -1525,19 +1478,19 @@ def get_calculation_status(task_id):
         
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-        
-        # Convert ObservedDict to regular dict for JSON serialization
-        result_dict = dict(task_result)
-        
+
+        result_dict = task_result
+
         # If task is complete, update session storage
         if result_dict.get("status") == "complete" and result_dict.get("success"):
             session_id = session.get('session_id')
             if session_id:
                 storage_manager = StorageManager()
-                question_text = result_dict["data"]
+                question_text = result_dict.get("data", "")
 
-                storage_manager.store_content(session_id, 'current_calculation_question', question_text)
-                storage_manager.store_content(session_id, 'calculation_mode_active', True)
+                if question_text:
+                    storage_manager.store_content(session_id, 'current_calculation_question', question_text)
+                    storage_manager.store_content(session_id, 'calculation_mode_active', True)
 
                 try:
                     cleanup_task(task_id)
@@ -1546,9 +1499,9 @@ def get_calculation_status(task_id):
 
         return jsonify(result_dict)
 
-    except Exception as e:
-        logging.error(f"Error checking calculation task status: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
+    except Exception:
+        logging.exception("Error checking calculation task status")
+        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
 
 @app.route('/increment_equation_index', methods=['POST'])
@@ -1572,55 +1525,68 @@ def increment_equation_index():
 
         return jsonify({'index': new_index, 'total': total})
 
-    except Exception as e:
-        logging.error(f"Error incrementing equation index: {e}")
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        logging.exception("Error incrementing equation index")
+        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
 @app.route('/start_calculation_answer_check', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=10, use_session=True)
 def start_calculation_answer_check():
     """Start background calculation answer checking using polling pattern"""
     try:
         init_session()
-        
+
         # Parse request data — require application/json to prevent CSRF via form submissions
         data = request.get_json()
         if not data:
             return jsonify({'error': 'Request must be JSON (Content-Type: application/json)'}), 415
         challenge_question = data.get('challenge_question')
         user_answer = data.get('user_answer')
-        
+
         if not challenge_question or not user_answer:
             return jsonify({'error': 'Missing challenge_question or user_answer'}), 400
-        
+
+        # Input validation: both fields must be text with sane length limits
+        if not isinstance(challenge_question, str) or not isinstance(user_answer, str):
+            resource_monitor.increment('input_validation_failures')
+            return jsonify({'error': 'challenge_question and user_answer must be text'}), 400
+        if len(user_answer) > MAX_MESSAGE_LENGTH:
+            resource_monitor.increment('input_validation_failures')
+            return jsonify({'error': f'Answer too long (max {MAX_MESSAGE_LENGTH} characters)'}), 400
+        if len(challenge_question) > 50000:
+            resource_monitor.increment('input_validation_failures')
+            return jsonify({'error': 'Challenge question too long'}), 400
+
         # Set context from stored content with fallback
         session_id = session.get('session_id')
-        
+
         pdf_content = get_pdf_content_with_fallback()
-        
+
         if not pdf_content:
             logging.info("No document content found for calculation answer checking")
             return jsonify({'error': 'No document content found'}), 400
-        
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
-        
+
         # Set initial status in PostgreSQL Database
         create_task(task_id, "pending")
-        
+
         # Start background task in separate thread
         thread = threading.Thread(
-            target=run_calculation_answer_check_background, 
-            args=(task_id, challenge_question, user_answer, pdf_content)
+            target=run_calculation_answer_check_background,
+            args=(task_id, challenge_question, user_answer, pdf_content),
+            daemon=True
         )
         thread.start()
-        
-        
+
+
         return jsonify({"task_id": task_id}), 202
-        
-    except Exception as e:
-        logging.error(f"Critical error in calculation answer checking: {e}")
-        return jsonify({'error': str(e)}), 500
+
+    except Exception:
+        logging.exception("Critical error in calculation answer checking")
+        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
 @app.route('/calculation_answer_status/<task_id>', methods=['GET'])
 def get_calculation_answer_status(task_id):
@@ -1631,41 +1597,38 @@ def get_calculation_answer_status(task_id):
         
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-        
-        # Convert ObservedDict to regular dict for JSON serialization
-        result_dict = dict(task_result)
-        
+
+        result_dict = task_result
+
         # If task is complete, also update session storage
         if result_dict.get("status") == "complete" and result_dict.get("success"):
             session_id = session.get('session_id')
             if session_id:
                 storage_manager = StorageManager()
-                evaluation_response = result_dict["data"]
-                
+                evaluation_response = result_dict.get("data", "")
+
                 # Add evaluation to messages
                 messages = storage_manager.retrieve_content(session_id, 'messages') or []
                 messages.append({
-                    "role": "assistant", 
+                    "role": "assistant",
                     "content": evaluation_response
                 })
                 storage_manager.store_content(session_id, 'messages', messages)
-                
+
                 # Clear any current calculation question
                 storage_manager.delete_content(session_id, 'current_calculation_question')
-                
-                # Evaluation stored successfully
-                
+
                 # Clean up the task from database after successful completion
                 try:
                     cleanup_task(task_id)
                 except:
                     pass
-        
+
         return jsonify(result_dict)
-        
-    except Exception as e:
-        logging.error(f"Error checking calculation answer task status: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
+
+    except Exception:
+        logging.exception("Error checking calculation answer task status")
+        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
 
 
@@ -1690,12 +1653,12 @@ def process_document_with_fallback(file, max_retries=3):
                 else:
                     return False, None, "No text could be extracted from the file"
                     
-        except Exception as e:
-            logging.error(f"Document processing attempt {attempt + 1} failed: {e}")
+        except Exception:
+            logging.exception(f"Document processing attempt {attempt + 1} failed")
             if attempt < max_retries - 1:
                 continue
             else:
-                return False, None, f"Error processing file after {max_retries} attempts: {str(e)}"
+                return False, None, f"Error processing file after {max_retries} attempts. Please try a different file."
     
     return False, None, "Maximum retries exceeded"
 
@@ -1734,39 +1697,42 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 
         except Exception as e:
             logging.error(f"Background file processing error for task {task_id}: {e}")
-            update_task_failed(task_id, str(e))
+            update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 @app.route('/upload', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=5, use_session=True)
 def upload_file():
     """Handle file upload - returns immediately with task_id"""
     try:
         init_session()
-        
+
         if 'file' not in request.files:
             return jsonify({'error': 'No file uploaded'}), 400
-        
+
         file = request.files['file']
-        
+
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
-        
+
         # Enhanced filename validation with security logging
         if len(file.filename) > MAX_FILENAME_LENGTH:
             logging.warning(f"SECURITY: Filename too long from session {session.get('session_id', 'unknown')}: {len(file.filename)} characters")
             resource_monitor.increment('input_validation_failures')
             return jsonify({'error': f'Filename too long (max {MAX_FILENAME_LENGTH} characters)'}), 400
-        
+
         # Use secure_filename to sanitize the filename
-        from werkzeug.utils import secure_filename
         original_filename = file.filename
         secure_name = secure_filename(original_filename)
-        
+
         if not secure_name:
             logging.warning(f"SECURITY: Invalid filename from session {session.get('session_id', 'unknown')}: {original_filename}")
             resource_monitor.increment('input_validation_failures')
             return jsonify({'error': 'Invalid filename'}), 400
-        
+
+        # HTML-escape the sanitized name server-side before it appears in any response
+        safe_filename = str(escape(secure_name))
+
         if file and secure_name and secure_name.lower().endswith(('.pdf', '.pptx')):
             
             # Check if there's already content in storage - if so, clear the session first
@@ -1794,36 +1760,36 @@ def upload_file():
             # Start background thread for file processing
             thread = threading.Thread(
                 target=process_upload_background,
-                args=(task_id, file_data, file.filename, session_id)
+                args=(task_id, file_data, safe_filename, session_id),
+                daemon=True
             )
-            thread.daemon = True
             thread.start()
-            
-            # Store filename in session
-            session['pdf_filename'] = file.filename
-            
+
+            # Store sanitized filename in session
+            session['pdf_filename'] = safe_filename
+
             # Clear previous messages (if they exist)
             try:
                 storage_manager.store_content(session_id, 'messages', [])
             except:
                 pass  # Ignore if session doesn't exist in storage yet
-            
+
             try:
                 primary_storage.store_content(session_id, 'messages', [])
             except:
                 pass  # Ignore if session doesn't exist in storage yet
-            
-            # Return task_id for polling
+
+            # Return task_id for polling (sanitized + escaped filename only)
             return jsonify({
                 'task_id': task_id,
-                'filename': file.filename
+                'filename': safe_filename
             })
         else:
             return jsonify({'error': 'Invalid file type. Please upload PDF or PPTX files only.'}), 400
-            
-    except Exception as e:
-        logging.error(f"Critical error in file upload: {e}")
-        return jsonify({'error': f'Critical upload error: {str(e)}'}), 500
+
+    except Exception:
+        logging.exception("Critical error in file upload")
+        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
 @app.route('/upload_status/<task_id>', methods=['GET'])
 def get_upload_status(task_id):
@@ -1834,12 +1800,11 @@ def get_upload_status(task_id):
         
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-        
-        # Convert to regular dict for JSON serialization
-        result_dict = dict(task_result)
-        
+
+        result_dict = task_result
+
         # If task is complete, initialize TutorAI and set context
-        if result_dict.get("status") == "complete" and result_dict.get("data", {}).get('success'):
+        if result_dict.get("status") == "complete" and (result_dict.get("data") or {}).get('success'):
             session_id = session.get('session_id')
             if session_id:
                 # Get PDF content
@@ -1864,10 +1829,10 @@ def get_upload_status(task_id):
                         pass
         
         return jsonify(result_dict)
-        
-    except Exception as e:
-        logging.error(f"Error checking upload task status: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
+
+    except Exception:
+        logging.exception("Error checking upload task status")
+        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
 @app.route('/start_chat_response', methods=['POST'])
 @csrf.exempt
@@ -1943,28 +1908,9 @@ def chat_response_status(task_id):
         
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-        
-        # Convert ObservedDict to regular dict for JSON serialization
-        def convert_observed(obj):
-            """Recursively convert ObservedDict/ObservedList to regular dict/list"""
-            # Check for ObservedDict first by checking class name
-            if hasattr(obj, '__class__') and 'ObservedDict' in str(type(obj)):
-                # Convert ObservedDict to regular dict
-                return {key: convert_observed(value) for key, value in dict(obj).items()}
-            elif hasattr(obj, '__class__') and 'ObservedList' in str(type(obj)):
-                # Convert ObservedList to regular list
-                return [convert_observed(item) for item in list(obj)]
-            elif isinstance(obj, dict):
-                return {key: convert_observed(value) for key, value in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_observed(item) for item in obj]
-            else:
-                return obj
-        
-        result_dict = convert_observed(task_result)
-        
-        # Chat task result processing
-        
+
+        result_dict = task_result
+
         # If task is complete, clean up the task (no need to store in messages since frontend handles display)
         if result_dict.get("status") == "complete" and result_dict.get("success"):
             # Task completed successfully
@@ -1978,254 +1924,14 @@ def chat_response_status(task_id):
             logging.error(f"Chat task {task_id} failed with error: {result_dict.get('error')}")
         
         return jsonify(result_dict)
-        
-    except Exception as e:
-        logging.error(f"Error checking chat task status: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
 
-@app.route('/chat', methods=['POST'])
-def chat():
-    """Handle chat messages"""
-    init_session()
-    
-    data = request.get_json()
-    if not data or 'message' not in data:
-        return jsonify({'error': 'No message provided'}), 400
-    
-    user_message = data['message']
-    
-    # Add user message to file storage instead of session
-    session_id = session.get('session_id')
-    storage_manager = StorageManager()
-    messages = storage_manager.retrieve_content(session_id, 'messages') or []
-    messages.append({"role": "user", "content": user_message})
-    storage_manager.store_content(session_id, 'messages', messages)
-    
-    try:
-        # Removed equation selection mode - now using simplified direct calculation approach
-        
-        # Check if user is answering a calculation question
-        if session_id:
-            current_question = storage_manager.retrieve_content(session_id, 'current_calculation_question')
-            
-            if current_question:
-                # Check if user wants to continue with more questions
-                if user_message.strip().lower() == 'yes':
-                    # For new questions, user should click the Calculation questions button
-                    response_message = "To get a new calculation question, please click the **Calculation questions** button above. This will generate a fresh question using advanced mathematical reasoning."
-                    
-                    messages = storage_manager.retrieve_content(session_id, 'messages') or []
-                    messages.append({
-                        'role': 'assistant',
-                        'content': response_message
-                    })
-                    storage_manager.store_content(session_id, 'messages', messages)
-                    
-                    return jsonify({
-                        'success': True,
-                        'response': response_message
-                    })
-                
-                # Try to parse as a numerical answer
-                try:
-                    # Clean the answer to handle various formats
-                    cleaned_answer = user_message.strip().replace('%', '').replace(',', '').replace('$', '').replace('£', '')
-                    user_answer = float(cleaned_answer)
-                    
-                    # Return message to indicate async processing will start
-                    return jsonify({
-                        'success': True,
-                        'response': f"I'm evaluating your answer: {user_message.strip()}. Please wait a moment for the detailed solution and feedback...",
-                        'start_answer_check': True,
-                        'challenge_question': current_question,
-                        'user_answer': user_message.strip()
-                    })
-                except ValueError:
-                    # Not a number, continue with normal chat processing
-                    pass
-        
-        # Check if this is a simple word/phrase that doesn't need AI processing
-        simple_words = user_message.strip().lower().split()
-        if len(simple_words) <= 2 and all(word.isalpha() for word in simple_words):
-            # For simple words, provide a quick response suggesting they elaborate
-            quick_response = f"I see you mentioned '{user_message}'. Could you ask a more specific question about this topic from your lecture notes? For example, you could ask about definitions, calculations, examples, or concepts related to {user_message}."
-            
-            messages = storage_manager.retrieve_content(session_id, 'messages') or []
-            messages.append({
-                'role': 'assistant',
-                'content': quick_response
-            })
-            storage_manager.store_content(session_id, 'messages', messages)
-            
-            return jsonify({
-                'success': True,
-                'response': quick_response
-            })
-        
-        # For more complex messages, redirect to async polling approach
-        return jsonify({
-            'success': True,
-            'response': f"Processing your message: '{user_message}'. Please wait while I analyze your lecture notes and provide a detailed response...",
-            'start_async_chat': True,
-            'user_message': user_message
-        })
-        
-    except Exception as e:
-        logging.error(f"Error in chat: {e}")
-        error_msg = f"Error: {str(e)}"
-        messages = storage_manager.retrieve_content(session_id, 'messages') or []
-        messages.append({"role": "assistant", "content": error_msg})
-        storage_manager.store_content(session_id, 'messages', messages)
-        return jsonify({'error': error_msg}), 500
-
-@app.route('/get_messages', methods=['GET'])
-def get_messages():
-    """DISABLED: This endpoint was causing content reloading issues"""
-    logging.info("GET_MESSAGES: Endpoint disabled to prevent content reloading")
-    return jsonify({'messages': []}), 200
-
-@app.route('/start_quiz', methods=['POST'])
-def start_quiz():
-    """Legacy route - redirects to new async approach"""
-    return start_quiz_generation()
-
-@app.route('/submit_answer', methods=['POST'])
-def submit_answer():
-    """Submit quiz answer"""
-    init_session()
-    
-    data = request.get_json()
-    if not data or 'answer' not in data:
-        logging.error("No answer provided in request data")
-        return jsonify({'error': 'No answer provided'}), 400
-    
-    try:
-        answer = data['answer']
-        
-        # Get quiz data from storage manager
-        quiz_data = storage_manager.retrieve_content(session['session_id'], 'quiz_data')
-        if not quiz_data:
-            logging.error("No quiz data found in storage")
-            return jsonify({'error': 'No quiz data found. Please start a new quiz.'}), 400
-        
-        questions = quiz_data.get('questions', [])
-        current_index = quiz_data.get('current_question_index', 0)
-        
-        # Debug logging
-        # Basic validation logging
-        if not quiz_data.get('active', False):
-            logging.info("Quiz submission received but quiz is not active")
-        
-        if not questions:
-            logging.error("No quiz questions found in storage")
-            return jsonify({'error': 'No quiz questions found. Please start a new quiz.'}), 400
-            
-        if not quiz_data.get('active', False):
-            logging.error("Quiz is not active in storage")
-            return jsonify({'error': 'Quiz is not active. Please start a new quiz.'}), 400
-            
-        if current_index >= len(questions):
-            logging.error(f"Question index {current_index} out of bounds for {len(questions)} questions")
-            return jsonify({'error': 'No more questions'}), 400
-        
-        current_question = questions[current_index]
-        
-        # Enhanced answer validation - normalize and compare
-        user_answer = answer.strip()
-        correct_answer = current_question['correct_answer'].strip()
-        
-        # Debug logging for answer comparison
-        # Compare normalized answers
-        logging.debug(f"  Options: {current_question.get('options', [])}")
-        
-        # Check if user answer exactly matches correct answer
-        is_correct = user_answer == correct_answer
-        
-        # If no exact match, check if user selected an option that matches the correct answer
-        if not is_correct and 'options' in current_question:
-            options = current_question['options']
-            # Check if user selected option text that matches correct answer
-            for option in options:
-                if user_answer == option.strip() and option.strip() == correct_answer:
-                    is_correct = True
-                    break
-            
-            # Additional fallback: check if user answer is an option that semantically matches
-            if not is_correct:
-                # Clean both answers for comparison (remove common prefixes)
-                clean_user = user_answer.replace('Option A:', '').replace('Option B:', '').replace('Option C:', '').replace('Option D:', '').strip()
-                clean_correct = correct_answer.replace('Option A:', '').replace('Option B:', '').replace('Option C:', '').replace('Option D:', '').strip()
-                
-                if clean_user == clean_correct:
-                    is_correct = True
-                    logging.debug(f"Match found after cleaning: '{clean_user}' == '{clean_correct}'")
-        
-        logging.debug(f"Final result: is_correct = {is_correct}")
-        
-        if is_correct:
-            quiz_data['score'] += 1
-        
-        # Prepare explanation message
-        raw_explanation = current_question.get('explanation', '')
-        
-        # Remove any existing "Correct!" variations from the beginning of the explanation to avoid duplication
-        prefixes_to_remove = ['Correct!', 'Correct.', 'That\'s correct!', 'That is correct!', 'Right!', 'Yes!']
-        for prefix in prefixes_to_remove:
-            if raw_explanation.startswith(prefix):
-                raw_explanation = raw_explanation[len(prefix):].strip()
-                break
-        
-        # Add debug logging
-        logging.debug(f"Raw explanation after cleanup: '{raw_explanation}'")
-        
-        if is_correct:
-            explanation = f"✅ Correct! {raw_explanation}"
-        else:
-            explanation = f"❌ Incorrect. The correct answer is: {current_question['correct_answer']}. {raw_explanation}"
-        
-        logging.debug(f"Final explanation: '{explanation}'")
-        
-        # Update quiz data
-        quiz_data['current_question_index'] += 1
-        
-        # Check if quiz is complete
-        if quiz_data['current_question_index'] >= len(questions):
-            quiz_data['active'] = False
-            session['quiz_active'] = False
-            
-            # Store updated quiz data
-            storage_manager.store_content(session['session_id'], 'quiz_data', quiz_data)
-            
-            return jsonify({
-                'correct': is_correct,
-                'explanation': explanation,
-                'quiz_complete': True,
-                'final_score': quiz_data['score'],
-                'total_questions': len(questions)
-            })
-        
-        # Store updated quiz data
-        storage_manager.store_content(session['session_id'], 'quiz_data', quiz_data)
-        
-        # Return next question
-        next_question = questions[quiz_data['current_question_index']]
-        return jsonify({
-            'correct': is_correct,
-            'explanation': explanation,
-            'next_question': next_question,
-            'question_number': quiz_data['current_question_index'] + 1,
-            'total_questions': len(questions),
-            'quiz_complete': False
-        })
-        
-    except Exception as e:
-        logging.error(f"Error submitting answer: {e}")
-        return jsonify({'error': f'Error submitting answer: {str(e)}'}), 500
-
-# Removed old calculation handlers - now using simplified chat-based approach
+    except Exception:
+        logging.exception("Error checking chat task status")
+        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
 @app.route('/start_essay_generation', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=10, use_session=True)
 def start_essay_generation():
     """Start background essay question generation using polling pattern"""
     try:
@@ -2242,28 +1948,33 @@ def start_essay_generation():
         if not pdf_content:
             logging.error("ESSAY POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
-        
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
-        
+
         # Set initial status in PostgreSQL Database
         create_task(task_id, "pending")
-        
+
+        # Serve from the AI result cache when this document was already processed
+        cached = get_cached_ai_result(pdf_content, 'essay')
+        if cached:
+            update_task_complete(task_id, success=True, data=cached)
+            return jsonify({"task_id": task_id}), 202
+
         # Start background task in separate thread
         thread = threading.Thread(
-            target=run_essay_generation_background, 
-            args=(task_id, pdf_content)
+            target=run_essay_generation_background,
+            args=(task_id, pdf_content),
+            daemon=True
         )
         thread.start()
-        
+
         logging.info(f"ESSAY POLLING: Background task started with ID: {task_id}")
-        
+
         return jsonify({"task_id": task_id}), 202
-        
-    except Exception as e:
-        logging.error(f"ESSAY POLLING: Critical error: {e}")
-        import traceback
-        logging.error(f"ESSAY POLLING: Traceback: {traceback.format_exc()}")
+
+    except Exception:
+        logging.exception("ESSAY POLLING: Critical error")
         return jsonify({"error": "Failed to start essay generation"}), 500
 
 @app.route('/essay_status/<task_id>', methods=['GET'])
@@ -2275,16 +1986,15 @@ def get_essay_status(task_id):
         
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-        
-        # Convert ObservedDict to regular dict for JSON serialization
-        result_dict = dict(task_result)
-        
+
+        result_dict = task_result
+
         # If task is complete, also update session storage
         if result_dict.get("status") == "complete" and result_dict.get("success"):
             session_id = session.get('session_id')
             if session_id:
                 storage_manager = StorageManager()
-                essay_text = result_dict["data"]
+                essay_text = result_dict.get("data", "")
                 
                 # Add essay to messages
                 messages = storage_manager.retrieve_content(session_id, 'messages') or []
@@ -2303,13 +2013,14 @@ def get_essay_status(task_id):
                     pass
         
         return jsonify(result_dict)
-        
-    except Exception as e:
-        logging.error(f"ESSAY POLLING: Error getting task status for {task_id}: {e}")
+
+    except Exception:
+        logging.exception(f"ESSAY POLLING: Error getting task status for {task_id}")
         return jsonify({"error": "Failed to get task status"}), 500
 
 @app.route('/start_key_concepts_generation', methods=['POST'])
 @csrf.exempt
+@rate_limit(calls_per_minute=10, use_session=True)
 def start_key_concepts_generation():
     """Start background key concepts explanation generation using polling pattern"""
     try:
@@ -2326,28 +2037,33 @@ def start_key_concepts_generation():
         if not pdf_content:
             logging.error("KEY CONCEPTS POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
-        
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
-        
+
         # Set initial status in PostgreSQL Database
         create_task(task_id, "pending")
-        
+
+        # Serve from the AI result cache when this document was already processed
+        cached = get_cached_ai_result(pdf_content, 'key_concepts')
+        if cached:
+            update_task_complete(task_id, success=True, data=cached)
+            return jsonify({"task_id": task_id}), 202
+
         # Start background task in separate thread
         thread = threading.Thread(
-            target=run_key_concepts_generation_background, 
-            args=(task_id, pdf_content)
+            target=run_key_concepts_generation_background,
+            args=(task_id, pdf_content),
+            daemon=True
         )
         thread.start()
-        
+
         logging.info(f"KEY CONCEPTS POLLING: Background task started with ID: {task_id}")
-        
+
         return jsonify({"task_id": task_id}), 202
-        
-    except Exception as e:
-        logging.error(f"KEY CONCEPTS POLLING: Critical error: {e}")
-        import traceback
-        logging.error(f"KEY CONCEPTS POLLING: Traceback: {traceback.format_exc()}")
+
+    except Exception:
+        logging.exception("KEY CONCEPTS POLLING: Critical error")
         return jsonify({"error": "Failed to start key concepts generation"}), 500
 
 @app.route('/key_concepts_status/<task_id>', methods=['GET'])
@@ -2359,16 +2075,15 @@ def get_key_concepts_status(task_id):
         
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-        
-        # Convert ObservedDict to regular dict for JSON serialization
-        result_dict = dict(task_result)
-        
+
+        result_dict = task_result
+
         # If task is complete, also update session storage
         if result_dict.get("status") == "complete" and result_dict.get("success"):
             session_id = session.get('session_id')
             if session_id:
                 storage_manager = StorageManager()
-                key_concepts_text = result_dict["data"]
+                key_concepts_text = result_dict.get("data", "")
                 
                 # Add key concepts explanation to messages
                 messages = storage_manager.retrieve_content(session_id, 'messages') or []
@@ -2387,9 +2102,9 @@ def get_key_concepts_status(task_id):
                     pass
         
         return jsonify(result_dict)
-        
-    except Exception as e:
-        logging.error(f"KEY CONCEPTS POLLING: Error getting task status for {task_id}: {e}")
+
+    except Exception:
+        logging.exception(f"KEY CONCEPTS POLLING: Error getting task status for {task_id}")
         return jsonify({"error": "Failed to get task status"}), 500
 
 def clear_session_data(session_id=None):

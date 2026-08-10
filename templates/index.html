@@ -1308,8 +1308,22 @@ function addNewMessage(role, content) {
         // don't trigger the display-math regex), then display math, then inline.
         const latexBlocks = [];
         let blockIdx = 0;
+        // Repair the two TeX mistakes the models make most in finance content,
+        // both of which surface as MathJax's yellow "Math input error":
+        // a bare % ("r = 5%") starts a TeX comment and swallows the rest of the
+        // expression, and a bare & outside an alignment environment is a
+        // "misplaced alignment tab". Lookbehind-free for Safari/iOS < 16.4.
+        // The & rule must skip HTML entities (&lt; etc. \u2014 < and > were escaped
+        // above) and alignment environments, where & is meaningful.
+        function sanitizeLatex(latex) {
+            let fixed = latex.replace(/(^|[^\\])%/g, '$1\\%');
+            if (fixed.indexOf('\\begin{') === -1) {
+                fixed = fixed.replace(/(^|[^\\])&(?!(?:lt|gt|amp|quot|#\d+|#x[0-9a-fA-F]+);)/g, '$1\\&');
+            }
+            return fixed;
+        }
         function protectLatex(match) {
-            latexBlocks.push(match);
+            latexBlocks.push(sanitizeLatex(match));
             return `\uE000LATEXBLOCK${blockIdx++}\uE001`;
         }
         // 1. Standalone environments (\begin{align*}...\end{align*}, \begin{bmatrix}...\end{bmatrix}, etc.)

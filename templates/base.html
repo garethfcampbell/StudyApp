@@ -495,7 +495,14 @@
             margin-top: 0.75em !important;
             margin-bottom: 0.75em !important;
         }
-        
+
+        /* Fallback for math MathJax could not parse: show the raw formula as
+           unobtrusive serif-italic text instead of the yellow error box. */
+        .math-fallback {
+            font-family: 'Times New Roman', Georgia, serif;
+            font-style: italic;
+        }
+
     </style>
 </head>
 <body>
@@ -598,11 +605,38 @@
             return mathJaxLoadingPromise;
         }
         
+        // When MathJax cannot parse an expression it renders a yellow
+        // "Math input error" box. Replace any such error with the raw TeX
+        // source as plain styled text — imperfect but readable — and log
+        // the offending expression so it can be diagnosed.
+        function degradeMathErrors(element) {
+            try {
+                const doc = window.MathJax.startup && window.MathJax.startup.document;
+                if (!doc || !doc.getMathItemsWithin) return;
+                for (const item of doc.getMathItemsWithin(element)) {
+                    const root = item.typesetRoot;
+                    if (!root || !root.querySelector) continue;
+                    const errNode = root.querySelector('mjx-merror, [data-mjx-error]');
+                    if (errNode) {
+                        console.warn('MathJax could not render:', item.math,
+                            '| error:', errNode.getAttribute('data-mjx-error') || errNode.textContent);
+                        const fallback = document.createElement('span');
+                        fallback.className = 'math-fallback';
+                        fallback.textContent = item.math;
+                        root.replaceWith(fallback);
+                    }
+                }
+            } catch (e) {
+                console.warn('Math error degradation failed:', e);
+            }
+        }
+
         // Global math rendering function
         async function renderMathInElement(element) {
             if (window.MathJax && window.MathJax.typesetPromise) {
                 try {
                     await window.MathJax.typesetPromise([element]);
+                    degradeMathErrors(element);
                 } catch (err) {
                     console.error('MathJax rendering error:', err);
                 }

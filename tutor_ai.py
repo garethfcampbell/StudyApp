@@ -1254,6 +1254,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
             - For superscripts: Always use caret with braces \sigma^{{2}} (proper braces required)
             - For combined: \hat{{\mu}}_{{12}} or \sigma_{{1}}^{{2}} (always use proper braces)
             - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
+            - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
             - For the worked examples, you MUST use \begin{{align*}} with proper alignment for each step so that the calculations are clear and easy to follow.
             - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}.
             - For line spacing in align* environments use \\[6pt] between lines.
@@ -1448,6 +1449,7 @@ FORMATTING REQUIREMENTS:
 - Use **bold** for section headers and step descriptions
 - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}
 - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
+- CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
 - Provide the formatted text directly — no JSON, no code blocks."""
 
     async def _generate_exam_worked_example(self, context_truncated, exam_question):
@@ -1548,6 +1550,7 @@ CRITICAL FORMATTING REQUIREMENTS:
 - For superscripts: Always use caret with braces \sigma^{{2}} (proper braces required)
 - For combined: \hat{{\mu}}_{{12}} or \sigma_{{1}}^{{2}} (always use proper braces)
 - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
+- CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
 - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}
 - For line spacing in align* environments use \\[6pt] between lines.
 - Use **bold** for section headers and step descriptions

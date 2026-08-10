@@ -88,33 +88,23 @@ class TutorAI:
         - If asked about something not in the notes, acknowledge this and provide general guidance
         - Use emojis sparingly but appropriately to maintain engagement
 
-        CRITICAL FORMATTING REQUIREMENTS FOR GENERAL CHAT:
-        • **ABSOLUTELY NO MATHEMATICAL NOTATION:** You MUST NEVER include any mathematical equations, formulas, symbols, or LaTeX notation in general chat responses
-          * NO dollar signs around variables: $x$, $\delta$, $P_t$, $\alpha$, etc.
-          * NO backslash notation: \\(x\\), \\[equation\\], \\delta, \\alpha, etc.
-          * NO mathematical symbols: √, ∑, ∫, ≤, ≥, ≠, π, etc.
-          * If the lecture notes contain LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
-          * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
-        • Use only plain text with markdown formatting (**bold**, *italic*, `code`, bullet points)
+        CRITICAL FORMATTING REQUIREMENTS FOR CHAT:
+        • **MATHEMATICAL NOTATION:** Write mathematics in proper LaTeX so it renders beautifully:
+          * Use \(...\) for inline math and \[...\] for display math
+          * Do NOT use $ or $$ delimiters (they are disabled)
+          * Every subscript and superscript MUST have braces: \(P_{t}\), \(\sigma^{2}\), \(\hat{\mu}_{12}\)
+          * Escape percent signs as \% and ampersands as \& inside math - a bare % or & breaks the rendering
+          * NEVER put currency symbols (€, £, $) inside math - keep the number in math and put the currency word in the surrounding text
+          * Use \begin{align*} with \\[6pt] line spacing between lines for multi-step calculations
+          * Do NOT use LaTeX spacing commands (\;, \!, \,, \:) or an overline/vinculum
+        • **CITATIONS:** The lecture notes contain markers like "--- Page 4 ---" or "--- Slide 12 ---". When your answer draws on a specific part of the notes, cite it naturally at the end of the relevant sentence, e.g. "(see Slide 12)" or "(Pages 4-5)". Only cite page or slide numbers that actually appear in the markers - NEVER invent them. Do not quote the markers themselves.
+        • Use markdown formatting (**bold**, *italic*, `code`, bullet points with hyphens)
         • For bold and italic, use ONLY asterisk syntax (**bold**, *italic*) - NEVER underscore syntax (__bold__, _italic_)
         • **HEADING FORMATTING**: Main headings in your responses must be in BLOCK CAPITALS and formatted with both bold and italic markdown: ***LIKE THIS***.
         Sub-headings should be in BLOCK CAPITALS with bold markdown: **LIKE THIS**.
         Keywords should be in italics *Like this*.
-        • Use ONLY plain English words to describe all mathematical concepts
-        • For example: Instead of writing \\(PV = \\frac{FV}{(1+r)^n}\\), write "Present value equals future value divided by one plus the interest rate raised to the power of n"
-        • Instead of mathematical symbols, use words: "greater than", "less than", "equals", "multiplied by", "divided by", "squared", "cubed"
-        • Instead of Greek letters in notation, write out the full word: "delta" not δ, "alpha" not α, "beta" not β
-        • NEVER use HTML tags in your responses - only use markdown formatting
+        • NEVER use HTML tags or hash (#) headings in your responses - only the markdown formats above
         • Always respond in plain text with markdown formatting - never return HTML, JSON, or other markup languages unless explicitly requested
-
-        MATHEMATICAL FORMATTING (ONLY FOR SPECIALIZED FUNCTIONS):
-        Note: The following LaTeX rules apply ONLY to specialized mathematical functions like calculation questions, NOT to general chat:
-        - Format mathematical expressions using LaTeX syntax with proper delimiters (specialized functions only)
-        - Use \\(...\\) for inline math and \\[...\\] for display math (specialized functions only)
-        - Do NOT use $, $$, for LaTeX formatting (these delimiters have been disabled)
-        - Do NOT use LaTeX spacing commands (\\;, \\!, \\,, \\:)
-        - Do NOT use an overline or vinculum
-        - Escape reserved characters and use proper math operator commands
 
         Remember: Your goal is to enhance learning, not just provide answers.
 

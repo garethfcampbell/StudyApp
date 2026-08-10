@@ -65,6 +65,77 @@ def _get_async_openai_client():
     return _async_openai_client
 
 
+# --- Deterministic formatting normalizer for summary / key concepts output ---
+# The models usually follow the prompt's markdown structure but occasionally
+# emit it as plain text (headings without ***, categories without bold,
+# "One:" instead of "1."). Prompt rules reduce this but cannot eliminate it,
+# so the known structure is repaired server-side on the way out.
+
+_STUDY_HEADINGS = frozenset((
+    'OVERVIEW', 'KEY CONCEPTS', 'KEY CONCEPTS EXPLAINED',
+    'EXECUTIVE SUMMARY', 'SUMMARY',
+))
+
+_NUMBER_WORDS = {
+    'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+    'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
+}
+
+_CATEGORY_LINE_RE = re.compile(r'^(\d+)[.):]\s+(.+?)\s*$')
+_WORD_CATEGORY_RE = re.compile(
+    r'^(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)[.:]\s+(.+?)\s*$', re.IGNORECASE)
+_CONCEPT_BULLET_RE = re.compile(r'^(\s*)[-•]\s+(?![*\d])([^:*`]{2,60}):\s+(.*)$')
+
+
+def _normalize_study_line(line):
+    """Repair one line of summary/key-concepts output to the house markdown style."""
+    s = line.strip()
+    if not s:
+        return line
+
+    # Heading lines: OVERVIEW / KEY CONCEPTS EXPLAINED: etc. -> ***HEADING***
+    bare = s.strip('#*').strip()
+    if bare.rstrip(':').upper() in _STUDY_HEADINGS:
+        return f'***{bare}***'
+
+    # Category headers written as words: "One: Compound Interest" -> "**1. Compound Interest**"
+    m = _WORD_CATEGORY_RE.match(s)
+    if m and '**' not in s and len(s) < 90:
+        return f'**{_NUMBER_WORDS[m.group(1).lower()]}. {m.group(2)}**'
+
+    # Numbered category headers missing bold: "1. Time Value of Money" -> bold.
+    # Kept short to avoid catching numbered prose; bulleted lines never match.
+    m = _CATEGORY_LINE_RE.match(s)
+    if m and '**' not in s and len(s) < 90:
+        return f'**{m.group(1)}. {m.group(2)}**'
+
+    # Concept bullets missing the italic label: "- Concept: text" -> "- *Concept:* text"
+    m = _CONCEPT_BULLET_RE.match(line)
+    if m:
+        return f'{m.group(1)}- *{m.group(2).strip()}:* {m.group(3)}'
+
+    return line
+
+
+def _normalize_study_formatting(text):
+    """Apply _normalize_study_line across a complete summary/key-concepts response."""
+    if not text:
+        return text
+    return '\n'.join(_normalize_study_line(l) for l in text.split('\n'))
+
+
+async def _normalize_study_stream(agen):
+    """Line-buffered streaming wrapper around _normalize_study_line."""
+    buffer = ''
+    async for chunk in agen:
+        buffer += chunk
+        while '\n' in buffer:
+            line, buffer = buffer.split('\n', 1)
+            yield _normalize_study_line(line) + '\n'
+    if buffer:
+        yield _normalize_study_line(buffer)
+
+
 def _strip_code_fences(text):
     """Remove a wrapping markdown code fence (e.g. ```markdown ... ```) that models occasionally add.
 
@@ -534,7 +605,7 @@ class TutorAI:
                 )
                 if result and result.strip():
                     logging.info(f"ASYNC SUMMARY: {MODEL_PRIMARY} succeeded")
-                    return _strip_code_fences(result)
+                    return _normalize_study_formatting(_strip_code_fences(result))
                 raise ValueError(f"{MODEL_PRIMARY} returned an empty response")
             except Exception as mini_error:
                 logging.error(f"ASYNC SUMMARY: {MODEL_PRIMARY} failed: {mini_error}")
@@ -546,7 +617,7 @@ class TutorAI:
                     messages=messages, model=MODEL_FALLBACK, temperature=0.2, max_tokens=15000, timeout=60
                 )
                 logging.info(f"ASYNC SUMMARY: {MODEL_FALLBACK} fallback succeeded")
-                return _strip_code_fences(result)
+                return _normalize_study_formatting(_strip_code_fences(result))
             except Exception as nano_error:
                 logging.error(f"ASYNC SUMMARY: All models failed: {nano_error}")
                 return "I'm having trouble generating a summary right now. The document appears to be loaded successfully, but there may be a temporary issue with the AI service. Please try again in a moment or use the chat to ask specific questions about your document."
@@ -572,11 +643,11 @@ class TutorAI:
                     messages=messages, model=model, temperature=0.2, max_tokens=15000, timeout=90
                 )
 
-            async for chunk in self._stream_with_fallback(
+            async for chunk in _normalize_study_stream(self._stream_with_fallback(
                 factory,
                 "STREAM SUMMARY",
                 "I'm having trouble generating a summary right now. Please try again in a moment."
-            ):
+            )):
                 yield chunk
         except Exception as e:
             logging.error(f"STREAM SUMMARY: Critical error: {e}")
@@ -816,11 +887,11 @@ Provide a suggested essay structure with 3-5 concise, actionable tips for how th
                     messages=messages, model=model, temperature=0.4, max_tokens=15000, timeout=60
                 )
 
-            async for chunk in self._stream_with_fallback(
+            async for chunk in _normalize_study_stream(self._stream_with_fallback(
                 factory,
                 "STREAM KEY CONCEPTS",
                 "I'm having trouble explaining the key concepts right now. Please try again in a moment."
-            ):
+            )):
                 yield chunk
         except Exception as e:
             logging.error(f"STREAM KEY CONCEPTS: Critical error: {e}")
@@ -913,7 +984,7 @@ End the overall response with: "Would you like to explore any of these topics in
                 )
 
                 logging.info(f"ASYNC KEY CONCEPTS: {MODEL_PRIMARY} succeeded")
-                return _strip_code_fences(result)
+                return _normalize_study_formatting(_strip_code_fences(result))
 
             except Exception as openai_error:
                 logging.error(f"ASYNC KEY CONCEPTS: {MODEL_PRIMARY} failed: {openai_error}")
@@ -929,7 +1000,7 @@ End the overall response with: "Would you like to explore any of these topics in
                     )
 
                     logging.info(f"ASYNC KEY CONCEPTS: {MODEL_FALLBACK} fallback succeeded")
-                    return _strip_code_fences(fallback_result)
+                    return _normalize_study_formatting(_strip_code_fences(fallback_result))
 
                 except Exception as nano_error:
                     logging.error(f"ASYNC KEY CONCEPTS: Both {MODEL_PRIMARY} and {MODEL_FALLBACK} failed: {nano_error}")

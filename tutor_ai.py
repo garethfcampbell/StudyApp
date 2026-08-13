@@ -762,10 +762,10 @@ LECTURE NOTES:
         """Return the summary/cheat sheet prompt text (single source for streaming and non-streaming)."""
         return r"""
 
-Create a concise executive summary from the lecture notes I provide. Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering only the MOST important ideas - this is a quick-reference revision aid, not exhaustive notes.
+Create an executive summary from the lecture notes I provide. Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering the most important ideas - this is a quick-reference revision aid, not exhaustive notes.
 
 ### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
-- **BE CONCISE AND SELECTIVE:** Use 3 to 5 categories, with AT MOST 3 concepts per category. Choose only the concepts a student must know for an exam - leave out supporting detail, restatements, and minor variations of the same idea.
+- **BE SELECTIVE BUT THOROUGH:** Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must know for an exam - leave out restatements and minor variations of the same idea, but make sure every major topic of the lecture is represented.
 - **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence.
 - **SHORT OVERVIEW:** The overview must be no more than 3 sentences.
 - **ONLY USE HYPHENS FOR BULLETS:** You MUST use only hyphens (`-`) for ALL bullet points. Do NOT use asterisks (*), bullet symbols (•), or any other characters. EVERY bullet point must start with a hyphen.
@@ -792,10 +792,11 @@ Summarise the main subject/topic of the lecture. Write it in a professional, aca
 
 ***KEY CONCEPTS***
 
-List the most important concepts with brief definitions, grouped into logical categories. Each concept must be on its own line. Follow this exact template:
+List the most important concepts with brief definitions, grouped into 5-6 logical categories. Each concept must be on its own line. Follow this exact template, continuing the numbering for each category (5 categories minimum, 6 maximum, each with 3-5 concepts):
 
 **1. [First Category Name]**
 
+- *[Concept]:* Brief explanation of the concept.
 - *[Concept]:* Brief explanation of the concept.
 - *[Concept]:* Brief explanation of the concept.
 - *[Concept]:* Brief explanation of the concept.
@@ -804,11 +805,15 @@ List the most important concepts with brief definitions, grouped into logical ca
 
 - *[Concept]:* Brief explanation of the concept.
 - *[Concept]:* Brief explanation of the concept.
+- *[Concept]:* Brief explanation of the concept.
 
 **3. [Third Category Name]**
 
 - *[Concept]:* Brief explanation of the concept.
 - *[Concept]:* Brief explanation of the concept.
+- *[Concept]:* Brief explanation of the concept.
+
+(...continue with categories 4, 5 and, if needed, 6 in the same format...)
 
 End your response with: "Would you like to explore any of these topics in more detail?"
 

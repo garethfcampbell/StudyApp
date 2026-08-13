@@ -877,6 +877,346 @@ class AITutor {
         this.addMessage('assistant', '🎯 Quiz completed! You can start another quiz or ask me any questions about your lecture notes.');
     }
     
+    async startInfographic() {
+        console.log('startInfographic called - using async polling pattern');
+
+        // Show loading with styled progress bar
+        const messagesDiv = document.getElementById('messages');
+        const progressDiv = document.createElement('div');
+        progressDiv.className = 'message assistant';
+        progressDiv.innerHTML = `
+            <div class="message-content">
+                <div class="d-flex align-items-center">
+                    <div class="me-3">
+                        <i class="fas fa-image fa-2x text-primary"></i>
+                    </div>
+                    <div class="flex-grow-1">
+                        <h6 class="mb-2">🎨 Creating Infographic...</h6>
+                        <div class="progress">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                 role="progressbar" style="width: 0%; background-color: #FF6600;"
+                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                                <span class="visually-hidden">Creating revision infographic...</span>
+                            </div>
+                        </div>
+                        <small class="text-muted mt-1">
+                            <i class="fas fa-paint-brush me-1"></i>
+                            Designing your one-page revision guide — this can take a couple of minutes...
+                        </small>
+                    </div>
+                </div>
+            </div>
+        `;
+        messagesDiv.appendChild(progressDiv);
+        progressDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+        // Animate progress bar towards (but never past) 95% over ~2.5 minutes
+        const progressBar = progressDiv.querySelector('.progress-bar');
+        let width = 0;
+        const interval = setInterval(() => {
+            width += 1;
+            progressBar.style.width = width + '%';
+            if (width >= 95) {
+                clearInterval(interval);
+            }
+        }, 1600);
+
+        try {
+            const response = await fetch('/start_infographic_generation', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+
+            const data = await this.parseJSONResponse(response);
+
+            if (response.ok && data.task_id) {
+                console.log('✓ Infographic generation task started:', data.task_id);
+                this.startInfographicPolling(data.task_id, progressDiv, interval);
+            } else {
+                console.error('Infographic generation start failed:', data.error);
+                clearInterval(interval);
+                if (messagesDiv.contains(progressDiv)) {
+                    messagesDiv.removeChild(progressDiv);
+                }
+                this.addMessage('assistant', '❌ Infographic generation failed: ' + (data.error || 'Unknown error'));
+            }
+        } catch (error) {
+            console.error('Infographic generation start error:', error);
+            clearInterval(interval);
+            if (messagesDiv.contains(progressDiv)) {
+                messagesDiv.removeChild(progressDiv);
+            }
+            this.addMessage('assistant', '❌ Infographic generation failed: ' + error.message);
+        }
+    }
+
+    startInfographicPolling(taskId, progressDiv, progressInterval) {
+        console.log('🎨 Starting infographic polling for task:', taskId);
+
+        const pollInterval = 3000; // 3 seconds between polls
+        const maxAttempts = 100;   // up to 5 minutes (image generation is slow)
+        let attempts = 0;
+
+        const cleanupProgress = () => {
+            if (progressInterval) {
+                clearInterval(progressInterval);
+            }
+            const messagesDiv = document.getElementById('messages');
+            if (messagesDiv && messagesDiv.contains(progressDiv)) {
+                messagesDiv.removeChild(progressDiv);
+            }
+        };
+
+        const poll = () => {
+            attempts++;
+            console.log(`🎨 Infographic polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
+
+            fetch(`/infographic_status/${taskId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'complete' && data.success) {
+                    console.log('✓ Infographic generation completed');
+                    cleanupProgress();
+
+                    if (data.data) {
+                        this.showInfographic(data.data);
+                    } else {
+                        this.addMessage('assistant', '❌ No infographic was generated. Please try again.');
+                    }
+
+                } else if (data.status === 'failed' || data.status === 'error') {
+                    console.error('✗ Infographic generation failed:', data.error);
+                    cleanupProgress();
+                    this.addMessage('assistant', '❌ ' + (data.error || 'Infographic generation failed'));
+
+                } else if (data.status === 'pending' || data.status === 'running') {
+                    if (attempts < maxAttempts) {
+                        setTimeout(poll, pollInterval);
+                    } else {
+                        console.error('✗ Infographic polling timeout');
+                        cleanupProgress();
+                        this.addMessage('assistant', '❌ Infographic generation is taking longer than expected. Please try again.');
+                    }
+                } else {
+                    console.error('✗ Unknown infographic task status:', data.status);
+                    cleanupProgress();
+                    this.addMessage('assistant', '❌ Unknown error occurred during infographic generation');
+                }
+            })
+            .catch(error => {
+                console.error('✗ Infographic polling error:', error);
+                if (attempts < maxAttempts) {
+                    setTimeout(poll, pollInterval);
+                } else {
+                    cleanupProgress();
+                    this.addMessage('assistant', '❌ Network error during infographic generation. Please try again.');
+                }
+            });
+        };
+
+        poll();
+    }
+
+    showInfographic(imageB64) {
+        // Keep the image on the instance so the viewer/download handlers do
+        // not need multi-megabyte inline onclick attributes.
+        this.infographicB64 = imageB64;
+
+        const messagesDiv = document.getElementById('messages');
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'message assistant';
+        msgDiv.innerHTML = `
+            <div class="message-content">
+                <h6 class="mb-1">🎨 Your revision infographic is ready!</h6>
+                <p class="text-muted small mb-2">Click the image (or "View &amp; Zoom") to open it full screen — scroll, pinch or use the buttons to zoom in on the small text.</p>
+                <img class="infographic-preview" alt="Revision guide infographic">
+                <div class="mt-2">
+                    <button class="btn btn-sm btn-primary me-2 infographic-view-btn" style="background-color: #D6000D; border-color: #D6000D;">
+                        <i class="fas fa-search-plus me-1"></i>View &amp; Zoom
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary infographic-download-btn">
+                        <i class="fas fa-download me-1"></i>Download PNG
+                    </button>
+                </div>
+            </div>
+        `;
+        msgDiv.querySelector('.infographic-preview').src = 'data:image/png;base64,' + imageB64;
+        msgDiv.querySelector('.infographic-preview').addEventListener('click', () => this.openInfographicViewer());
+        msgDiv.querySelector('.infographic-view-btn').addEventListener('click', () => this.openInfographicViewer());
+        msgDiv.querySelector('.infographic-download-btn').addEventListener('click', () => this.downloadInfographic());
+        messagesDiv.appendChild(msgDiv);
+        msgDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+
+    downloadInfographic() {
+        if (!this.infographicB64) return;
+        // Decode base64 to a Blob: object URLs handle multi-megabyte files far
+        // more reliably than data: URLs on anchor downloads.
+        const byteString = atob(this.infographicB64);
+        const bytes = new Uint8Array(byteString.length);
+        for (let i = 0; i < byteString.length; i++) {
+            bytes[i] = byteString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: 'image/png' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'revision-infographic.png';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+
+    openInfographicViewer() {
+        if (!this.infographicB64) return;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'infographic-viewer';
+        overlay.innerHTML = `
+            <div class="infographic-toolbar">
+                <button type="button" data-act="zoomout" title="Zoom out" aria-label="Zoom out"><i class="fas fa-search-minus"></i></button>
+                <span class="infographic-zoom-label">100%</span>
+                <button type="button" data-act="zoomin" title="Zoom in" aria-label="Zoom in"><i class="fas fa-search-plus"></i></button>
+                <button type="button" data-act="fit" title="Fit to screen">Fit</button>
+                <button type="button" data-act="actual" title="Actual size">1:1</button>
+                <button type="button" data-act="download" title="Download PNG" aria-label="Download PNG"><i class="fas fa-download"></i></button>
+                <button type="button" data-act="close" title="Close (Esc)" aria-label="Close viewer"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="infographic-stage">
+                <img alt="Revision guide infographic" draggable="false">
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        document.body.style.overflow = 'hidden';
+
+        const stage = overlay.querySelector('.infographic-stage');
+        const img = overlay.querySelector('img');
+        const zoomLabel = overlay.querySelector('.infographic-zoom-label');
+
+        let scale = 1, tx = 0, ty = 0, fitScale = 1;
+        const MAX_SCALE = 8;
+
+        const apply = () => {
+            img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+            zoomLabel.textContent = Math.round(scale * 100) + '%';
+        };
+
+        const fit = () => {
+            if (!img.naturalWidth) return;
+            fitScale = Math.min(
+                stage.clientWidth / img.naturalWidth,
+                stage.clientHeight / img.naturalHeight
+            ) * 0.98;
+            scale = fitScale;
+            tx = (stage.clientWidth - img.naturalWidth * scale) / 2;
+            ty = (stage.clientHeight - img.naturalHeight * scale) / 2;
+            apply();
+        };
+
+        // Zoom keeping the stage point (px, py) fixed under the cursor/fingers
+        const zoomAt = (px, py, factor) => {
+            const newScale = Math.min(MAX_SCALE, Math.max(fitScale * 0.5, scale * factor));
+            factor = newScale / scale;
+            tx = px - (px - tx) * factor;
+            ty = py - (py - ty) * factor;
+            scale = newScale;
+            apply();
+        };
+
+        const zoomAtCenter = (factor) => zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, factor);
+
+        const close = () => {
+            document.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('resize', fit);
+            document.body.style.overflow = '';
+            overlay.remove();
+        };
+
+        const onKeyDown = (e) => {
+            if (e.key === 'Escape') close();
+            else if (e.key === '+' || e.key === '=') zoomAtCenter(1.25);
+            else if (e.key === '-' || e.key === '_') zoomAtCenter(0.8);
+        };
+        document.addEventListener('keydown', onKeyDown);
+        window.addEventListener('resize', fit);
+
+        overlay.querySelector('[data-act="zoomin"]').addEventListener('click', () => zoomAtCenter(1.25));
+        overlay.querySelector('[data-act="zoomout"]').addEventListener('click', () => zoomAtCenter(0.8));
+        overlay.querySelector('[data-act="fit"]').addEventListener('click', fit);
+        overlay.querySelector('[data-act="actual"]').addEventListener('click', () => zoomAtCenter(1 / scale));
+        overlay.querySelector('[data-act="download"]').addEventListener('click', () => this.downloadInfographic());
+        overlay.querySelector('[data-act="close"]').addEventListener('click', close);
+
+        // Mouse-wheel / trackpad zoom centred on the cursor
+        stage.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const rect = stage.getBoundingClientRect();
+            zoomAt(e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.0015));
+        }, { passive: false });
+
+        // Drag-to-pan (one pointer) and pinch-to-zoom (two pointers)
+        const pointers = new Map();
+        let lastPinchDist = 0;
+
+        stage.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            stage.setPointerCapture(e.pointerId);
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pointers.size === 2) {
+                const pts = [...pointers.values()];
+                lastPinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+            }
+            stage.classList.add('dragging');
+        });
+
+        stage.addEventListener('pointermove', (e) => {
+            if (!pointers.has(e.pointerId)) return;
+            const prev = pointers.get(e.pointerId);
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+            if (pointers.size === 1) {
+                tx += e.clientX - prev.x;
+                ty += e.clientY - prev.y;
+                apply();
+            } else if (pointers.size === 2) {
+                const pts = [...pointers.values()];
+                const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+                const rect = stage.getBoundingClientRect();
+                const midX = (pts[0].x + pts[1].x) / 2 - rect.left;
+                const midY = (pts[0].y + pts[1].y) / 2 - rect.top;
+                if (lastPinchDist > 0) {
+                    zoomAt(midX, midY, dist / lastPinchDist);
+                }
+                lastPinchDist = dist;
+            }
+        });
+
+        const endPointer = (e) => {
+            pointers.delete(e.pointerId);
+            lastPinchDist = 0;
+            if (pointers.size === 0) stage.classList.remove('dragging');
+        };
+        stage.addEventListener('pointerup', endPointer);
+        stage.addEventListener('pointercancel', endPointer);
+
+        // Double-click / double-tap toggles between fit and a readable zoom
+        stage.addEventListener('dblclick', (e) => {
+            const rect = stage.getBoundingClientRect();
+            if (scale > fitScale * 1.4) {
+                fit();
+            } else {
+                zoomAt(e.clientX - rect.left, e.clientY - rect.top, (fitScale * 2.5) / scale);
+            }
+        });
+
+        img.addEventListener('load', fit);
+        img.src = 'data:image/png;base64,' + this.infographicB64;
+        if (img.complete) fit();
+    }
+
     addMessage(role, content) {
         // Use the global addMessage function from templates
         if (typeof window.addMessage === 'function') {
@@ -886,7 +1226,7 @@ class AITutor {
             console.log(`${role}: ${content}`);
         }
     }
-    
+
 }
 
 // Global functions for onclick handlers

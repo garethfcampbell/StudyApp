@@ -519,6 +519,42 @@ def run_key_concepts_generation_background(task_id, pdf_content):
         logging.error(f"KEY CONCEPTS BACKGROUND: Error in task {task_id}: {e}")
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
+def run_infographic_generation_background(task_id, pdf_content):
+    """
+    Background function to generate a revision-guide infographic image.
+    This runs in a separate thread to avoid blocking the web server.
+    """
+    try:
+        logging.info(f"INFOGRAPHIC BACKGROUND: Starting infographic generation for task {task_id}")
+
+        # Initialize TutorAI and set context
+        tutor_ai = TutorAI()
+        tutor_ai.set_context(pdf_content)
+
+        # Generate infographic using async method
+        async def async_infographic_generation():
+            try:
+                return await tutor_ai.generate_infographic_async()
+            finally:
+                await tutor_ai.close_async_clients()
+
+        # Run the async function in this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(async_infographic_generation())
+        loop.close()
+
+        logging.info(f"INFOGRAPHIC BACKGROUND: Generation completed for task {task_id}")
+
+        # Cache so repeat clicks on the same document reuse the image instead
+        # of paying for another expensive generation.
+        store_cached_ai_result(pdf_content, 'infographic', result)
+        update_task_complete(task_id, success=True, data=result)
+
+    except Exception as e:
+        logging.error(f"INFOGRAPHIC BACKGROUND: Error in task {task_id}: {e}")
+        update_task_failed(task_id, "An internal error occurred. Please try again.")
+
 def run_chat_response_background(task_id, user_message, pdf_content, conversation_history):
     """
     Background function to generate chat responses using async processing.
@@ -2105,6 +2141,75 @@ def get_key_concepts_status(task_id):
 
     except Exception:
         logging.exception(f"KEY CONCEPTS POLLING: Error getting task status for {task_id}")
+        return jsonify({"error": "Failed to get task status"}), 500
+
+@app.route('/start_infographic_generation', methods=['POST'])
+@csrf.exempt
+@rate_limit(calls_per_minute=5, use_session=True)
+def start_infographic_generation():
+    """Start background infographic image generation using polling pattern"""
+    try:
+        logging.info("INFOGRAPHIC POLLING: Starting infographic generation")
+        init_session()
+
+        pdf_content = get_pdf_content_with_fallback()
+        logging.info(f"INFOGRAPHIC POLLING: PDF content retrieved: {pdf_content is not None}")
+
+        if not pdf_content:
+            logging.error("INFOGRAPHIC POLLING: No document content found even with fallback")
+            return jsonify({'error': 'No document content found'}), 400
+
+        # Generate unique task ID
+        task_id = str(uuid_module.uuid4())
+
+        # Set initial status in PostgreSQL Database
+        create_task(task_id, "pending")
+
+        # Serve from the AI result cache when this document was already processed
+        cached = get_cached_ai_result(pdf_content, 'infographic')
+        if cached:
+            update_task_complete(task_id, success=True, data=cached)
+            return jsonify({"task_id": task_id}), 202
+
+        # Start background task in separate thread
+        thread = threading.Thread(
+            target=run_infographic_generation_background,
+            args=(task_id, pdf_content),
+            daemon=True
+        )
+        thread.start()
+
+        logging.info(f"INFOGRAPHIC POLLING: Background task started with ID: {task_id}")
+
+        return jsonify({"task_id": task_id}), 202
+
+    except Exception:
+        logging.exception("INFOGRAPHIC POLLING: Critical error")
+        return jsonify({"error": "Failed to start infographic generation"}), 500
+
+@app.route('/infographic_status/<task_id>', methods=['GET'])
+def get_infographic_status(task_id):
+    """Get the status of an infographic generation task"""
+    try:
+        # Retrieve status from PostgreSQL Database
+        task_result = get_task_status(task_id)
+
+        if not task_result:
+            return jsonify({"status": "not_found"}), 404
+
+        # The payload is a large base64 image, so unlike the text features it
+        # is NOT appended to the session chat history; just clean the task up
+        # once the result has been delivered.
+        if task_result.get("status") == "complete" and task_result.get("success"):
+            try:
+                cleanup_task(task_id)
+            except:
+                pass
+
+        return jsonify(task_result)
+
+    except Exception:
+        logging.exception(f"INFOGRAPHIC POLLING: Error getting task status for {task_id}")
         return jsonify({"error": "Failed to get task status"}), 500
 
 def clear_session_data(session_id=None):

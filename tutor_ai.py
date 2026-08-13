@@ -507,6 +507,88 @@ class TutorAI:
         """
         logging.debug("close_async_clients() called - shared client left open (no-op)")
 
+    async def _summarize_for_infographic(self, char_limit=8000):
+        """Condense the ENTIRE lecture into a revision brief that fits the
+        images API prompt budget, so the infographic covers the whole lecture
+        rather than just whatever survives a head/tail truncation."""
+        full_context = self._get_truncated_context()
+        summary_prompt = rf"""Condense the following university lecture notes into a revision brief that will be handed to an image-generation model to design a one-page revision infographic.
+
+STRICT REQUIREMENTS:
+- The brief MUST be under {char_limit} characters in total.
+- Cover the WHOLE lecture from beginning to end — every major topic must appear; do not stop early or skip later sections.
+- Start with a single title line naming the subject of the lecture.
+- Then give 4-8 clearly titled sections. In each section list the key concepts, definitions, essential formulas and takeaways as short bullet points.
+- Write formulas in simple plain-text notation (e.g. r = (P1 - P0) / P0), NOT LaTeX.
+- Plain text only: no markdown symbols, no page/slide citations, no commentary about these instructions — output the brief and nothing else.
+
+LECTURE NOTES:
+{full_context}"""
+        messages = [{"role": "user", "content": summary_prompt}]
+
+        try:
+            logging.info(f"INFOGRAPHIC: Summarizing lecture with {MODEL_PRIMARY} for the image prompt...")
+            summary = await self._make_async_openai_fallback_call(
+                messages=messages, model=MODEL_PRIMARY, temperature=0.2,
+                max_tokens=4000, timeout=90
+            )
+        except Exception as primary_error:
+            logging.error(f"INFOGRAPHIC: {MODEL_PRIMARY} summarization failed: {primary_error}; trying {MODEL_FALLBACK}")
+            summary = await self._make_async_openai_fallback_call(
+                messages=messages, model=MODEL_FALLBACK, temperature=0.2,
+                max_tokens=4000, timeout=90
+            )
+
+        summary = summary.strip()
+        if len(summary) > char_limit:
+            logging.warning(f"INFOGRAPHIC: Summary overshot the {char_limit}-char budget ({len(summary)} chars); trimming")
+            summary = summary[:char_limit]
+        logging.info(f"INFOGRAPHIC: Lecture condensed to {len(summary)} chars for the image prompt")
+        return summary
+
+    async def generate_infographic_async(self):
+        """Generate a one-page revision-guide infographic for the current
+        document using the OpenAI images API. Returns a base64-encoded PNG."""
+        if not self.context:
+            raise ValueError("No document context set for infographic generation")
+
+        # The images API accepts a far smaller prompt than the chat models, so
+        # first condense the WHOLE lecture into that budget with a chat-model
+        # summarization pass (a plain truncation would drop later sections).
+        try:
+            notes_brief = await self._summarize_for_infographic(char_limit=8000)
+        except Exception as e:
+            logging.error(f"INFOGRAPHIC: Summarization failed, falling back to head/tail truncation: {e}")
+            notes_brief = self._get_truncated_context(limit=8000)
+
+        prompt = (
+            "Create a detailed infographic which provides a detailed revision "
+            "guide, which is aesthetically beautiful, for the subject of the "
+            "university lecture revision brief below. Organise the key "
+            "concepts, definitions, formulas and takeaways into clearly "
+            "titled sections with a strong visual hierarchy, icons and simple "
+            "diagrams, so the result works as a one-page revision poster. "
+            "Include every section of the brief. All text must be legible and "
+            "factually faithful to the brief.\n\n"
+            f"LECTURE REVISION BRIEF:\n{notes_brief}"
+        )
+
+        client = _get_async_openai_client()
+        logging.info("INFOGRAPHIC: Requesting image generation (gpt-image-2, 1024x1536, high quality)")
+        response = await client.images.generate(
+            model="gpt-image-2",
+            prompt=prompt,
+            n=1,
+            size="1024x1536",
+            quality="high",
+            timeout=300,
+        )
+        image_b64 = response.data[0].b64_json if response.data else None
+        if not image_b64:
+            raise ValueError("Image generation returned no image data")
+        logging.info(f"INFOGRAPHIC: Image received ({len(image_b64)} base64 chars)")
+        return image_b64
+
     def set_context(self, pdf_content):
 
         self.context = pdf_content

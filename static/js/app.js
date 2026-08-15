@@ -624,17 +624,18 @@ class AITutor {
             // Create options safely
             question.options.forEach((option, index) => {
                 const optionDiv = document.createElement('div');
-                optionDiv.className = 'quiz-option';
-                
+                optionDiv.className = 'form-check quiz-option';
+
                 const input = document.createElement('input');
                 input.type = 'radio';
                 input.name = 'answer';
+                input.className = 'form-check-input';
                 input.value = option; // Note: form values need special handling if they contain user data
                 input.id = `option${index}`;
-                
+
                 const label = document.createElement('label');
                 label.setAttribute('for', `option${index}`);
-                label.className = 'ms-2';
+                label.className = 'form-check-label';
                 label.textContent = option; // Safe: uses textContent
                 
                 optionDiv.appendChild(input);

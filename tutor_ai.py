@@ -3,6 +3,7 @@ import os
 import asyncio
 import json
 import logging
+import random
 import re
 
 import openai
@@ -1206,6 +1207,13 @@ End the overall response with: "Would you like to explore any of these topics in
                     logging.warning(f"Quiz question {i+1} has empty fields")
                     continue
 
+                # Shuffle the (stripped) options so the model's position bias
+                # (correct answer listed first) never reaches students
+                if correct_answer in options:
+                    q["correct_answer"] = correct_answer
+                random.shuffle(options)
+                q["options"] = options
+
                 valid_questions.append(q)
             except Exception as question_error:
                 logging.warning(f"Quiz question {i+1} skipped due to validation error: {question_error}")
@@ -1248,6 +1256,8 @@ ANSWER FORMAT REQUIREMENTS:
 - Options should contain the actual answer text without any prefixes like "Option A:" or "Option B:"
 - The correct_answer must be the EXACT text from the options array
 - Example: If options are ["Risk increases", "Risk decreases", "No change", "Unknown"], then correct_answer must be one of these exact strings like "Risk increases"
+- All four options MUST be of similar length and detail (within a few words of each other). Do NOT make the correct answer longer, more precise, or more carefully worded than the other options - students spot this pattern. Write every incorrect option with the same level of detail and plausibility as the correct one
+- Vary the position of the correct answer across questions - it must NOT usually be the first option
 
 Make questions simple and focused on basic concepts. Keep explanations short and informative.
 

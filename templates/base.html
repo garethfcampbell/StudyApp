@@ -399,6 +399,7 @@
             padding: 1rem;
         }
         .quiz-options .form-check-label {
+            display: block; /* labels are inline by default, so width would be ignored */
             padding: 0.75rem 1.25rem;
             border: 1px solid #dee2e6;
             border-radius: 8px;
@@ -406,7 +407,11 @@
             cursor: pointer;
             transition: all 0.2s ease-in-out;
         }
-        
+        .quiz-options .form-check {
+            padding-left: 0; /* radio is hidden, so remove Bootstrap's indent */
+            margin-bottom: 0.75rem;
+        }
+
         /* Add padding around the quiz options container for better spacing */
         .quiz-options {
             padding: 1.5rem 0;

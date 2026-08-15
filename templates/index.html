@@ -1067,11 +1067,23 @@ function addNewMessage(role, content) {
                 }
             }
 
+            // Scroll back to the START of the question — streaming leaves the
+            // view at the bottom of this long message. Must run after MathJax
+            // typesetting, which changes the message height.
+            function scrollToQuestionStart() {
+                const top = messageDiv.getBoundingClientRect().top
+                          - messagesDiv.getBoundingClientRect().top
+                          + messagesDiv.scrollTop;
+                messagesDiv.scrollTop = Math.max(0, top - 10);
+            }
+
             // Render math after the final render
             if (fullText) {
                 const hasMath = fullText.includes('\\(') || fullText.includes('\\[') || fullText.includes('\\begin{');
                 if (hasMath) {
-                    loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error);
+                    loadMathJax().then(() => renderMathInElement(messageDiv)).catch(console.error).finally(scrollToQuestionStart);
+                } else {
+                    scrollToQuestionStart();
                 }
             }
 

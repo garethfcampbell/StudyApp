@@ -327,6 +327,27 @@
             border-color: #28a745 !important;
         }
         
+        /* Completed state: green, not Bootstrap's default blue .active */
+        .quick-actions .btn-outline-primary.active {
+            background-color: #28a745 !important;
+            border-color: #28a745 !important;
+            color: white !important;
+        }
+
+        /* Keep hover/focus/pressed in the app's red theme - never Bootstrap blue.
+           Sticky :hover/:focus after a tap was leaving buttons blue on mobile. */
+        .quick-actions .btn-outline-primary:not(.processing):not(.active):hover,
+        .quick-actions .btn-outline-primary:not(.processing):not(.active):focus,
+        .quick-actions .btn-outline-primary:not(.processing):not(.active):active {
+            background-color: #fbeaec !important;
+            border-color: #D6000D !important;
+            color: #D6000D !important;
+        }
+        .quick-actions .btn-outline-primary:focus,
+        .quick-actions .btn-outline-primary:active {
+            box-shadow: 0 0 0 0.2rem rgba(214, 0, 13, 0.15) !important;
+        }
+
         /* Custom styling for Revision Techniques buttons - Override Bootstrap completely */
         .quick-actions .btn-outline-primary.processing,
         .quick-actions .btn-outline-primary:active.processing,

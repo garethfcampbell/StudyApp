@@ -286,8 +286,23 @@ class AITutor {
         }
     }
     
+    // Highlight state for the Revision Techniques buttons. Mirrors the
+    // processing/active class handling in index.html's quickAction() so the
+    // quiz and infographic buttons behave like the streaming ones: green
+    // while working ('processing'), green when done ('active'), cleared on
+    // failure or when another technique starts.
+    setRevisionButtonState(onclickMarker, state) {
+        const buttons = document.querySelectorAll('.quick-actions .btn-outline-primary');
+        buttons.forEach(btn => btn.classList.remove('processing', 'active'));
+        if (!onclickMarker || !state) return;
+        const target = Array.from(buttons).find(btn =>
+            (btn.getAttribute('onclick') || '').includes(onclickMarker));
+        if (target) target.classList.add(state);
+    }
+
     async startQuiz() {
         console.log('startQuiz called - using async polling pattern');
+        this.setRevisionButtonState('startQuiz', 'processing');
         
         // Show loading with styled progress bar
         const messagesDiv = document.getElementById('messages');
@@ -364,6 +379,7 @@ class AITutor {
                     console.log('📝 DEBUG: Restored Quick Actions panel after quiz error');
                 }
                 
+                this.setRevisionButtonState(null, null);
                 this.addMessage('assistant', '❌ Quiz generation failed: ' + (data.error || 'Unknown error'));
             }
         } catch (error) {
@@ -384,6 +400,7 @@ class AITutor {
                 console.log('📝 DEBUG: Restored Quick Actions panel after quiz error');
             }
             
+            this.setRevisionButtonState(null, null);
             this.addMessage('assistant', '❌ Quiz generation failed: ' + error.message);
         }
     }
@@ -427,8 +444,10 @@ class AITutor {
                             score: 0
                         };
                         console.log('📝 DEBUG: About to call showQuiz() - Quick Actions should disappear NOW');
+                        this.setRevisionButtonState('startQuiz', 'active');
                         this.showQuiz();
                     } else {
+                        this.setRevisionButtonState(null, null);
                         this.addMessage('assistant', '❌ No quiz questions were generated. Please try again.');
                     }
                     
@@ -446,6 +465,7 @@ class AITutor {
                         messagesDiv.removeChild(progressDiv);
                     }
                     
+                    this.setRevisionButtonState(null, null);
                     this.addMessage('assistant', '❌ ' + (data.error || 'Quiz generation failed'));
                     
                 } else if (data.status === 'pending' || data.status === 'running') {
@@ -466,6 +486,7 @@ class AITutor {
                             messagesDiv.removeChild(progressDiv);
                         }
                         
+                        this.setRevisionButtonState(null, null);
                         this.addMessage('assistant', '❌ Quiz generation is taking longer than expected. Please try again.');
                     }
                 } else {
@@ -482,6 +503,7 @@ class AITutor {
                         messagesDiv.removeChild(progressDiv);
                     }
                     
+                    this.setRevisionButtonState(null, null);
                     this.addMessage('assistant', '❌ Unknown error occurred during quiz generation');
                 }
             })
@@ -503,6 +525,7 @@ class AITutor {
                         messagesDiv.removeChild(progressDiv);
                     }
                     
+                    this.setRevisionButtonState(null, null);
                     this.addMessage('assistant', '❌ Network error during quiz generation. Please try again.');
                 }
             });
@@ -880,6 +903,7 @@ class AITutor {
     
     async startInfographic() {
         console.log('startInfographic called - using async polling pattern');
+        this.setRevisionButtonState('startInfographic', 'processing');
 
         // Show loading with styled progress bar
         const messagesDiv = document.getElementById('messages');
@@ -941,6 +965,7 @@ class AITutor {
                 if (messagesDiv.contains(progressDiv)) {
                     messagesDiv.removeChild(progressDiv);
                 }
+                this.setRevisionButtonState(null, null);
                 this.addMessage('assistant', '❌ Infographic generation failed: ' + (data.error || 'Unknown error'));
             }
         } catch (error) {
@@ -949,6 +974,7 @@ class AITutor {
             if (messagesDiv.contains(progressDiv)) {
                 messagesDiv.removeChild(progressDiv);
             }
+            this.setRevisionButtonState(null, null);
             this.addMessage('assistant', '❌ Infographic generation failed: ' + error.message);
         }
     }
@@ -982,14 +1008,17 @@ class AITutor {
                     cleanupProgress();
 
                     if (data.data) {
+                        this.setRevisionButtonState('startInfographic', 'active');
                         this.showInfographic(data.data);
                     } else {
+                        this.setRevisionButtonState(null, null);
                         this.addMessage('assistant', '❌ No infographic was generated. Please try again.');
                     }
 
                 } else if (data.status === 'failed' || data.status === 'error') {
                     console.error('✗ Infographic generation failed:', data.error);
                     cleanupProgress();
+                    this.setRevisionButtonState(null, null);
                     this.addMessage('assistant', '❌ ' + (data.error || 'Infographic generation failed'));
 
                 } else if (data.status === 'pending' || data.status === 'running') {
@@ -998,11 +1027,13 @@ class AITutor {
                     } else {
                         console.error('✗ Infographic polling timeout');
                         cleanupProgress();
+                        this.setRevisionButtonState(null, null);
                         this.addMessage('assistant', '❌ Infographic generation is taking longer than expected. Please try again.');
                     }
                 } else {
                     console.error('✗ Unknown infographic task status:', data.status);
                     cleanupProgress();
+                    this.setRevisionButtonState(null, null);
                     this.addMessage('assistant', '❌ Unknown error occurred during infographic generation');
                 }
             })
@@ -1012,6 +1043,7 @@ class AITutor {
                     setTimeout(poll, pollInterval);
                 } else {
                     cleanupProgress();
+                    this.setRevisionButtonState(null, null);
                     this.addMessage('assistant', '❌ Network error during infographic generation. Please try again.');
                 }
             });

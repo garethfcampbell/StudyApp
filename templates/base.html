@@ -421,7 +421,10 @@
         }
 
         /* Long rendered equations scroll inside the chat area instead of
-           spilling over it (MathJax 3 output containers) */
+           spilling over it (MathJax 3 output containers). Prompts ask the
+           model to break long equations over lines; the scrollbar is only a
+           last-resort safety net. Margins tightened from MathJax's 1em
+           default so equations sit closer to the surrounding text. */
         mjx-container {
             max-width: 100%;
         }
@@ -430,6 +433,7 @@
             overflow-x: auto;
             overflow-y: hidden;
             padding-bottom: 2px;
+            margin: 0.5em 0 !important;
         }
         .quiz-options .form-check-label {
             display: block; /* labels are inline by default, so width would be ignored */

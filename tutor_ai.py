@@ -1603,6 +1603,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
             FORMATTING REQUIREMENTS:
             - Use standard LaTeX: \[ equation \] for display math, \( variable \) for inline math
+- CRITICAL - LONG EQUATIONS: rendered math cannot wrap, so a long equation must be SPLIT ACROSS LINES by you. If an equation has more than about 5 terms or would be wider than a phone screen, write it as a \begin{{align*}} block broken at = or + or - signs, with each continuation line starting with the operator after the alignment marker (e.g. a first line ending in the left-hand side and = , then continuation lines like &\quad + \text{{next terms}}), indented so it clearly reads as ONE equation continuing over several lines. NEVER emit a single line of math wider than a phone screen
             - Use standard math operators: \times, \div, \cdot, \frac{{numerator}}{{denominator}}
             - For subscripts: Always use underscore with braces \mu_{{12}} (proper braces required)
             - For superscripts: Always use caret with braces \sigma^{{2}} (proper braces required)
@@ -1628,9 +1629,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
             One of the equations used in this topic is:
 
             \[ LaTeX equation here \]
-
             The variables in this equation are:
-
             - \(x\): Variable description
             - \(y\): Another variable description
             - \(z\): Another variable description
@@ -1774,10 +1773,9 @@ Reproduce the exact question text here so the student can read it.
 Display the key equation(s) needed to solve this question in LaTeX.
 
 The variables in this equation are:
-
 - \(x\): description
 - \(y\): description
-(one hyphen bullet per variable, each on its own line)
+(one hyphen bullet per variable, each on its own line, directly below the equation with no blank lines in between)
 
 **EXPLANATION**
 Briefly explain what the equation does and why it is used here.
@@ -1809,6 +1807,7 @@ Please type your numerical answer in the chat below.
 
 FORMATTING REQUIREMENTS:
 - Use standard LaTeX: \[ equation \] for display math, \( variable \) for inline math
+- CRITICAL - LONG EQUATIONS: rendered math cannot wrap, so a long equation must be SPLIT ACROSS LINES by you. If an equation has more than about 5 terms or would be wider than a phone screen, write it as a \begin{{align*}} block broken at = or + or - signs, with each continuation line starting with the operator after the alignment marker (e.g. a first line ending in the left-hand side and = , then continuation lines like &\quad + \text{{next terms}}), indented so it clearly reads as ONE equation continuing over several lines. NEVER emit a single line of math wider than a phone screen
 - Use \begin{{align*}} with \\[6pt] line spacing for multi-step calculations
 - Use **bold** for section headers and step descriptions
 - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}

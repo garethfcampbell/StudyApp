@@ -1588,7 +1588,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
             REQUIRED LAYOUT PATTERN:
             1) Display the equation you are using in LaTeX formatting.
-            2) Explain the variable definitions clearly
+            2) Explain the variable definitions clearly, listing EACH variable on its own line as a hyphen bullet
             3) Provide an explanation of what the equation means and its purpose
             4) Show a worked example using specific input values with step-by-step LaTeX calculations
             5) Set a challenge for the user using different input values
@@ -1609,6 +1609,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
             - For combined: \hat{{\mu}}_{{12}} or \sigma_{{1}}^{{2}} (always use proper braces)
             - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
             - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
+- CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
 - CRITICAL: NEVER put the raw € symbol inside math — write currency amounts as plain numbers in math and put the word euros in the surrounding text
             - For the worked examples, you MUST use \begin{{align*}} with proper alignment for each step so that the calculations are clear and easy to follow.
             - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}.
@@ -1628,7 +1629,11 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
             \[ LaTeX equation here \]
 
-            The variables in this equation are: \(x\): Variable description; \(y\): Another variable description; and \(z\): Another variable description
+            The variables in this equation are:
+
+            - \(x\): Variable description
+            - \(y\): Another variable description
+            - \(z\): Another variable description
 
 
             **EXPLANATION**
@@ -1768,7 +1773,11 @@ Reproduce the exact question text here so the student can read it.
 **EQUATION**
 Display the key equation(s) needed to solve this question in LaTeX.
 
-The variables in this equation are: \(x\): description; \(y\): description; etc.
+The variables in this equation are:
+
+- \(x\): description
+- \(y\): description
+(one hyphen bullet per variable, each on its own line)
 
 **EXPLANATION**
 Briefly explain what the equation does and why it is used here.
@@ -1805,6 +1814,7 @@ FORMATTING REQUIREMENTS:
 - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}
 - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
 - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
+- CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
 - CRITICAL: NEVER put the raw € symbol inside math — write currency amounts as plain numbers in math and put the word euros in the surrounding text
 - Provide the formatted text directly — no JSON, no code blocks."""
 
@@ -1907,6 +1917,7 @@ CRITICAL FORMATTING REQUIREMENTS:
 - For combined: \hat{{\mu}}_{{12}} or \sigma_{{1}}^{{2}} (always use proper braces)
 - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
 - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
+- CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
 - CRITICAL: NEVER put the raw € symbol inside math — write currency amounts as plain numbers in math and put the word euros in the surrounding text
 - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}
 - For line spacing in align* environments use \\[6pt] between lines.

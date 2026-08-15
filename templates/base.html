@@ -419,6 +419,18 @@
         .variables-content, .challenge-content, .worked-example-content {
             padding: 1rem;
         }
+
+        /* Long rendered equations scroll inside the chat area instead of
+           spilling over it (MathJax 3 output containers) */
+        mjx-container {
+            max-width: 100%;
+        }
+        mjx-container[display="true"] {
+            display: block;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding-bottom: 2px;
+        }
         .quiz-options .form-check-label {
             display: block; /* labels are inline by default, so width would be ignored */
             padding: 0.75rem 1.25rem;

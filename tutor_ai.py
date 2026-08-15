@@ -304,7 +304,7 @@ class TutorAI:
           * Do NOT use $ or $$ delimiters (they are disabled)
           * Every subscript and superscript MUST have braces: \(P_{t}\), \(\sigma^{2}\), \(\hat{\mu}_{12}\)
           * Escape percent signs as \% and ampersands as \& inside math - a bare % or & breaks the rendering
-          * NEVER put currency symbols (€, £, $) inside math - keep the number in math and put the currency word in the surrounding text
+          * Currency: use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
           * Use \begin{align*} with \\[6pt] line spacing between lines for multi-step calculations
           * Do NOT use LaTeX spacing commands (\;, \!, \,, \:) or an overline/vinculum
         • **CITATIONS:** The lecture notes contain markers like "--- Page 4 ---" or "--- Slide 12 ---". When your answer draws on a specific part of the notes, cite it naturally at the end of the relevant sentence, e.g. "(see Slide 12)" or "(Pages 4-5)". Only cite page or slide numbers that actually appear in the markers - NEVER invent them. Do not quote the markers themselves.
@@ -1611,7 +1611,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
             - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
             - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
 - CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
-- CRITICAL: NEVER put the raw € symbol inside math — write currency amounts as plain numbers in math and put the word euros in the surrounding text
+- CRITICAL: Currency — use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
             - For the worked examples, you MUST use \begin{{align*}} with proper alignment for each step so that the calculations are clear and easy to follow.
             - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}.
             - For line spacing in align* environments use \\[6pt] between lines.
@@ -1814,7 +1814,7 @@ FORMATTING REQUIREMENTS:
 - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
 - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
 - CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
-- CRITICAL: NEVER put the raw € symbol inside math — write currency amounts as plain numbers in math and put the word euros in the surrounding text
+- CRITICAL: Currency — use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
 - Provide the formatted text directly — no JSON, no code blocks."""
 
     async def _generate_exam_worked_example(self, context_truncated, exam_question):
@@ -1917,7 +1917,7 @@ CRITICAL FORMATTING REQUIREMENTS:
 - CRITICAL: Every subscript and superscript MUST have proper braces like _{{value}} and ^{{value}}
 - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
 - CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
-- CRITICAL: NEVER put the raw € symbol inside math — write currency amounts as plain numbers in math and put the word euros in the surrounding text
+- CRITICAL: Currency — use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
 - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}
 - For line spacing in align* environments use \\[6pt] between lines.
 - Use **bold** for section headers and step descriptions

@@ -1322,6 +1322,9 @@ function addNewMessage(role, content) {
         // above) and alignment environments, where & is meaningful.
         function sanitizeLatex(latex) {
             let fixed = latex.replace(/(^|[^\\])%/g, '$1\\%');
+            // A raw $ inside math is a TeX "math shift" error; currency amounts
+            // must render as \$ (function replacer: '$' is special in .replace strings)
+            fixed = fixed.replace(/(^|[^\\])\$/g, function(m, pre) { return pre + '\\$'; });
             if (fixed.indexOf('\\begin{') === -1) {
                 fixed = fixed.replace(/(^|[^\\])&(?!(?:lt|gt|amp|quot|#\d+|#x[0-9a-fA-F]+);)/g, '$1\\&');
             }

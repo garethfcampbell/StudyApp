@@ -1068,13 +1068,18 @@ function addNewMessage(role, content) {
             }
 
             // Scroll back to the START of the question — streaming leaves the
-            // view at the bottom of this long message. Must run after MathJax
-            // typesetting, which changes the message height.
+            // view at the bottom of this long message. scrollIntoView aligns
+            // every scrollable ancestor (the messages container AND the page,
+            // which matters on mobile). MathJax font loading shifts layout
+            // after typesetPromise resolves, so realign a few times while
+            // things settle.
             function scrollToQuestionStart() {
-                const top = messageDiv.getBoundingClientRect().top
-                          - messagesDiv.getBoundingClientRect().top
-                          + messagesDiv.scrollTop;
-                messagesDiv.scrollTop = Math.max(0, top - 10);
+                const align = () => {
+                    messageDiv.scrollIntoView({ block: 'start' });
+                    messagesDiv.scrollTop = Math.max(0, messagesDiv.scrollTop - 10);
+                };
+                align();
+                [200, 600, 1200].forEach(ms => setTimeout(align, ms));
             }
 
             // Render math after the final render

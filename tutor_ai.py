@@ -141,23 +141,112 @@ def _normalize_study_line(line, mode='study'):
     return line
 
 
+def _is_overview_heading(line):
+    return line.strip().strip('#*').strip().rstrip(':').upper() == 'OVERVIEW'
+
+
+def _is_prose_line(line):
+    """A plain sentence line: not blank and not a heading/bullet/numbered header."""
+    s = line.strip()
+    if not s or s[0] in '*#-•':
+        return False
+    if _CATEGORY_LINE_RE.match(s) or _WORD_CATEGORY_RE.match(s):
+        return False
+    return True
+
+
+class _StudyFormattingNormalizer:
+    """Stateful line-by-line formatter shared by the streaming and
+    non-streaming paths. Applies _normalize_study_line to each line and joins
+    the OVERVIEW section back into a single paragraph when the model emits it
+    one sentence per line (the frontend renders each newline literally).
+
+    feed() returns the text to append for one input line, including any
+    separator owed from earlier lines; flush() returns whatever is still
+    pending at end of input. Working line-by-line keeps streaming incremental.
+    """
+
+    def __init__(self, mode='study'):
+        self.mode = mode
+        self._started = False        # any line emitted yet
+        self._pending_blanks = 0     # blank lines seen but not yet emitted
+        self._in_overview = False
+        self._prev_prose = False     # last non-blank line was overview prose
+
+    def feed(self, raw_line):
+        line = _normalize_study_line(raw_line, self.mode)
+        s = line.strip()
+
+        if not s:
+            # Defer blank lines: inside the overview they are dropped if
+            # prose continues (sentence-per-paragraph output); otherwise they
+            # are re-emitted before the next line or at flush().
+            self._pending_blanks += 1
+            return ''
+
+        if self._in_overview and self._prev_prose and _is_prose_line(line):
+            # Continuation sentence: join into the same paragraph.
+            self._pending_blanks = 0
+            return ' ' + s
+
+        sep = '\n' * (self._pending_blanks + (1 if self._started else 0))
+        self._pending_blanks = 0
+        self._started = True
+
+        if _is_overview_heading(line):
+            self._in_overview = True
+            self._prev_prose = False
+        elif self._in_overview:
+            if _is_prose_line(line):
+                self._prev_prose = True
+            else:
+                # Any structured line (next heading, category, bullet) ends
+                # the overview section.
+                self._in_overview = False
+                self._prev_prose = False
+
+        return sep + line
+
+    def flush(self):
+        out = '\n' * self._pending_blanks
+        self._pending_blanks = 0
+        return out
+
+
 def _normalize_study_formatting(text, mode='study'):
-    """Apply _normalize_study_line across a complete response."""
+    """Apply the stateful line normalizer across a complete response."""
     if not text:
         return text
-    return '\n'.join(_normalize_study_line(l, mode) for l in text.split('\n'))
+    norm = _StudyFormattingNormalizer(mode)
+    parts = [norm.feed(line) for line in text.split('\n')]
+    parts.append(norm.flush())
+    return ''.join(parts)
 
 
 async def _normalize_study_stream(agen, mode='study'):
-    """Line-buffered streaming wrapper around _normalize_study_line."""
+    """Line-buffered streaming wrapper around _StudyFormattingNormalizer."""
+    norm = _StudyFormattingNormalizer(mode)
     buffer = ''
+    ends_with_newline = False
     async for chunk in agen:
         buffer += chunk
         while '\n' in buffer:
             line, buffer = buffer.split('\n', 1)
-            yield _normalize_study_line(line, mode) + '\n'
+            ends_with_newline = True
+            out = norm.feed(line)
+            if out:
+                yield out
+        if buffer:
+            ends_with_newline = False
     if buffer:
-        yield _normalize_study_line(buffer, mode)
+        out = norm.feed(buffer)
+        if out:
+            yield out
+    elif ends_with_newline:
+        norm.feed('')  # re-create the final newline consumed by the last split
+    tail = norm.flush()
+    if tail:
+        yield tail
 
 
 def _strip_code_fences(text):
@@ -768,7 +857,7 @@ Create an executive summary from the lecture notes I provide. Your output should
 ### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
 - **BE SELECTIVE BUT THOROUGH:** Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must know for an exam - leave out restatements and minor variations of the same idea, but make sure every major topic of the lecture is represented.
 - **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence.
-- **SHORT OVERVIEW:** The overview must be no more than 3 sentences.
+- **SHORT OVERVIEW:** The overview must be no more than 3 sentences, written as ONE continuous paragraph on a single line. Do NOT put each sentence on its own line and do NOT insert line breaks anywhere inside the overview.
 - **ONLY USE HYPHENS FOR BULLETS:** You MUST use only hyphens (`-`) for ALL bullet points. Do NOT use asterisks (*), bullet symbols (•), or any other characters. EVERY bullet point must start with a hyphen.
 - **Bullet Point Format:** Each bullet point must follow this exact format: `- *Concept:* Brief explanation`
 - **New Lines:** Ensure every bullet point is on a new line with proper spacing.

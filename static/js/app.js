@@ -926,7 +926,7 @@ class AITutor {
                         </div>
                         <small class="text-muted mt-1">
                             <i class="fas fa-paint-brush me-1"></i>
-                            Designing your one-page revision guide — this can take a couple of minutes...
+                            Designing an infographic. This can take a few minutes.
                         </small>
                     </div>
                 </div>

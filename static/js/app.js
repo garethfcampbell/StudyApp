@@ -958,6 +958,11 @@ class AITutor {
 
             if (response.ok && data.task_id) {
                 console.log('✓ Infographic generation task started:', data.task_id);
+                this.lastInfographicTaskId = data.task_id;
+                this.attachInfographicEmailForm(progressDiv.querySelector('.flex-grow-1'), data.task_id, {
+                    label: 'Email me a PDF copy when it is ready',
+                    buttonText: 'Notify me'
+                });
                 this.startInfographicPolling(data.task_id, progressDiv, interval);
             } else {
                 console.error('Infographic generation start failed:', data.error);
@@ -1069,18 +1074,97 @@ class AITutor {
                     <button class="btn btn-sm btn-primary me-2 infographic-view-btn" style="background-color: #D6000D; border-color: #D6000D;">
                         <i class="fas fa-search-plus me-1"></i>View &amp; Zoom
                     </button>
-                    <button class="btn btn-sm btn-outline-secondary infographic-download-btn">
+                    <button class="btn btn-sm btn-outline-secondary me-2 infographic-download-btn">
                         <i class="fas fa-download me-1"></i>Download PNG
                     </button>
+                    <button class="btn btn-sm btn-outline-secondary infographic-email-btn" hidden>
+                        <i class="fas fa-envelope me-1"></i>Email as PDF
+                    </button>
                 </div>
+                <div class="infographic-email-slot"></div>
             </div>
         `;
         msgDiv.querySelector('.infographic-preview').src = 'data:image/png;base64,' + imageB64;
         msgDiv.querySelector('.infographic-preview').addEventListener('click', () => this.openInfographicViewer());
         msgDiv.querySelector('.infographic-view-btn').addEventListener('click', () => this.openInfographicViewer());
         msgDiv.querySelector('.infographic-download-btn').addEventListener('click', () => this.downloadInfographic());
+        const emailBtn = msgDiv.querySelector('.infographic-email-btn');
+        if (this.infographicEmailEnabled()) {
+            emailBtn.hidden = false;
+            emailBtn.addEventListener('click', () => {
+                const slot = msgDiv.querySelector('.infographic-email-slot');
+                if (slot.childElementCount) { slot.innerHTML = ''; return; }
+                this.attachInfographicEmailForm(slot, this.lastInfographicTaskId, {
+                    label: 'Send this infographic to my email as a PDF',
+                    buttonText: 'Send PDF',
+                    includeImage: true
+                });
+                slot.querySelector('input').focus();
+            });
+        }
         messagesDiv.appendChild(msgDiv);
         msgDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+
+    infographicEmailEnabled() {
+        return !!(window.INFOGRAPHIC_EMAIL && window.INFOGRAPHIC_EMAIL.enabled);
+    }
+
+    // Small inline form: [email] [button] + status line. Posts to /email_infographic.
+    attachInfographicEmailForm(container, taskId, opts = {}) {
+        if (!container || !this.infographicEmailEnabled()) return;
+        const prefill = (window.INFOGRAPHIC_EMAIL && window.INFOGRAPHIC_EMAIL.prefill) || '';
+        const form = document.createElement('form');
+        form.className = 'infographic-email-form mt-2';
+        form.innerHTML = `
+            <label class="form-label small mb-1"><i class="fas fa-envelope me-1"></i>${opts.label || 'Email me a PDF copy'}</label>
+            <div class="input-group input-group-sm">
+                <input type="email" class="form-control" placeholder="you@qub.ac.uk" required autocomplete="email">
+                <button class="btn btn-outline-secondary" type="submit">${opts.buttonText || 'Send'}</button>
+            </div>
+            <div class="form-text infographic-email-status"></div>
+        `;
+        const input = form.querySelector('input');
+        const button = form.querySelector('button');
+        const status = form.querySelector('.infographic-email-status');
+        input.value = prefill;
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = input.value.trim();
+            if (!email) return;
+            button.disabled = true;
+            status.textContent = 'Sending...';
+            status.className = 'form-text infographic-email-status text-muted';
+            try {
+                const body = { email, task_id: taskId || this.lastInfographicTaskId || null };
+                if (opts.includeImage && this.infographicB64) body.image_b64 = this.infographicB64;
+                const response = await fetch('/email_infographic', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await this.parseJSONResponse(response);
+                if (response.ok && data.status === 'scheduled') {
+                    status.textContent = `We will email the PDF to ${data.email} as soon as it is ready.`;
+                    status.className = 'form-text infographic-email-status text-success';
+                    if (window.INFOGRAPHIC_EMAIL) window.INFOGRAPHIC_EMAIL.prefill = data.email;
+                } else if (response.ok && data.status === 'sent') {
+                    status.textContent = `Sent! Check ${data.email} for the PDF.`;
+                    status.className = 'form-text infographic-email-status text-success';
+                    if (window.INFOGRAPHIC_EMAIL) window.INFOGRAPHIC_EMAIL.prefill = data.email;
+                } else {
+                    status.textContent = data.error || 'Could not send the email. Please try again.';
+                    status.className = 'form-text infographic-email-status text-danger';
+                    button.disabled = false;
+                }
+            } catch (err) {
+                console.error('Infographic email error:', err);
+                status.textContent = 'Network error - please try again.';
+                status.className = 'form-text infographic-email-status text-danger';
+                button.disabled = false;
+            }
+        });
+        container.appendChild(form);
     }
 
     downloadInfographic() {

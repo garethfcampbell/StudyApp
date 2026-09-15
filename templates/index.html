@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 
 {% block content %}
+<script>
+    window.INFOGRAPHIC_EMAIL = {{ {'enabled': infographic_email_enabled, 'prefill': infographic_email_prefill}|tojson }};
+</script>
 <div class="row main-content">
     <!-- Sidebar -->
     <div class="col-md-4">

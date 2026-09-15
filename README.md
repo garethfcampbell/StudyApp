@@ -46,6 +46,13 @@ Create the following secrets/environment variables before running:
 | `OPENAI_API_KEY` | Yes | OpenAI API key |
 | `SESSION_SECRET` | Yes | Random secret string for Flask sessions |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `RESEND_API_KEY` | No | Enables the "Email infographic as PDF" option, sent via Resend over HTTPS (works on Replit). If neither this nor `SMTP_HOST` is set, the option is hidden. |
+| `RESEND_FROM` | No | From address, e.g. `QUB Finance AI Tutor <tutor@yourdomain.ac.uk>` (domain must be verified in Resend). Defaults to `onboarding@resend.dev`, which only delivers to the Resend account owner - for testing. |
+| `SMTP_HOST` | No | Fallback SMTP transport, used only when `RESEND_API_KEY` is unset (e.g. `smtp.office365.com`; outbound SMTP may be blocked on Replit). |
+| `SMTP_PORT` | No | `587` (STARTTLS, default) or `465` (SSL) |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | No | SMTP login / password or API key |
+| `SMTP_FROM` | No | From address (defaults to `SMTP_USERNAME`) |
+| `SMTP_FROM_NAME` | No | Display name (default `QUB Finance AI Tutor`) |
 
 ### Installation
 

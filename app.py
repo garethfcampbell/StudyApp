@@ -15,6 +15,7 @@ import threading
 import uuid as uuid_module
 from pdf_processor import extract_text_from_file
 from tutor_ai import TutorAI
+from infographic_email import is_email_configured, normalise_email, email_infographic
 from database_storage_manager import DatabaseStorageManager as StorageManager
 from performance_optimizations import optimized_storage, resource_monitor, rate_limit, start_periodic_cleanup
 
@@ -535,6 +536,36 @@ def run_key_concepts_generation_background(task_id, pdf_content, doc_type=None):
         logging.error(f"KEY CONCEPTS BACKGROUND: Error in task {task_id}: {e}")
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
+# ---- "Email me the infographic as a PDF when it is ready" requests ----
+# task_id -> (email, document_name). Delivered by the background thread once the
+# image is complete; if the task already finished, the route sends immediately.
+_INFOGRAPHIC_EMAIL_REQUESTS = {}
+_INFOGRAPHIC_EMAIL_LOCK = threading.Lock()
+
+
+def register_infographic_email(task_id, email, document_name=None):
+    with _INFOGRAPHIC_EMAIL_LOCK:
+        _INFOGRAPHIC_EMAIL_REQUESTS[task_id] = (email, document_name)
+
+
+def pop_infographic_email(task_id):
+    with _INFOGRAPHIC_EMAIL_LOCK:
+        return _INFOGRAPHIC_EMAIL_REQUESTS.pop(task_id, None)
+
+
+def _deliver_pending_infographic_email(task_id, image_b64):
+    """Send the finished infographic to any address registered for this task."""
+    req = pop_infographic_email(task_id)
+    if not req or not image_b64:
+        return
+    email, document_name = req
+    try:
+        email_infographic(email, image_b64, document_name=document_name)
+        logging.info(f"INFOGRAPHIC EMAIL: delivered PDF for task {task_id}")
+    except Exception as e:
+        logging.error(f"INFOGRAPHIC EMAIL: delivery for task {task_id} failed: {e}")
+
+
 def run_infographic_generation_background(task_id, pdf_content, doc_type=None):
     """
     Background function to generate a revision-guide infographic image.
@@ -565,9 +596,11 @@ def run_infographic_generation_background(task_id, pdf_content, doc_type=None):
         # of paying for another expensive generation.
         store_cached_ai_result(pdf_content, 'infographic', result)
         update_task_complete(task_id, success=True, data=result)
+        _deliver_pending_infographic_email(task_id, result)
 
     except Exception as e:
         logging.error(f"INFOGRAPHIC BACKGROUND: Error in task {task_id}: {e}")
+        pop_infographic_email(task_id)
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 def run_chat_response_background(task_id, user_message, pdf_content, conversation_history, doc_type=None):
@@ -617,6 +650,8 @@ def index():
     return render_template('index.html', 
                          has_document=session.get('pdf_filename') is not None,
                          pdf_filename=session.get('pdf_filename'),
+                         infographic_email_enabled=is_email_configured(),
+                         infographic_email_prefill=session.get('infographic_email') or '',
                          message_count=len(messages),
                          quiz_active=session.get('quiz_active', False),
                          equation_active=session.get('equation_active', False))
@@ -2210,6 +2245,57 @@ def start_infographic_generation():
     except Exception:
         logging.exception("INFOGRAPHIC POLLING: Critical error")
         return jsonify({"error": "Failed to start infographic generation"}), 500
+
+@app.route('/email_infographic', methods=['POST'])
+@csrf.exempt
+@rate_limit(calls_per_minute=5, use_session=True)
+def email_infographic_route():
+    """Email the revision infographic to the user as a PDF.
+
+    Body: {"email": "...", "task_id": "<optional>", "image_b64": "<optional fallback>"}
+    - If the task is still running, the address is registered and the PDF is sent
+      by the background thread when the image is complete ("scheduled").
+    - Otherwise the image is taken from the completed task, the AI result cache,
+      or the client-supplied fallback, and sent immediately ("sent").
+    """
+    if not is_email_configured():
+        return jsonify({'error': 'Email delivery is not set up on this server yet.'}), 503
+    try:
+        payload = request.get_json(silent=True) or {}
+        email = normalise_email(payload.get('email'))
+        if not email:
+            return jsonify({'error': 'Please enter a valid email address.'}), 400
+        task_id = payload.get('task_id')
+        image_b64 = payload.get('image_b64')
+        document_name = session.get('pdf_filename')
+        session['infographic_email'] = email
+
+        if task_id:
+            task = get_task_status(task_id)
+            if task and task.get('status') == 'pending':
+                register_infographic_email(task_id, email, document_name)
+                logging.info(f"INFOGRAPHIC EMAIL: scheduled delivery for task {task_id}")
+                return jsonify({'status': 'scheduled', 'email': email})
+            if task and task.get('status') == 'complete' and task.get('success') and task.get('data'):
+                image_b64 = task['data']
+
+        if not image_b64:
+            pdf_content = get_pdf_content_with_fallback()
+            image_b64 = get_cached_ai_result(pdf_content, 'infographic') if pdf_content else None
+
+        if not image_b64 or not isinstance(image_b64, str):
+            return jsonify({'error': 'No infographic is available to send. Please generate it first.'}), 404
+
+        try:
+            email_infographic(email, image_b64, document_name=document_name)
+        except Exception as e:
+            logging.error(f"INFOGRAPHIC EMAIL: send failed: {e}")
+            return jsonify({'error': 'Sending the email failed. Please check the address and try again.'}), 502
+
+        return jsonify({'status': 'sent', 'email': email})
+    except Exception:
+        logging.exception("INFOGRAPHIC EMAIL: unexpected error")
+        return jsonify({'error': 'Could not email the infographic.'}), 500
 
 @app.route('/infographic_status/<task_id>', methods=['GET'])
 def get_infographic_status(task_id):

@@ -236,6 +236,36 @@ def get_tutor_ai():
         return None
 
 
+import re as _re
+
+ESSAY_STATE_KEYS = ('current_essay_question', 'essay_mode_active', 'used_essay_questions')
+
+
+def _activate_essay_practice(session_id, round_text):
+    """After an essay-practice round streams, remember it so the student's next chat
+    message is marked as an answer, and record the question so it is not repeated."""
+    try:
+        storage = StorageManager()
+        storage.store_content(session_id, 'current_essay_question', round_text)
+        storage.store_content(session_id, 'essay_mode_active', True)
+        storage.store_content(session_id, 'calculation_mode_active', False)
+        used = storage.retrieve_content(session_id, 'used_essay_questions') or []
+        m = _re.search(r"YOUR QUESTION:\s*(.+)", round_text)
+        question = m.group(1).strip().strip('*_ ') if m else None
+        if not question:
+            m2 = _re.search(r"\*\*MODEL QUESTION\*\*\s*\n+\s*\*(.+?)\*", round_text)
+            question = m2.group(1).strip() if m2 else None
+        if question:
+            used.append(question[:300])
+        # keep the model question too, so later rounds avoid it as well
+        m3 = _re.search(r"\*\*MODEL QUESTION\*\*\s*\n+\s*\*(.+?)\*", round_text)
+        if m3:
+            used.append(m3.group(1).strip()[:300])
+        storage.store_content(session_id, 'used_essay_questions', used[-40:])
+    except Exception as e:
+        logging.error(f"ESSAY PRACTICE: could not store round state: {e}")
+
+
 def _stored_doc_type(session_id=None):
     """Return the document classification ('exam_paper' / 'exercise_set' / 'research_article' / 'lecture_notes') stored
     for the session at upload time, or None if unknown."""
@@ -763,6 +793,17 @@ def simple_chat():
             logging.info(f"SIMPLE_CHAT: Calculation mode active: {calculation_mode}")
             logging.info(f"SIMPLE_CHAT: Current calculation present: {current_calculation is not None}")
             
+            # Handle essay practice mode: the End Practice button (and typed commands)
+            essay_mode = storage_manager.retrieve_content(session_id, 'essay_mode_active')
+            if essay_mode and user_message.lower().strip() in ['end practice', 'end', 'quit', 'stop']:
+                storage_manager.store_content(session_id, 'essay_mode_active', False)
+                storage_manager.store_content(session_id, 'current_essay_question', None)
+                return {
+                    'success': True,
+                    'response': 'Essay practice ended. You can start another session anytime! 📝',
+                    'end_essay_mode': True
+                }, 200
+
             # Handle calculation mode
             if calculation_mode and current_calculation:
                 # Check if user wants to end the session
@@ -940,7 +981,9 @@ def simple_chat_stream():
 
     calculation_mode = storage_manager.retrieve_content(session_id, 'calculation_mode_active')
     current_calculation = storage_manager.retrieve_content(session_id, 'current_calculation_question')
-    if calculation_mode and current_calculation:
+    essay_mode = storage_manager.retrieve_content(session_id, 'essay_mode_active')
+    current_essay = storage_manager.retrieve_content(session_id, 'current_essay_question')
+    if (essay_mode and current_essay) or (calculation_mode and current_calculation):
         pdf_content = get_pdf_content_with_fallback()
         if not pdf_content:
             return jsonify({'success': False, 'error': 'No document content found.'}), 400
@@ -949,12 +992,18 @@ def simple_chat_stream():
 
         calc_q = queue.Queue()
 
+        def _answer_check_stream():
+            # Essay practice takes precedence: the student's message is their essay answer
+            if essay_mode and current_essay:
+                return tutor_ai.check_essay_answer_stream_async(current_essay, user_message)
+            return tutor_ai.check_calculation_answer_stream_async(current_calculation, user_message)
+
         def _run_calc_stream():
             with app.app_context():
                 async def _consume():
                     full_response = ""
                     try:
-                        async for chunk in tutor_ai.check_calculation_answer_stream_async(current_calculation, user_message):
+                        async for chunk in _answer_check_stream():
                             full_response += chunk
                             calc_q.put(chunk)
                     except Exception as e:
@@ -1072,7 +1121,7 @@ def quickaction_stream():
         return jsonify({'success': False, 'error': 'No document content found. Please upload lecture notes first.'}), 400
 
     # Serve from the AI result cache when this document was already processed
-    cached = get_cached_ai_result(pdf_content, action)
+    cached = get_cached_ai_result(pdf_content, action) if action != 'essay' else None
     if cached:
         try:
             _storage = StorageManager()
@@ -1098,7 +1147,8 @@ def quickaction_stream():
                 if action == 'key_concepts':
                     gen = tutor_ai.explain_key_concepts_stream_async()
                 else:
-                    gen = tutor_ai.generate_essay_question_stream_async()
+                    used_questions = StorageManager().retrieve_content(session_id, 'used_essay_questions') or []
+                    gen = tutor_ai.generate_essay_question_stream_async(used_questions=used_questions)
 
                 async for chunk in gen:
                     full_response += chunk
@@ -1109,8 +1159,10 @@ def quickaction_stream():
                 if not full_response:
                     q.put("I'm having trouble right now. Please try again in a moment.")
             finally:
-                if stream_ok and full_response:
+                if stream_ok and full_response and action != 'essay':
                     store_cached_ai_result(pdf_content, action, full_response)
+                if action == 'essay' and stream_ok and full_response:
+                    _activate_essay_practice(session_id, full_response)
                 # Store the response in message history
                 try:
                     storage_manager = StorageManager()
@@ -1241,6 +1293,7 @@ def calculation_stream():
                     if full_response:
                         _storage.store_content(session_id, 'current_calculation_question', full_response)
                         _storage.store_content(session_id, 'calculation_mode_active', True)
+                        _storage.store_content(session_id, 'essay_mode_active', False)
                     msgs = _storage.retrieve_content(session_id, 'messages') or []
                     msgs.append({'role': 'assistant', 'content': full_response})
                     _storage.store_content(session_id, 'messages', msgs)
@@ -1821,6 +1874,8 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 storage_manager.store_content(session_id, 'equation_list', None)
                 storage_manager.store_content(session_id, 'exam_questions', None)
                 storage_manager.store_content(session_id, 'current_equation_index', 0)
+                for _k in ESSAY_STATE_KEYS:
+                    storage_manager.store_content(session_id, _k, None)
 
                 # Classify the document once (exam paper / exercise sheet / research article / lecture notes) so every
                 # feature can adapt; falls back to a keyword heuristic in TutorAI.
@@ -2156,7 +2211,7 @@ def get_essay_status(task_id):
                 messages = storage_manager.retrieve_content(session_id, 'messages') or []
                 messages.append({
                     "role": "assistant", 
-                    "content": f"📝 **Essay Question:**\n\n{essay_text}"
+                    "content": f"📝 **Essay Question Practice:**\n\n{essay_text}"
                 })
                 storage_manager.store_content(session_id, 'messages', messages)
                 
@@ -2420,7 +2475,9 @@ def clear_session_data(session_id=None):
             'pdf_content', 'quiz_data', 'calculation_quiz_data', 
             'current_calculation_question', 'used_calculation_questions',
             'messages', 'quiz_questions', 'practice_equations',
-            'equation_list', 'exam_questions', 'calc_doc_type', 'current_equation_index'
+            'equation_list', 'exam_questions', 'calc_doc_type', 'current_equation_index',
+            'current_essay_question', 'essay_mode_active', 'used_essay_questions',
+            'infographic_email_request', 'infographic_email_result'
         ]
         
         for content_type in content_types:

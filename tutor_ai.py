@@ -47,6 +47,10 @@ MODEL_FALLBACK = "gpt-5.6-luna"
 # max_tokens, and reject non-default temperature values.
 NO_SYSTEM_MESSAGE_MODELS = ("gpt-5.6-terra", "gpt-5", "gpt-5-mini", "gpt-5.6-luna", "gpt-5.4")
 
+# Reasoning effort applied to every reasoning-model call unless a feature passes
+# its own value explicitly (the calculation features pass "medium" themselves).
+DEFAULT_REASONING_EFFORT = "medium"
+
 # Lazily-initialized module-level AsyncOpenAI client. TutorAI is constructed
 # per request in app.py, so the client is shared across instances to avoid
 # rebuilding HTTP connection pools on every request.
@@ -388,13 +392,83 @@ class TutorAI:
                 "that are omitted here.]\n\n"
                 + "\n".join(chunks[i] for i in sorted(keep)))
 
-    def _build_feature_messages(self, persona, prompt):
-        """Build the standard system+user message pair for a document feature."""
+    def _build_feature_messages(self, persona, prompt, guidance=None):
+        """Build the standard system+user message pair for a document feature.
+        `guidance` overrides the material-type guidance (pass "" to omit it)."""
         truncated_context = self._get_truncated_context()
+        material_guidance = self._material_guidance() if guidance is None else guidance
         return [
-            {"role": "system", "content": f"{persona}\n\n{self._material_guidance()}{self._material_label()}:\n{truncated_context}"},
+            {"role": "system", "content": f"{persona}\n\n{material_guidance}{self._material_label()}:\n{truncated_context}"},
             {"role": "user", "content": prompt},
         ]
+
+    # ---------------- essay practice: material-type handling ----------------
+    def _essay_material_guidance(self):
+        """System-level guidance for essay practice. Unlike other features, essay
+        practice MUST provide model answers, so the generic 'do not answer the
+        questions' rule for exam papers is replaced with exam-paper working."""
+        if self.is_research_article():
+            return self._RESEARCH_GUIDANCE
+        if self.is_question_set():
+            return (
+                f"MATERIAL TYPE: The uploaded document is {self._material_description()}. It contains "
+                "questions rather than notes. For essay practice, work through its ORIGINAL essay-style "
+                "(discursive) questions - those asking students to explain, discuss, evaluate, compare or "
+                "assess - one per round and in the order they appear, providing full suggested answers "
+                "based on the finance concepts each question tests. Skip purely numerical calculation "
+                "questions.\n\n"
+            )
+        return ""
+
+    def _essay_grounding_text(self):
+        """Grounding clause shared by the essay generation and marking prompts."""
+        if self.is_question_set():
+            return (
+                "GROUNDING RULE (MOST IMPORTANT): the study material is a past exam paper / question sheet, "
+                "so it contains questions, not notes. Base everything on the topics its questions test, "
+                "drawing on the standard module knowledge those questions assume, and cite the question "
+                "you are working from, e.g. \"(Question 3)\". Do NOT introduce topics the paper does not "
+                "examine. Additional literature and real-world examples may go beyond the paper but must "
+                "connect directly to a concept it examines."
+            )
+        return (
+            "GROUNDING RULE (MOST IMPORTANT): every question, and every point in a suggested answer, must "
+            "come from the study material - the concepts, theories, arguments and evidence it actually "
+            "contains. Cite where each point comes from using the page/slide markers in the material, e.g. "
+            "\"(see Slide 12)\". Do NOT set questions on topics the material does not cover. Additional "
+            "literature and real-world examples are the ONLY things that may go beyond the material, and "
+            "they must connect directly to a concept in it."
+        )
+
+    def _essay_notice_text(self):
+        """Prominent notice for exam-paper essay practice: the app sees only the
+        paper, so students must check suggested answers against their own notes."""
+        if not self.is_question_set():
+            return ""
+        return (
+            "**PLEASE NOTE - CHECK AGAINST YOUR LECTURE NOTES:** this practice is based only on the "
+            "exam paper you uploaded. The app cannot see your lecture notes or the module's model "
+            "answers, so the suggested answers below draw on general finance knowledge. Refer to your "
+            "own lecture notes to confirm that the topics, theories and examples used are consistent "
+            "with what has been covered in your module, and prioritise what your lecturer taught.\n\n"
+        )
+
+    def _essay_mode_block(self):
+        """Extra instructions for the generation prompt when the material is an exam paper."""
+        if not self.is_question_set():
+            return ""
+        return (
+            "\nEXAM PAPER MODE: The MODEL QUESTION must be the NEXT original essay-style question from the "
+            "paper that does not appear in the already-used list, quoted verbatim with its question number "
+            "and marks (e.g. \"Question 4 (b) [15 marks]: ...\"). Its suggested answer is a full answer to "
+            "that original question. YOUR QUESTION must then be a NEW question that is similar in topic, "
+            "style, marks and difficulty to that original - the kind of variation an examiner might set "
+            "next year - but not a copy or a trivial rewording. If EVERY essay-style question in the paper "
+            "already appears in the used list, say so in one line, then set both the model question and "
+            "your question as new questions on topics the paper examines. The PLEASE NOTE paragraph shown "
+            "in the output structure MUST be reproduced word for word, directly under the main heading, "
+            "before the model question.\n"
+        )
 
     def _build_api_args(self, messages, model, temperature, max_tokens,
                         response_format=None, reasoning_effort=None, stream=False):
@@ -415,8 +489,7 @@ class TutorAI:
                 # NOTE: temperature is deliberately omitted here - the gpt-5.6-*
                 # reasoning models reject non-default temperature values.
             }
-            if reasoning_effort:
-                api_args["reasoning_effort"] = reasoning_effort
+            api_args["reasoning_effort"] = reasoning_effort or DEFAULT_REASONING_EFFORT
         else:
             # Regular OpenAI models (gpt-4o-mini, etc.)
             api_args = {
@@ -608,8 +681,8 @@ class TutorAI:
 STRICT REQUIREMENTS:
 - The brief MUST be under {char_limit} characters in total.
 - Cover the WHOLE document from beginning to end — every major topic must appear; do not stop early or skip later sections.
-- Start with a single title line naming the subject of the material.
-- Then give 4-6 clearly titled sections (fewer, broader sections are better than many small ones). In each section give AT MOST 3 bullet points, each a crisp phrase of no more than 9 words that fits on ONE line of a poster - only the single most important concepts, definitions and takeaways. This is a visual poster, not notes: leave out detail.
+- Start with a single title line naming the subject of the material, then a one-line subtitle (no more than 15 words) saying in plain words what the topic is about, for a reader who is new to it.
+- Then give 4-6 clearly titled sections (fewer, broader sections are better than many small ones). In each section give 3-4 bullet points, each a complete, self-explanatory sentence of no more than 16 words (one or two lines on a poster) - only the most important concepts, definitions and takeaways. Together they must give a short, clear summary that someone who has NOT read the notes can understand: briefly define a technical term the first time it appears, and prefer plain words. This is a visual poster, not notes: no detail beyond the key points.
 - After each section's bullets add ONE line starting "VISUAL:" choosing ONE of: (a) "VISUAL: diagram - ..." a clean explanatory diagram (timeline, flowchart, labelled graph, relationship map, comparison) - the DEFAULT for any quantitative, structural or process idea; (b) "VISUAL: vignette - ..." a SMALL photorealistic vignette used only where a photo adds visual appeal to a concept that has no natural diagram; or (c) "VISUAL: formula-led" when the section's formula is the visual and nothing else is needed. Use at most 2 vignettes across the WHOLE brief, each of a clearly different subject (never two of the same scene, and never "a person looking at trading screens"). Vignette subjects must be concrete and physical (a bond certificate, a factory, a shopfront, coins, a signed contract) rather than screens, charts or documents with text. Never suggest icons or clip-art. Diagrams must only show relationships or structures described in the material, never invented data.
 - If the material contains equations, include the main equations a student must learn for the exam INSIDE the section they belong to (not in a separate formulas section), each on its own line starting "FORMULA:" in GENERAL symbolic form written in LaTeX math notation, followed by " KEY: " and a few-word plain-text note of what each symbol means (e.g. "FORMULA: F = P(1 + r)^t KEY: F future value, P present value, r rate, t years"). Include at most 6 formulas across the whole brief - the ones that matter most - and no more than 2 per section. A FORMULA line does not count towards the 3-bullet limit.
 - FORMULA NOTATION (LaTeX, so the poster can typeset real mathematics): use \frac{{numerator}}{{denominator}} for EVERY division (never a "/" slash); _{{ }} and ^{{ }} for subscripts and superscripts (r_{{i}}, \sigma^{{2}}, P_{{0}}); \bar{{r}} for a mean, \hat{{x}} for an estimate; Greek letters as commands (\sigma, \rho, \beta, \mu); \sum for summation (with limits if the material shows them, e.g. \sum_{{i=1}}^{{n}}); \sqrt{{ }} for roots; \times for multiplication. NEVER spell a symbol as a word (not "rbar", "sigma", "sqrt", "sum"). Example: "FORMULA: \sigma^{{2}} = \frac{{\sum (r_{{i}} - \bar{{r}})^{{2}}}}{{n - 1}} KEY: r_i return, r-bar mean return, n observations". The KEY part is plain words, and it must list EVERY symbol that appears in the formula, each written as the symbol followed by its meaning (e.g. 'KEY: r_p portfolio return, r_f risk-free rate, sigma_p portfolio volatility') - never a bare list of meanings without the symbols.
@@ -726,8 +799,11 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             "- Generous white space, aligned grid, rounded corners, clear visual "
             "hierarchy - the feel of a premium magazine spread.\n\n"
             "TEXT RULES:\n"
-            "- Keep text minimal: one bold title, one short heading per section, and at "
-            "most 3 short bullet phrases per section. No paragraphs, no small print.\n"
+            "- Keep text short and clear: one bold title with a one-line subtitle, one "
+            "heading per section, and 3-4 bullets per section, each a complete short "
+            "sentence of one or two lines, set large enough to read easily. No "
+            "paragraphs, no small print. The poster must make sense as a summary to "
+            "someone who has not read the notes.\n"
             "- TYPOGRAPHY: one clean, modern geometric sans-serif family for ALL "
             "text (in the style of Inter, Helvetica Neue or Roboto) - no serif, "
             "script, handwritten, condensed, decorative or display fonts for text, "
@@ -831,6 +907,7 @@ REVISION BRIEF:
                     "messages": messages,
                     "max_completion_tokens": 4000,
                     "response_format": {"type": "json_object"},
+                    "reasoning_effort": DEFAULT_REASONING_EFFORT,
                 }
                 response = await asyncio.wait_for(client.chat.completions.create(**api_args), timeout=120)
                 content = (response.choices[0].message.content or "").strip()
@@ -1300,15 +1377,16 @@ End your response with: "Would you like to explore any of these topics in more d
 
             """
 
-    async def generate_essay_question_async(self):
+    async def generate_essay_question_async(self, used_questions=None):
 
         if not self.context:
-            return "No study material available to create essay question from."
+            return "No study material available to create essay questions from."
 
         try:
             messages = self._build_feature_messages(
-                "You are an expert at creating analytical essay questions from academic content.",
-                self._get_essay_prompt()
+                "You are an experienced QUB Finance examiner who sets short qualitative essay questions, writes model answers grounded in the lecture material, and coaches students on how to answer for high marks.",
+                self._get_essay_prompt(used_questions),
+                guidance=self._essay_material_guidance()
             )
 
             logging.info(f"ASYNC ESSAY: Context length: {len(self._get_truncated_context())} characters")
@@ -1342,16 +1420,17 @@ End your response with: "Would you like to explore any of these topics in more d
             logging.error(f"ASYNC ESSAY: Critical error in async essay generation: {e}")
             return f"Critical error in essay generation: {str(e)}"
 
-    async def generate_essay_question_stream_async(self):
+    async def generate_essay_question_stream_async(self, used_questions=None):
         """Streaming version of generate_essay_question_async. Yields text chunks."""
         if not self.context:
-            yield "No study material available to create essay question from."
+            yield "No study material available to create essay questions from."
             return
 
         try:
             messages = self._build_feature_messages(
-                "You are an expert at creating analytical essay questions from academic content.",
-                self._get_essay_prompt()
+                "You are an experienced QUB Finance examiner who sets short qualitative essay questions, writes model answers grounded in the lecture material, and coaches students on how to answer for high marks.",
+                self._get_essay_prompt(used_questions),
+                guidance=self._essay_material_guidance()
             )
 
             def factory(model):
@@ -1369,12 +1448,19 @@ End your response with: "Would you like to explore any of these topics in more d
             logging.error(f"STREAM ESSAY: Critical error: {e}")
             yield f"Critical error in essay generation: {str(e)}"
 
-    def _get_essay_prompt(self):
-        """Return the essay question prompt text (single source for streaming and non-streaming)."""
+    def _get_essay_prompt(self, used_questions=None):
+        """Return the essay-practice prompt for ONE round: a model question with a
+        suggested answer, then a new question for the student to attempt."""
+        used_block = ""
+        if used_questions:
+            listed = "\n".join(f"- {q}" for q in used_questions[-20:])
+            used_block = ("\nQUESTIONS ALREADY USED IN THIS SESSION - do NOT repeat or closely paraphrase any of them, "
+                          "as either the model question or the student's question; choose different topics or angles:\n"
+                          + listed + "\n")
         return r"""
 
             CRITICAL FORMATTING REQUIREMENTS:
-            - Use markdown formatting for emphasis: **bold text**, *italic text*, `code text`
+            - Use markdown formatting for emphasis: **bold text**, *italic text*
             - **ABSOLUTELY NO MATHEMATICAL NOTATION:** Do NOT use LaTeX formatting, mathematical symbols, or any notation:
               * NO dollar signs: $x$, $\delta$, $P_t$, etc.
               * NO backslash notation: \(x\), \[equation\], etc.
@@ -1382,87 +1468,120 @@ End your response with: "Would you like to explore any of these topics in more d
             - NEVER use HTML tags - only use markdown formatting
             - ONLY USE HYPHENS FOR BULLETS (-) - never use asterisks (*) or dots (•)
             - Each bullet point must be on its own line with consistent hyphen formatting
-            - Number sub-questions with DIGITS in the format *1: [question]* - NEVER spell numbers as words (never "One:", "Two:", "Three:")
             - Use ONLY plain English words to describe ALL mathematical concepts
             - Always respond in plain text with markdown formatting only
 
-            TASK:
+            TASK: Run ONE round of essay-question practice, based strictly on the study material provided.
 
-            **ESSAY QUESTION:**
+            {{GROUNDING}}
+{{MODE}}
+            QUESTION STYLE: short qualitative exam questions of the kind set in QUB Finance examinations - answered in prose in roughly 15-25 minutes (about 300-500 words) - using command words such as "Explain", "Discuss", "Critically evaluate", "Compare and contrast", "To what extent", "Assess". They must ask for analysis, evaluation or application, not description alone, and be realistic in wording, scope and difficulty. For an exam paper or question sheet, base them on the discursive questions it contains and the topics it tests; for a research article, on its question, method, findings and implications.
 
-            Create ONE substantial essay question, with several suggested sub-questions, that:
-            - Requires integration of multiple concepts from the study material (for an exam paper or question sheet, the topics its questions test), and
-            - Asks for the citation of additional reading of other academic literature, and
-            - Asks for commentary on real-world applications
-            - Asks for analysis, evaluation, or application (not just description)
-            - Is answerable in 500-750 words
-
+            ADDITIONAL LITERATURE RULE: cite only real, well-established academic works you are confident exist (seminal papers, textbooks or widely cited studies), giving author(s) and year and, where sure, the title or journal. If not certain a specific source exists, describe the body of literature instead (e.g. "the empirical literature on post-earnings-announcement drift") rather than inventing a citation.
+{{USED}}
 ---
 
 ### REQUIRED OUTPUT STRUCTURE
 
 You MUST use the following structure and formatting precisely.
 
-***ESSAY QUESTION***
+***ESSAY QUESTION PRACTICE***
+{{NOTICE}}
+**MODEL QUESTION**
 
-**MAIN QUESTION**
+*[One short qualitative exam question on a major topic of the material, worded exactly as it would appear on an exam paper - in EXAM PAPER MODE, the next original question from the paper, quoted verbatim]*
 
-[The primary essay prompt — a single, clearly worded question that integrates multiple concepts from the study material and invites critical analysis]
+**Suggested answer** - 6-10 hyphen bullet points giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude). Each bullet must be one or two sentences, grounded in the material, with a citation such as "(see Slide 12)" for lecture notes or "(Question 3)" for an exam paper.
 
-Example format:
+**Additional literature** - 2-3 hyphen bullets, each a real source with one sentence on the point it supports and where in the answer to use it.
 
-*[The question]*
+**Real-world examples** - 2-3 hyphen bullets, each a concrete example (named company, market, event, policy episode or crisis) with one sentence on how it strengthens the answer.
 
-    [2-3 sentences of specific guidance consistent with the structure that will be used for the sub-questions — e.g. "Begin by defining X and Y from the material, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
-
-
-**SUB-QUESTIONS**
-
-The sub-questions should break down the main question into smaller, manageable parts. For each sub-question, provide:
-
-*The sub-question itself*
-
-    A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the material to draw on, what kind of analysis is expected, and what evidence or examples to include.
-
-Example format:
-
-*1: [The question]*
-
-    [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the material, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
-
-*2: [The question]*
-
-    [2-3 sentences of specific guidance]
-
-*3: [The question]*
-
-    [2-3 sentences of specific guidance]
+**Why this answer scores highly** - 1-2 sentences explaining, with reference to the QUB Conceptual Equivalents Scale, what lifts it from a Lower Second (describing the concept) to an Upper Second (evaluating strengths and limitations with evidence) to a First (weighing competing perspectives with insight, well-chosen literature and examples).
 
 
-**ASSESSMENT CRITERIA (QUB Conceptual Equivalents Scale)**
+**YOUR QUESTION**
 
-Explain clearly how the essay will be assessed using the QUB Conceptual Equivalents Scale. For each grade band, describe what a student must demonstrate AND give a concrete suggestion for how to achieve that level in THIS specific essay. Do not use bullet points. Provide a paragraph of explanation for each grade band.
+YOUR QUESTION: [A DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper. Write it on this single line after the words "YOUR QUESTION:".]
 
-**First Class (70-100%):** Exceptional and exemplary work showing a very high level of critical analysis; a very high level of insight in the conclusions drawn; an in-depth knowledge and understanding across a wide range of relevant areas including areas at the forefront of the discipline; very thorough coverage of the topic; and confidence in the appropriate use of learning resources to support arguments made. To achieve this, the student should critically evaluate competing theoretical perspectives, draw on at least 4-5 additional academic references beyond the lecture material, identify limitations or tensions between theories, and demonstrate genuine original insight in their conclusions.
+**Hints** - 2-3 hyphen bullets naming which parts of the material (slide/page citations for lecture notes; for an exam paper, the concepts the question tests) to draw on and what kind of analysis is expected. Do NOT give the answer.
 
-**Upper Second (2:1, 60-69%):** Good performance showing some independence of thought and critical judgement; some ability to analyse concepts and ideas; an understanding of the main issues involved and their relevance; appropriate use of learning resources; and clear understanding of a reasonable range of literature or source materials. To achieve this, the student should go beyond describing concepts to evaluating their strengths and limitations, and reference at least 1-2 sources beyond the lecture material.
-
-**Lower Second (2:2, 50-59%):** Adequate answer showing some knowledge and understanding of the central issues and themes; limited critical analysis and evaluation; limited literature covered; average understanding of materials; and limited independence of thought. The student describes the key concepts correctly but does not evaluate them or connect them to wider literature.
-
-**Third Class (40-49%):** Weak answer showing demonstration of basic knowledge; limited understanding of the topic area; some irrelevance of content; uncritical use of sources; and little indication of independent learning.
+Write your answer in the box below (aim for 300-500 words - bullet points are fine), then click **Check Answer**. I will mark it against the QUB Conceptual Equivalents Scale and show you a suggested answer.
 
 
-**OVERALL ANSWER STRATEGY**
+            RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks.""".replace("{{USED}}", used_block).replace("{{GROUNDING}}", self._essay_grounding_text()).replace("{{MODE}}", self._essay_mode_block()).replace("{{NOTICE}}", ("\n" + self._essay_notice_text()) if self._essay_notice_text() else "")
 
-Provide a suggested essay structure with 3-5 concise, actionable tips for how the student should plan and write their answer. For example:
-- How to structure the introduction (what to include in the opening paragraph)
-- How to organise the body paragraphs around the sub-questions
-- How to integrate academic references effectively
-- How to write a strong conclusion that demonstrates critical judgement
-- What common mistakes to avoid
+    def _get_essay_check_prompt(self, context_truncated, essay_round_text, user_answer):
+        """Prompt for marking the student's answer to the question set in the last essay round."""
+        return rf"""You are an experienced QUB Finance examiner marking a student's short qualitative exam answer. Be encouraging but honest and specific.
 
+STUDY MATERIAL (the module content the question is based on):
+{context_truncated}
 
-            RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks."""
+THE PRACTICE ROUND SHOWN TO THE STUDENT (the question they were asked is the line beginning "YOUR QUESTION:"):
+{essay_round_text}
+
+STUDENT'S ANSWER:
+{user_answer}
+
+MARK ONLY the question after "YOUR QUESTION:". Ignore the model question. If a PLEASE NOTE paragraph appears in the output structure below, reproduce it word for word directly under the main heading.
+
+{self._essay_grounding_text()} When you say what should have been included, cite the relevant slide/page marker (lecture notes) or question number (exam paper). Cite only real, well-established sources; if unsure a source exists, describe the body of literature instead.
+
+If the answer is empty, off-topic or says "I don't know", say so kindly, give the lowest band, and still provide the suggested answer.
+
+CRITICAL FORMATTING REQUIREMENTS:
+- Use markdown formatting for emphasis: **bold text**, *italic text*
+- ABSOLUTELY NO MATHEMATICAL NOTATION (no LaTeX, no $ signs, no mathematical symbols) - plain English words only
+- NEVER use HTML tags
+- ONLY USE HYPHENS FOR BULLETS (-), each bullet on its own line
+- Main heading in block capitals with bold and italic like ***THIS***; sub-headings in block capitals with bold like **THIS**
+
+REQUIRED OUTPUT STRUCTURE:
+
+***FEEDBACK ON YOUR ANSWER***
+
+{self._essay_notice_text()}**GRADE BAND:** [First (70-100%) / Upper Second (60-69%) / Lower Second (50-59%) / Third (40-49%) / Fail (below 40%)] - one or two sentences justifying the band against the QUB Conceptual Equivalents Scale (depth of critical analysis, insight, knowledge and understanding, coverage, use of sources).
+
+**WHAT YOU DID WELL**
+- 2-4 bullets, each naming a specific point or quality in the answer.
+
+**WHAT WAS MISSING OR WEAK**
+- 3-5 bullets, each naming the specific concept, theory or argument from the material that should have been used (with a citation), or the analytical step that was skipped.
+
+**SUGGESTED ANSWER**
+- 6-10 bullets giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude), each grounded in the material with a citation.
+
+**TO REACH THE NEXT BAND**
+- 2-3 bullets of additional literature (real sources, author and year) that would strengthen the answer, each with the point it supports.
+- 2-3 bullets of real-world examples that would strengthen the answer, each with how to use it.
+- 1 bullet with the single most important structural or analytical improvement.
+
+Click **Next Question** for another essay question, or **End Practice** to return to the menu."""
+
+    async def check_essay_answer_stream_async(self, essay_round_text, user_answer):
+        """Stream marking feedback for the student's essay answer (mirrors the calculation answer check)."""
+        if not self.context:
+            yield "No study material available to mark the answer against."
+            return
+        prompt = self._get_essay_check_prompt(self._get_truncated_context(ANSWER_CHECK_CONTEXT_CHARS), essay_round_text, user_answer)
+        messages = [{"role": "user", "content": prompt}]
+
+        def factory(model):
+            return self._make_async_openai_streaming_call(
+                messages=messages, model=model, temperature=0.3, max_tokens=12000, timeout=90
+            )
+
+        try:
+            async for chunk in _normalize_study_stream(self._stream_with_fallback(
+                factory,
+                "ESSAY_ANSWER_STREAM",
+                "I'm having trouble marking your answer right now. Please try again in a moment."
+            ), mode='essay'):
+                yield chunk
+        except Exception as e:
+            logging.error(f"ESSAY_ANSWER_STREAM: Critical error: {e}")
+            yield f"Critical error while marking the answer: {str(e)}"
 
     async def explain_key_concepts_stream_async(self):
         """Streaming version of explain_key_concepts_async. Yields text chunks."""

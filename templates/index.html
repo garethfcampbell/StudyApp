@@ -53,12 +53,12 @@
 
             <div class="home-features">
                 <div class="home-feature">
-                    <i class="fas fa-lightbulb"></i>
-                    <div><strong>Key concepts</strong><span>Clear explanations with real-world examples</span></div>
+                    <i class="fas fa-file-alt"></i>
+                    <div><strong>Executive summary</strong><span>An instant overview of your material</span></div>
                 </div>
                 <div class="home-feature">
                     <i class="fas fa-question-circle"></i>
-                    <div><strong>Retrieval quiz</strong><span>Test yourself on the key points</span></div>
+                    <div><strong>Multiple choice quiz</strong><span>Test yourself on the key points</span></div>
                 </div>
                 <div class="home-feature">
                     <i class="fas fa-calculator"></i>
@@ -66,7 +66,7 @@
                 </div>
                 <div class="home-feature">
                     <i class="fas fa-pen"></i>
-                    <div><strong>Essay practice</strong><span>Analytical questions with guidance</span></div>
+                    <div><strong>Essay questions</strong><span>Model answers, then write your own and get it marked</span></div>
                 </div>
                 <div class="home-feature">
                     <i class="fas fa-image"></i>
@@ -105,7 +105,7 @@
         <div class="quiz-container" id="quizContainer" style="display: none; margin-bottom: 2rem;">
             <div class="card">
                 <div class="card-header">
-                    <h5><i class="fas fa-question-circle me-2"></i>Retrieval Quiz</h5>
+                    <h5><i class="fas fa-question-circle me-2"></i>Multiple Choice Quiz</h5>
                 </div>
                 <div class="card-body" id="quizContent">
                     <!-- Quiz content will be populated by JavaScript -->
@@ -194,18 +194,33 @@
             </div>
         </div>
         
+        <!-- Essay answer input - shown during essay question practice -->
+        <div class="quick-actions mt-4 mb-4" id="essayAnswerInput" style="display: none;">
+            <h5><i class="fas fa-pen me-2"></i>Your Answer</h5>
+            <textarea id="essayAnswerText" class="form-control" rows="8"
+                      placeholder="Write your answer here (aim for 300-500 words - bullet points are fine)..."
+                      aria-label="Your answer to the essay question"></textarea>
+            <div class="mt-2 d-flex flex-wrap gap-2 align-items-center" style="margin-bottom: 1rem !important;">
+                <button class="btn btn-success" id="essaySubmitBtn" onclick="submitEssayAnswer()">
+                    <i class="fas fa-check"></i> Check Answer
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="nextEssayQuestion()">
+                    <i class="fas fa-forward"></i> Next Question
+                </button>
+                <button class="btn btn-outline-danger btn-sm" onclick="endEssaySession()">
+                    <i class="fas fa-stop"></i> End Practice
+                </button>
+                <small class="text-muted ms-auto" id="essayWordCount">0 words</small>
+            </div>
+        </div>
+
         <!-- Quick Actions - positioned at the bottom -->
         <div class="quick-actions mt-4 mb-4" id="revisionTechniques" style="display: {% if has_document %}block{% else %}none{% endif %};">
             <h5>Revision Techniques</h5>
             <div class="row">
                 <div class="col-md-6 mb-2">
-                    <button class="btn btn-outline-primary w-100" onclick="quickAction('Explanation of key concepts')" style="color: #D6000D; border-color: #D6000D;">
-                        <i class="fas fa-lightbulb me-2"></i>Explanation of key concepts
-                    </button>
-                </div>
-                <div class="col-md-6 mb-2">
                     <button class="btn btn-outline-primary w-100" onclick="aiTutor.startQuiz()" style="color: #D6000D; border-color: #D6000D;">
-                        <i class="fas fa-question-circle me-2"></i>Retrieval quiz of key points
+                        <i class="fas fa-question-circle me-2"></i>Multiple Choice Quiz
                     </button>
                 </div>
                 <div class="col-md-6 mb-2">
@@ -215,7 +230,7 @@
                 </div>
                 <div class="col-md-6 mb-2">
                     <button class="btn btn-outline-primary w-100" onclick="quickAction('Essay question')" style="color: #D6000D; border-color: #D6000D;">
-                        <i class="fas fa-pen me-2"></i>Essay question
+                        <i class="fas fa-pen me-2"></i>Essay questions
                     </button>
                 </div>
                 <div class="col-md-6 mb-2">
@@ -1220,6 +1235,11 @@ function addNewMessage(role, content) {
                 }
             }
 
+            // Essay practice: switch to the essay answer box
+            if (streamAction === 'essay' && fullText && window.aiTutor && aiTutor.showEssayAnswerInput) {
+                aiTutor.showEssayAnswerInput();
+            }
+
             // Set button to active state (green) to show success
             if (clickedButton) {
                 clickedButton.classList.remove('processing');
@@ -1279,7 +1299,7 @@ function addNewMessage(role, content) {
                                 <i class="fas fa-pen fa-2x text-success"></i>
                             </div>
                             <div class="flex-grow-1">
-                                <h6 class="mb-2">📝 Creating Essay Question...</h6>
+                                <h6 class="mb-2">📝 Preparing essay question practice...</h6>
                                 <div class="progress">
                                     <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" 
                                          role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
@@ -1288,7 +1308,7 @@ function addNewMessage(role, content) {
                                 </div>
                                 <small class="text-muted mt-1">
                                     <i class="fas fa-edit me-1"></i>
-                                    Crafting analytical essay question...
+                                    Writing a model question with a suggested answer, then a question for you to attempt...
                                 </small>
                             </div>
                         </div>

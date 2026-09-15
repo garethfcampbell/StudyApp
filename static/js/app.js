@@ -86,6 +86,78 @@ class AITutor {
             feedbackActionsSection.style.display = 'none';
             console.log('📝 DEBUG: Hidden calculation feedback actions when showing chat interface');
         }
+
+        // Hide the essay answer panel if it exists
+        const essaySection = document.getElementById('essayAnswerInput');
+        if (essaySection) essaySection.style.display = 'none';
+    }
+
+    // ---------------- Essay question practice (mirrors the calculation loop) ----------------
+    showEssayAnswerInput() {
+        const chatInputSection = document.querySelector('.chat-input');
+        if (chatInputSection) chatInputSection.style.display = 'none';
+        const quickActionsSection = document.getElementById('revisionTechniques');
+        if (quickActionsSection) quickActionsSection.style.display = 'none';
+        // Essay practice replaces any calculation practice UI
+        const calcAnswerSection = document.getElementById('calculationAnswerInput');
+        if (calcAnswerSection) calcAnswerSection.style.display = 'none';
+        const feedbackActionsSection = document.getElementById('calculationFeedbackActions');
+        if (feedbackActionsSection) feedbackActionsSection.style.display = 'none';
+
+        const section = document.getElementById('essayAnswerInput');
+        if (!section) return;
+        section.style.display = 'block';
+        const textarea = document.getElementById('essayAnswerText');
+        const counter = document.getElementById('essayWordCount');
+        if (textarea) {
+            textarea.value = '';
+            textarea.disabled = false;
+            if (counter && !textarea.dataset.counterBound) {
+                textarea.addEventListener('input', () => {
+                    const words = textarea.value.trim() ? textarea.value.trim().split(/\s+/).length : 0;
+                    counter.textContent = `${words} word${words === 1 ? '' : 's'}`;
+                });
+                textarea.dataset.counterBound = '1';
+            }
+            if (counter) counter.textContent = '0 words';
+            textarea.focus();
+        }
+        const submitBtn = document.getElementById('essaySubmitBtn');
+        if (submitBtn) submitBtn.disabled = false;
+        section.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+
+    hideEssayAnswerInput() {
+        const section = document.getElementById('essayAnswerInput');
+        if (section) section.style.display = 'none';
+        const messagesContainer = document.getElementById('messages');
+        const assistantMessages = messagesContainer ? messagesContainer.querySelectorAll('.message.assistant') : [];
+        const chatInputSection = document.querySelector('.chat-input');
+        if (chatInputSection && assistantMessages.length > 0) chatInputSection.style.display = 'block';
+        const revisionPanel = document.getElementById('revisionTechniques');
+        if (revisionPanel) revisionPanel.style.display = 'block';
+        const textarea = document.getElementById('essayAnswerText');
+        if (textarea) textarea.value = '';
+    }
+
+    endEssayPractice() {
+        this.hideEssayAnswerInput();
+        fetch('/simple_chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: 'end practice' })
+        })
+        .then(response => parseJSONResponse(response))
+        .then(result => { if (result.success) this.addMessage('assistant', result.response); })
+        .catch(error => console.error('Error ending essay practice:', error));
+    }
+
+    nextEssayQuestion() {
+        const textarea = document.getElementById('essayAnswerText');
+        if (textarea) textarea.value = '';
+        const counter = document.getElementById('essayWordCount');
+        if (counter) counter.textContent = '0 words';
+        if (typeof quickAction === 'function') quickAction('Essay question');
     }
 
     // Calculation Answer Input Management
@@ -105,6 +177,8 @@ class AITutor {
             quickActionsSection.style.display = 'none';
             console.log('📝 DEBUG: Hidden Quick Actions panel');
         }
+        const essaySectionForCalc = document.getElementById('essayAnswerInput');
+        if (essaySectionForCalc) essaySectionForCalc.style.display = 'none';
         
         // Find calculation answer input by ID
         let calcAnswerSection = document.getElementById('calculationAnswerInput');
@@ -1388,6 +1462,54 @@ function endCalculationSession() {
 function nextCalculationQuestion() {
     if (window.aiTutor) {
         window.aiTutor.nextCalculationQuestion();
+    }
+}
+
+function endEssaySession() {
+    if (window.aiTutor) window.aiTutor.endEssayPractice();
+}
+
+function nextEssayQuestion() {
+    if (window.aiTutor) window.aiTutor.nextEssayQuestion();
+}
+
+async function submitEssayAnswer() {
+    const textarea = document.getElementById('essayAnswerText');
+    if (!textarea) return;
+    const answer = textarea.value.trim();
+    if (!answer) {
+        alert('Please write your answer before submitting.');
+        return;
+    }
+    if (answer.length > 5000) {
+        alert('Your answer is too long to submit (maximum 5000 characters, roughly 800 words). Please shorten it.');
+        return;
+    }
+    const submitBtn = document.getElementById('essaySubmitBtn');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.setAttribute('aria-label', 'Marking your answer');
+        submitBtn.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Marking...';
+    }
+    textarea.disabled = true;
+
+    // Send through the chat system; the server marks it because essay practice is active
+    const chatInput = document.getElementById('newChatInput');
+    if (chatInput) {
+        chatInput.value = answer;
+        await newSendMessage();
+    } else {
+        console.error('newChatInput not found; cannot submit essay answer');
+    }
+
+    textarea.disabled = false;
+    textarea.value = '';
+    const counter = document.getElementById('essayWordCount');
+    if (counter) counter.textContent = '0 words';
+    if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.removeAttribute('aria-label');
+        submitBtn.innerHTML = '<i class="fas fa-check"></i> Check Answer';
     }
 }
 

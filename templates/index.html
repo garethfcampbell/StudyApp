@@ -8,10 +8,10 @@
             <h4><i class="fas fa-book me-2"></i>Study Material</h4>
             
             <!-- File Upload Area -->
-            <div class="file-upload-area" id="fileUploadArea" role="button" tabindex="0" aria-label="Upload lecture notes, an exam paper or tutorial questions (PDF or PowerPoint)">
+            <div class="file-upload-area" id="fileUploadArea" role="button" tabindex="0" aria-label="Upload lecture notes or past exam papers (PDF or PowerPoint)">
                 <div class="upload-content">
                     <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
-                    <h5>Upload lecture notes, an exam paper or tutorial questions</h5>
+                    <h5>Upload lecture notes or past exam papers</h5>
                     <p class="text-muted">Drag and drop or click to select PDF or PowerPoint files</p>
                     <input type="file" id="fileInput" accept=".pdf,.pptx" style="display: none;">
                 </div>
@@ -38,31 +38,49 @@
     <!-- Main Content -->
     <div class="col-md-8">
         {% if not has_document %}
-        <!-- Benefits Summary -->
-        <div class="homepage-panel" id="benefitsSummary" style="background-color: #f5f5f5; margin-bottom: 1rem; padding: 2rem 2rem 1rem 2rem !important; border-radius: 10px; max-width: 85%; box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.03), 0 2px 4px rgba(0, 0, 0, 0.08);">
-            <div class="message-content">
-                <h5><i class="fas fa-rocket me-2"></i>Why Use This Self-Study Tool?</h5>
-                
-                <div class="message-text">
-                    <p>This tool has been designed by staff in the Finance department at Queen's University Belfast, using AI tools, specifically for our students. You are encouraged to use it for 30 minutes each day, to help you understand and remember your lecture notes more effectively.</p>
-                    
-                    <p>It is powered by Artificial Intelligence to help you study and revise. AI is, and will be, an extremely helpful tool, but it should never be used for plagiarism, which would happen if you attempted to claim its output was your own work, without acknowledgement.</p>
-                    
-                    
-                    <ul>
-                        <li><strong><i class="fas fa-book me-2"></i>Upload your Lecture Notes, Exam Paper or Tutorial Questions</strong> - accepts PDFs and PowerPoint files of your QUB lecture notes, past exam/test papers, or tutorial/exercise/homework question sheets to instantly create a personalized tutor</li>
-                        <li><strong><i class="fas fa-lightbulb me-2"></i>Key Concept Explanations</strong> - Get clear explanations of complex topics with real-world examples</li>
-                        <li><strong><i class="fas fa-chart-bar me-2"></i>Calculation Questions</strong> - Practice calculations with worked examples and step-by-step solutions</li>
-                        <li><strong><i class="fas fa-bullseye me-2"></i>Interactive Quizzes</strong> - Test your knowledge with retrieval practice questions</li>
-                        <li><strong><i class="fas fa-pen me-2"></i>Essay Practice</strong> - Generate comprehensive essay questions to develop analytical skills</li>
-                        <li><strong><i class="fas fa-sync me-2"></i>Continuous Learning</strong> - Ask follow-up questions and dive deeper into any topic</li>
-                    </ul>
-                    <br>
-                    <p class="text-muted"><em>Simply upload your notes in the sidebar to get started!</em></p>
+        <!-- Welcome panel (shown until a document is uploaded) -->
+        <div class="homepage-panel home-panel" id="benefitsSummary">
+            <div class="home-hero">
+                <div class="home-hero-icon"><i class="fas fa-graduation-cap"></i></div>
+                <div>
+                    <h4 class="home-title">Your AI Finance Tutor</h4>
+                    <p class="home-subtitle">Built by the Finance department at Queen's University Belfast for QUB students. Upload your material, then study for 30 minutes a day.</p>
                 </div>
             </div>
+
+            <div class="home-features">
+                <div class="home-feature">
+                    <i class="fas fa-lightbulb"></i>
+                    <div><strong>Key concepts</strong><span>Clear explanations with real-world examples</span></div>
+                </div>
+                <div class="home-feature">
+                    <i class="fas fa-question-circle"></i>
+                    <div><strong>Retrieval quiz</strong><span>Test yourself on the key points</span></div>
+                </div>
+                <div class="home-feature">
+                    <i class="fas fa-calculator"></i>
+                    <div><strong>Calculation questions</strong><span>Worked examples, then your turn</span></div>
+                </div>
+                <div class="home-feature">
+                    <i class="fas fa-pen"></i>
+                    <div><strong>Essay practice</strong><span>Analytical questions with guidance</span></div>
+                </div>
+                <div class="home-feature">
+                    <i class="fas fa-image"></i>
+                    <div><strong>Infographic guide</strong><span>A one-page visual revision poster</span></div>
+                </div>
+                <div class="home-feature">
+                    <i class="fas fa-comments"></i>
+                    <div><strong>Ask anything</strong><span>Follow up and dig deeper into any topic</span></div>
+                </div>
+            </div>
+
+            <div class="home-cta">
+                <i class="fas fa-arrow-left me-2"></i>Upload your lecture notes or past exam papers in the sidebar to get started
+            </div>
+
+            <p class="home-note"><i class="fas fa-info-circle me-1"></i>AI is a powerful study aid, but never present its output as your own work.</p>
         </div>
-        
 
         {% endif %}
         

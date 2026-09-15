@@ -926,7 +926,7 @@ class AITutor {
                         </div>
                         <small class="text-muted mt-1">
                             <i class="fas fa-paint-brush me-1"></i>
-                            Designing an infographic. This can take a few minutes.
+                            Designing your infographic, then checking and correcting it before it is shown. This can take several minutes.
                         </small>
                     </div>
                 </div>
@@ -935,7 +935,7 @@ class AITutor {
         messagesDiv.appendChild(progressDiv);
         progressDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-        // Animate progress bar towards (but never past) 95% over ~2.5 minutes
+        // Animate progress bar towards (but never past) 95% over ~6 minutes
         const progressBar = progressDiv.querySelector('.progress-bar');
         let width = 0;
         const interval = setInterval(() => {
@@ -944,7 +944,7 @@ class AITutor {
             if (width >= 95) {
                 clearInterval(interval);
             }
-        }, 1600);
+        }, 4000);
 
         try {
             const response = await fetch('/start_infographic_generation', {
@@ -983,7 +983,7 @@ class AITutor {
         console.log('🎨 Starting infographic polling for task:', taskId);
 
         const pollInterval = 3000; // 3 seconds between polls
-        const maxAttempts = 100;   // up to 5 minutes (image generation is slow)
+        const maxAttempts = 240;   // up to 12 minutes (generation + check/correction rounds)
         let attempts = 0;
 
         const cleanupProgress = () => {

@@ -610,9 +610,9 @@ STRICT REQUIREMENTS:
 - Cover the WHOLE document from beginning to end — every major topic must appear; do not stop early or skip later sections.
 - Start with a single title line naming the subject of the material.
 - Then give 4-6 clearly titled sections (fewer, broader sections are better than many small ones). In each section give AT MOST 3 bullet points, each a crisp phrase of no more than 9 words that fits on ONE line of a poster - only the single most important concepts, definitions and takeaways. This is a visual poster, not notes: leave out detail.
-- After each section's bullets add ONE line starting "VISUAL:" that suggests either a diagram (e.g. "VISUAL: diagram - timeline of bond cash flows from purchase to maturity") or a photorealistic photograph-style illustration (e.g. "VISUAL: photo - a trading floor with screens of price charts") that depicts an idea genuinely present in that section. Prefer photorealistic images over diagrams unless the idea is a structure, process or relationship that a diagram explains better; never suggest icons or clip-art. Diagrams must only show relationships or structures described in the material, never invented data.
+- After each section's bullets add ONE line starting "VISUAL:" choosing ONE of: (a) "VISUAL: diagram - ..." a clean explanatory diagram (timeline, flowchart, labelled graph, relationship map, comparison) - the DEFAULT for any quantitative, structural or process idea; (b) "VISUAL: vignette - ..." a SMALL photorealistic vignette used only where a photo adds visual appeal to a concept that has no natural diagram; or (c) "VISUAL: formula-led" when the section's formula is the visual and nothing else is needed. Use at most 2 vignettes across the WHOLE brief, each of a clearly different subject (never two of the same scene, and never "a person looking at trading screens"). Vignette subjects must be concrete and physical (a bond certificate, a factory, a shopfront, coins, a signed contract) rather than screens, charts or documents with text. Never suggest icons or clip-art. Diagrams must only show relationships or structures described in the material, never invented data.
 - If the material contains equations, include the main equations a student must learn for the exam INSIDE the section they belong to (not in a separate formulas section), each on its own line starting "FORMULA:" in GENERAL symbolic form written in LaTeX math notation, followed by " KEY: " and a few-word plain-text note of what each symbol means (e.g. "FORMULA: F = P(1 + r)^t KEY: F future value, P present value, r rate, t years"). Include at most 6 formulas across the whole brief - the ones that matter most - and no more than 2 per section. A FORMULA line does not count towards the 3-bullet limit.
-- FORMULA NOTATION (LaTeX, so the poster can typeset real mathematics): use \frac{{numerator}}{{denominator}} for EVERY division (never a "/" slash); _{{ }} and ^{{ }} for subscripts and superscripts (r_{{i}}, \sigma^{{2}}, P_{{0}}); \bar{{r}} for a mean, \hat{{x}} for an estimate; Greek letters as commands (\sigma, \rho, \beta, \mu); \sum for summation (with limits if the material shows them, e.g. \sum_{{i=1}}^{{n}}); \sqrt{{ }} for roots; \times for multiplication. NEVER spell a symbol as a word (not "rbar", "sigma", "sqrt", "sum"). Example: "FORMULA: \sigma^{{2}} = \frac{{\sum (r_{{i}} - \bar{{r}})^{{2}}}}{{n - 1}} KEY: r_i return, r-bar mean return, n observations". The KEY part is plain words.
+- FORMULA NOTATION (LaTeX, so the poster can typeset real mathematics): use \frac{{numerator}}{{denominator}} for EVERY division (never a "/" slash); _{{ }} and ^{{ }} for subscripts and superscripts (r_{{i}}, \sigma^{{2}}, P_{{0}}); \bar{{r}} for a mean, \hat{{x}} for an estimate; Greek letters as commands (\sigma, \rho, \beta, \mu); \sum for summation (with limits if the material shows them, e.g. \sum_{{i=1}}^{{n}}); \sqrt{{ }} for roots; \times for multiplication. NEVER spell a symbol as a word (not "rbar", "sigma", "sqrt", "sum"). Example: "FORMULA: \sigma^{{2}} = \frac{{\sum (r_{{i}} - \bar{{r}})^{{2}}}}{{n - 1}} KEY: r_i return, r-bar mean return, n observations". The KEY part is plain words, and it must list EVERY symbol that appears in the formula, each written as the symbol followed by its meaning (e.g. 'KEY: r_p portfolio return, r_f risk-free rate, sigma_p portfolio volatility') - never a bare list of meanings without the symbols.
 - FORMULA ACCURACY: copy each formula from the material exactly. Be meticulous about brackets - what is inside versus outside each bracket, and which terms an exponent, root, sum or division applies to. Write explicit brackets and braces wherever the structure could be misread, e.g. "PV = \frac{{C}}{{(1 + r)^{{t}}}}" (the whole (1 + r) is raised to t, then divides C), not "PV = C / 1 + r^t". Never rearrange, simplify or merge formulas.
 - Plain text only: no markdown symbols, no page/slide citations, no commentary about these instructions — output the brief and nothing else.
 
@@ -681,19 +681,27 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             "revision brief below. It must look like a premium editorial infographic, "
             "not a page of notes.\n\n"
             "VISUAL STYLE:\n"
-            "- Illustration-led: every section is anchored by a large visual - either "
-            "a photorealistic, photograph-quality image that depicts the idea, or a "
-            "clean explanatory diagram (flowchart, timeline, labelled graph, "
-            "relationship map, comparison) - following the VISUAL suggestion given "
-            "for that section.\n"
-            "- Photorealism over icons: use realistic photographic imagery (people, "
-            "places, objects, markets, documents) rather than flat icons, clip-art or "
-            "cartoon illustrations. Small icons may only appear as subtle bullet "
-            "markers, never as a section's main visual.\n"
-            "- Include one photorealistic hero image beside the title that captures "
-            "the overall subject - modest in size (about one quarter of the page "
-            "width, no taller than the title block) so the sections keep most of "
-            "the page.\n"
+            "- Diagram-led: each section's main visual is what its VISUAL line asks "
+            "for. A 'diagram' is a clean explanatory diagram (flowchart, timeline, "
+            "labelled graph, relationship map, comparison) drawn in the page's style "
+            "(thin red/grey strokes, white boxes, sans-serif labels) and given room "
+            "to breathe. A 'formula-led' section has no picture: its typeset "
+            "formula callout is the visual, with the extra space left white.\n"
+            "- PHOTOS ARE SMALL ACCENTS, NOT FEATURES: a 'vignette' is a small "
+            "photorealistic image - no more than about one fifth of its card's "
+            "area, roughly the height of three bullet lines - with softly rounded "
+            "corners, placed in a corner of the card or beside the formula so the "
+            "text, diagram and formula remain the dominant elements. Never let a "
+            "photo fill half a card or the full height of a card. At most 2 "
+            "vignettes on the whole page, each a clearly different subject; never "
+            "repeat a scene, never show people looking at trading screens, and "
+            "never show screens, charts or documents with text inside a photo. If "
+            "no vignette is requested for a section, do not add one.\n"
+            "- No icons, clip-art or cartoon illustrations; small icons may only "
+            "appear as subtle bullet markers.\n"
+            "- Hero image: one small photorealistic vignette beside the title "
+            "(about one fifth of the page width, no taller than the title block), "
+            "of a subject different from every other vignette on the page.\n"
             "- Diagrams must depict only the structures and relationships described in "
             "the brief; graph axes may be labelled but show NO invented numbers.\n"
             "- CLEAN STYLE: the page background must be pure white (no red, pink or "
@@ -798,7 +806,7 @@ CHECK, IN THIS ORDER OF IMPORTANCE:
 1. FORMULAS: every formula shown must be the brief's LaTeX formula rendered as properly typeset mathematics: the same symbols, subscripts and exponents, and the same bracket placement (the same terms inside and outside each bracket, and the correct scope of every exponent, fraction or root). ALSO flag: any division shown inline with a slash instead of a stacked fraction (numerator over a horizontal bar over denominator); any symbol spelled as a word (e.g. 'rbar', 'sigma', 'sqrt') instead of the proper glyph (bar over the letter, Greek letter, radical sign); any visible LaTeX source (backslashes, braces, command names); formulas set in a plain sans-serif font instead of a LaTeX-style (Computer Modern) math font. Any deviation is an issue. In 'correction', give the exact formula from the brief and say how it must be typeset.
 2. TEXT ACCURACY: misspelled, garbled, truncated or unreadable words; headings or bullets that say something the brief does not.
 3. CONTENT RULES: any numerical worked example, practice question, substituted numbers or calculated answer (none are allowed); any fact, formula or example not in the brief; any section of the brief missing entirely.
-4. STYLE: a red / pink / coloured page background, card background, band or colour wash (the page and cards must be white; red may appear only as headings, thin rules, arrows, outlines and small badges - never as a fill behind text or formulas); any accent colour other than red (e.g. navy or blue fills); serif, script or decorative fonts; flat icons or clip-art used as a section's main visual instead of photorealistic imagery or a diagram.
+4. STYLE: a red / pink / coloured page background, card background, band or colour wash (the page and cards must be white; red may appear only as headings, thin rules, arrows, outlines and small badges - never as a fill behind text or formulas); any accent colour other than red (e.g. navy or blue fills); serif, script or decorative fonts; flat icons or clip-art used as a section's main visual; a photo that dominates its card (larger than about one fifth of the card, or full card height); more than 2 photos on the page besides the small hero image, or two photos of the same kind of scene (e.g. people at trading screens twice); a photo containing screens, charts or readable text; a symbol key that omits the symbols (e.g. 'portfolio return, risk-free rate' without r_p, r_f).
 
 OUTPUT: respond with ONLY a JSON object, no other text:
 {{"ok": true}} if there are no issues, otherwise
@@ -864,7 +872,12 @@ REVISION BRIEF:
             "red or coloured tint or fills; the only accent is deep red used for "
             "headings, thin rules, arrows, outlines and small badges, and formula "
             "boxes are white with a thin red left border. Keep one clean sans-serif "
-            "font family. Do not add any content that is not in the brief.\n\n"
+            "font family. Photos may only be small rounded vignettes (about one fifth "
+            "of a card), at most 2 on the page plus a small hero image, all of "
+            "different subjects, with no screens, charts or text inside them - "
+            "shrink, replace or remove a photo if a correction asks for it and give "
+            "the space to the diagram, formula or white space. Do not add any "
+            "content that is not in the brief.\n\n"
             f"REVISION BRIEF (source of truth):\n{notes_brief}"
         )
         client = _get_async_openai_client()

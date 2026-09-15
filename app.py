@@ -590,10 +590,38 @@ def _deliver_pending_infographic_email(task_id, image_b64):
     if not req:
         return
     try:
+        logging.info(f"INFOGRAPHIC EMAIL: delivering scheduled PDF for task {task_id} via {email_transport()}")
         email_infographic(req['email'], image_b64, document_name=req.get('document_name'))
         logging.info(f"INFOGRAPHIC EMAIL: delivered PDF for task {task_id}")
+        _record_infographic_email_result(task_id, {'status': 'sent', 'email': req['email']})
     except Exception as e:
         logging.error(f"INFOGRAPHIC EMAIL: delivery for task {task_id} failed: {e}")
+        _record_infographic_email_result(task_id, {'status': 'failed', 'email': req['email'],
+                                                   'error': _email_error_message(e)})
+
+
+_INFOGRAPHIC_EMAIL_RESULT_TYPE = 'infographic_email_result'
+
+
+def _record_infographic_email_result(task_id, result):
+    try:
+        with app.app_context():
+            StorageManager().store_content(task_id, _INFOGRAPHIC_EMAIL_RESULT_TYPE, result)
+    except Exception as e:
+        logging.error(f"INFOGRAPHIC EMAIL: could not record result for task {task_id}: {e}")
+
+
+def _email_error_message(exc):
+    """Student-facing explanation of a send failure, with the provider's reason
+    (Resend's messages are short and actionable, e.g. the test-sender restriction)."""
+    detail = str(exc).strip()
+    if 'only send testing emails' in detail.lower() or 'own email address' in detail.lower():
+        return ("The email service is in test mode and can only send to the address that owns "
+                "the Resend account. The administrator needs to verify a sending domain and set "
+                "RESEND_FROM.")
+    if len(detail) > 220:
+        detail = detail[:220] + '...'
+    return f"Sending the email failed: {detail}" if detail else "Sending the email failed."
 
 
 def run_infographic_generation_background(task_id, pdf_content, doc_type=None):
@@ -2302,6 +2330,9 @@ def email_infographic_route():
         image_b64 = payload.get('image_b64')
         document_name = session.get('pdf_filename')
         session['infographic_email'] = email
+        transport = email_transport()
+        logging.info(f"INFOGRAPHIC EMAIL: request received (transport={transport}, task={task_id}, "
+                     f"client_image={'yes' if image_b64 else 'no'})")
 
         if task_id:
             task = get_task_status(task_id)
@@ -2313,10 +2344,10 @@ def email_infographic_route():
                 task = get_task_status(task_id)
                 if not (task and task.get('status') == 'complete'):
                     logging.info(f"INFOGRAPHIC EMAIL: scheduled delivery for task {task_id}")
-                    return jsonify({'status': 'scheduled', 'email': email})
+                    return jsonify({'status': 'scheduled', 'email': email, 'transport': transport})
                 if pop_infographic_email(task_id) is None:
                     # Background thread already took the request and is sending it
-                    return jsonify({'status': 'scheduled', 'email': email})
+                    return jsonify({'status': 'scheduled', 'email': email, 'transport': transport})
             if task and task.get('status') == 'complete' and task.get('success') and task.get('data'):
                 image_b64 = task['data']
 
@@ -2331,12 +2362,26 @@ def email_infographic_route():
             email_infographic(email, image_b64, document_name=document_name)
         except Exception as e:
             logging.error(f"INFOGRAPHIC EMAIL: send failed: {e}")
-            return jsonify({'error': 'Sending the email failed. Please check the address and try again.'}), 502
+            return jsonify({'error': _email_error_message(e)}), 502
 
-        return jsonify({'status': 'sent', 'email': email})
+        logging.info(f"INFOGRAPHIC EMAIL: sent immediately via {transport}")
+        return jsonify({'status': 'sent', 'email': email, 'transport': transport})
     except Exception:
         logging.exception("INFOGRAPHIC EMAIL: unexpected error")
         return jsonify({'error': 'Could not email the infographic.'}), 500
+
+@app.route('/infographic_email_status/<task_id>', methods=['GET'])
+def infographic_email_status(task_id):
+    """Outcome of a scheduled 'email me when ready' delivery: pending / sent / failed."""
+    try:
+        with app.app_context():
+            result = StorageManager().retrieve_content(task_id, _INFOGRAPHIC_EMAIL_RESULT_TYPE)
+        if isinstance(result, dict) and result.get('status'):
+            return jsonify(result)
+        return jsonify({'status': 'pending'})
+    except Exception:
+        logging.exception("INFOGRAPHIC EMAIL: status lookup failed")
+        return jsonify({'status': 'pending'})
 
 @app.route('/infographic_status/<task_id>', methods=['GET'])
 def get_infographic_status(task_id):

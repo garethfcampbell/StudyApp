@@ -111,6 +111,7 @@ def _email_body(document_name=None, from_name=FROM_NAME_DEFAULT):
 def _send_via_resend(to_email, pdf_bytes, filename, document_name=None):
     api_key = os.getenv("RESEND_API_KEY", "").strip()
     from_addr = os.getenv("RESEND_FROM", "").strip() or RESEND_FROM_DEFAULT
+    logging.info(f"INFOGRAPHIC EMAIL: calling Resend API (from={from_addr}, key=...{api_key[-4:]})")
     payload = {
         "from": from_addr,
         "to": [to_email],

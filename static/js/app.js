@@ -1148,8 +1148,9 @@ class AITutor {
                     status.textContent = `We will email the PDF to ${data.email} as soon as it is ready.`;
                     status.className = 'form-text infographic-email-status text-success';
                     if (window.INFOGRAPHIC_EMAIL) window.INFOGRAPHIC_EMAIL.prefill = data.email;
+                    this.pollInfographicEmailStatus(body.task_id, status, button);
                 } else if (response.ok && data.status === 'sent') {
-                    status.textContent = `Sent! Check ${data.email} for the PDF.`;
+                    status.textContent = `Sent via ${data.transport || 'email'}! Check ${data.email} for the PDF (and your junk folder).`;
                     status.className = 'form-text infographic-email-status text-success';
                     if (window.INFOGRAPHIC_EMAIL) window.INFOGRAPHIC_EMAIL.prefill = data.email;
                 } else {
@@ -1165,6 +1166,37 @@ class AITutor {
             }
         });
         container.appendChild(form);
+    }
+
+    // After a scheduled "email me when ready" request, poll for the delivery
+    // outcome so a failure (e.g. the provider rejecting the address) is shown
+    // instead of silently logged on the server.
+    pollInfographicEmailStatus(taskId, statusEl, buttonEl) {
+        if (!taskId) return;
+        let attempts = 0;
+        const maxAttempts = 180; // 15 minutes at 5s
+        const poll = async () => {
+            attempts++;
+            try {
+                const r = await fetch(`/infographic_email_status/${taskId}`);
+                const d = await r.json();
+                if (d.status === 'sent') {
+                    statusEl.textContent = `Sent! Check ${d.email} for the PDF (and your junk folder).`;
+                    statusEl.className = 'form-text infographic-email-status text-success';
+                    return;
+                }
+                if (d.status === 'failed') {
+                    statusEl.textContent = d.error || 'Sending the email failed.';
+                    statusEl.className = 'form-text infographic-email-status text-danger';
+                    if (buttonEl) buttonEl.disabled = false;
+                    return;
+                }
+            } catch (e) {
+                console.warn('Email status poll error:', e);
+            }
+            if (attempts < maxAttempts) setTimeout(poll, 5000);
+        };
+        setTimeout(poll, 5000);
     }
 
     downloadInfographic() {

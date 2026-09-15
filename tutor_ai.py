@@ -609,8 +609,9 @@ STRICT REQUIREMENTS:
 - The brief MUST be under {char_limit} characters in total.
 - Cover the WHOLE document from beginning to end — every major topic must appear; do not stop early or skip later sections.
 - Start with a single title line naming the subject of the material.
-- Then give 4-8 clearly titled sections. In each section list the key concepts, definitions, essential formulas and takeaways as short bullet points.
-- Write formulas in simple plain-text notation (e.g. r = (P1 - P0) / P0), NOT LaTeX.
+- Then give 4-6 clearly titled sections (fewer, broader sections are better than many small ones). In each section give AT MOST 3 bullet points, each a short phrase of no more than 12 words - only the single most important concepts, definitions, formulas and takeaways. This is a visual poster, not notes: leave out detail.
+- After each section's bullets add ONE line starting "VISUAL:" that suggests either a diagram (e.g. "VISUAL: diagram - timeline of bond cash flows from purchase to maturity") or a photorealistic illustration (e.g. "VISUAL: photo - a trading floor with screens of price charts") that depicts an idea genuinely present in that section. Diagrams must only show relationships or structures described in the material, never invented data.
+- Write formulas in simple plain-text notation (e.g. r = (P1 - P0) / P0), NOT LaTeX, and include a formula only if it is central.
 - Plain text only: no markdown symbols, no page/slide citations, no commentary about these instructions — output the brief and nothing else.
 
 SOURCE FIDELITY (MOST IMPORTANT):
@@ -618,6 +619,7 @@ SOURCE FIDELITY (MOST IMPORTANT):
 - If the material contains a calculation question, exercise, or worked example, report the question and the figures it gives exactly as stated. Do NOT calculate, solve, or estimate an answer yourself.
 - Only include an answer, result, or worked solution if it is explicitly shown in the material, and then reproduce it as given.
 - If a question in the material is left unanswered, present it as an unanswered question (e.g. "Question: ...") rather than filling in a result.
+- VISUAL suggestions must also come only from what the material discusses - do not suggest imagery for topics it does not cover.
 
 {self._material_guidance()}UPLOADED MATERIAL:
 {full_context}"""
@@ -653,20 +655,33 @@ SOURCE FIDELITY (MOST IMPORTANT):
         # first condense the WHOLE lecture into that budget with a chat-model
         # summarization pass (a plain truncation would drop later sections).
         try:
-            notes_brief = await self._summarize_for_infographic(char_limit=8000)
+            notes_brief = await self._summarize_for_infographic(char_limit=5000)
         except Exception as e:
             logging.error(f"INFOGRAPHIC: Summarization failed, falling back to head/tail truncation: {e}")
-            notes_brief = self._get_truncated_context(limit=8000)
+            notes_brief = self._get_truncated_context(limit=5000)
 
         prompt = (
-            "Create a detailed infographic which provides a detailed revision "
-            "guide, which is aesthetically beautiful, for the subject of the "
-            "university revision brief below. Organise the key "
-            "concepts, definitions, formulas and takeaways into clearly "
-            "titled sections with a strong visual hierarchy, icons and simple "
-            "diagrams, so the result works as a one-page revision poster. "
-            "Include every section of the brief. All text must be legible and "
-            "factually faithful to the brief.\n\n"
+            "Design a beautiful, modern one-page revision poster for the university "
+            "revision brief below. It must look like a premium editorial infographic, "
+            "not a page of notes.\n\n"
+            "VISUAL STYLE:\n"
+            "- Illustration-led: every section is anchored by a large visual - either "
+            "a clean explanatory diagram (flowchart, timeline, labelled graph, "
+            "relationship map, comparison) or a photorealistic illustration that "
+            "depicts the idea - following the VISUAL suggestion given for that section.\n"
+            "- Include one striking photorealistic hero image near the title that "
+            "captures the overall subject.\n"
+            "- Diagrams must depict only the structures and relationships described in "
+            "the brief; graph axes may be labelled but show NO invented numbers.\n"
+            "- Generous white space, a cohesive colour palette (deep red accent on a "
+            "light background), rounded cards, clear visual hierarchy.\n\n"
+            "TEXT RULES:\n"
+            "- Keep text minimal: one bold title, one short heading per section, and at "
+            "most 3 short bullet phrases per section. No paragraphs, no small print.\n"
+            "- Use large, highly legible typography; every word must be spelled "
+            "correctly and be readable.\n"
+            "- Include every section of the brief, but let visuals carry the meaning "
+            "wherever they can replace words.\n\n"
             "STRICT CONTENT RULES: Show ONLY information contained in the brief. "
             "Do not add facts, formulas, examples or explanations from outside it. "
             "If the brief contains a calculation question, exercise or example, "

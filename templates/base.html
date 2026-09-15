@@ -742,7 +742,7 @@
     <!-- MathJax will be loaded conditionally when calculation questions are generated -->
 
     <!-- app.js also deferred to ensure Bootstrap loads first -->
-    <script src="{{ url_for('static', filename='js/app.js') }}?v=1786706000000" defer></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v={{ static_version('js/app.js') }}" defer></script>
 
     <script>
         // Debug logging switch — silences console.log/debug noise in production.

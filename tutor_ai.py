@@ -609,7 +609,7 @@ STRICT REQUIREMENTS:
 - The brief MUST be under {char_limit} characters in total.
 - Cover the WHOLE document from beginning to end — every major topic must appear; do not stop early or skip later sections.
 - Start with a single title line naming the subject of the material.
-- Then give 4-6 clearly titled sections (fewer, broader sections are better than many small ones). In each section give AT MOST 3 bullet points, each a short phrase of no more than 12 words - only the single most important concepts, definitions, formulas and takeaways. This is a visual poster, not notes: leave out detail.
+- Then give 4-6 clearly titled sections (fewer, broader sections are better than many small ones). In each section give AT MOST 3 bullet points, each a crisp phrase of no more than 9 words that fits on ONE line of a poster - only the single most important concepts, definitions and takeaways. This is a visual poster, not notes: leave out detail.
 - After each section's bullets add ONE line starting "VISUAL:" that suggests either a diagram (e.g. "VISUAL: diagram - timeline of bond cash flows from purchase to maturity") or a photorealistic photograph-style illustration (e.g. "VISUAL: photo - a trading floor with screens of price charts") that depicts an idea genuinely present in that section. Prefer photorealistic images over diagrams unless the idea is a structure, process or relationship that a diagram explains better; never suggest icons or clip-art. Diagrams must only show relationships or structures described in the material, never invented data.
 - If the material contains equations, include the main equations a student must learn for the exam INSIDE the section they belong to (not in a separate formulas section), each on its own line starting "FORMULA:" in GENERAL symbolic form with a few-word note of what each symbol means (e.g. "FORMULA: F = P(1 + r)^t  - F future value, P present value, r rate, t years"). Write formulas in simple plain-text notation, NOT LaTeX. Include at most 6 formulas across the whole brief - the ones that matter most - and no more than 2 per section. A FORMULA line does not count towards the 3-bullet limit.
 - FORMULA ACCURACY: copy each formula from the material exactly. Be meticulous about brackets - what is inside versus outside each bracket, and which terms an exponent, root, sum or division applies to. Write explicit brackets wherever the structure could be misread, e.g. "PV = C / (1 + r)^t" (the whole (1 + r) is raised to t, then divides C), not "PV = C / 1 + r^t". Use the "^" symbol for powers and "/" for division, and keep subscripts as plain suffixes (P0, P1, Nd1). Never rearrange, simplify or merge formulas.
@@ -697,24 +697,45 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             "the brief; graph axes may be labelled but show NO invented numbers.\n"
             "- CLEAN STYLE: the page background must be pure white (no red, pink or "
             "any colour tint, no gradient, no textured or coloured backdrop). Section "
-            "cards are white or a barely-there light grey with soft shadows. Use ONE "
-            "restrained accent colour (deep navy or charcoal) for headings, rules and "
-            "formula callouts, plus the natural colours of the photographs. No red "
-            "washes, no heavy borders, no busy patterns.\n"
-            "- Generous white space, aligned grid, consistent margins, rounded cards, "
-            "clear visual hierarchy - the feel of a premium magazine spread.\n\n"
+            "cards are white with a hairline light-grey border and a very soft "
+            "shadow; card interiors stay white.\n"
+            "- ACCENT COLOUR: a single deep red (like #D6000D) used ONLY as thin "
+            "strokes and text - section headings, a thin rule under each heading, "
+            "arrows and connector lines in diagrams, the left border of formula "
+            "callouts, and small numbered badges. Red must NEVER be used as a fill "
+            "for large areas: no red or pink card backgrounds, panels, bands, boxes "
+            "behind formulas or tinted washes. Diagram nodes are white or pale grey "
+            "boxes with a thin red or grey outline and charcoal text, not solid "
+            "coloured blocks. All other colour comes only from the photographs.\n"
+            "- LAYOUT RHYTHM: a clean 2-column grid of equal-width cards (a full-width "
+            "card is allowed for a wide diagram). Every card has the SAME anatomy: a "
+            "small red number badge, the heading, a thin red rule, then bullets on the "
+            "left and the visual on the right, with any formula callout beneath the "
+            "bullets. Equal card padding, equal gutters between cards, and a clear "
+            "margin on all four page edges (nothing touches the edge, including the "
+            "bottom). Balance card heights so no card is cramped or half-empty.\n"
+            "- Generous white space, aligned grid, rounded corners, clear visual "
+            "hierarchy - the feel of a premium magazine spread.\n\n"
             "TEXT RULES:\n"
             "- Keep text minimal: one bold title, one short heading per section, and at "
             "most 3 short bullet phrases per section. No paragraphs, no small print.\n"
-            "- Use large, highly legible typography; every word must be spelled "
-            "correctly and be readable.\n"
+            "- TYPOGRAPHY: one clean, modern geometric sans-serif family throughout "
+            "(in the style of Inter, Helvetica Neue or Roboto) - no serif, script, "
+            "handwritten, condensed, decorative or display fonts anywhere, and never "
+            "mix families. Regular weight for body text, semi-bold for section "
+            "headings, bold only for the main title. Consistent sizes: one size for "
+            "all section headings, one for all bullet text, one for formula "
+            "callouts. Dark charcoal text on white, left-aligned, generous line "
+            "spacing, no drop shadows, outlines, gradients or effects on text.\n"
+            "- Every word must be spelled correctly, crisply rendered and readable.\n"
             "- Include every section of the brief, but let visuals carry the meaning "
             "wherever they can replace words.\n\n"
             "FORMULAS: Lines marked FORMULA belong inside the section they appear "
             "in - do NOT gather them into a separate formulas panel. Within each "
-            "section, show its formula(s) as a highlighted callout, large and exactly "
+            "section, show its formula(s) as a callout: a white or very pale grey box "
+            "with a thin red left border, the formula large in charcoal, exactly "
             "as written in general symbolic form (letters, not numbers), with the "
-            "short symbol key beneath. Formulas must be typeset with complete "
+            "short symbol key in small grey text beneath. Formulas must be typeset with complete "
             "accuracy: reproduce every bracket exactly, keeping the same terms inside "
             "and outside each bracket as in the brief, and make it visually clear "
             "which terms an exponent, fraction bar, root or summation applies to "
@@ -763,7 +784,7 @@ CHECK, IN THIS ORDER OF IMPORTANCE:
 1. FORMULAS: every formula shown must match the brief EXACTLY - the same symbols, subscripts and exponents, and the same bracket placement (the same terms inside and outside each bracket, and the correct scope of every exponent, fraction or root). Any deviation is an issue. State the exact correct formula as written in the brief.
 2. TEXT ACCURACY: misspelled, garbled, truncated or unreadable words; headings or bullets that say something the brief does not.
 3. CONTENT RULES: any numerical worked example, practice question, substituted numbers or calculated answer (none are allowed); any fact, formula or example not in the brief; any section of the brief missing entirely.
-4. STYLE: a red / pink / coloured page background or colour wash (the page must be white with a single navy/charcoal accent); flat icons or clip-art used as a section's main visual instead of photorealistic imagery or a diagram.
+4. STYLE: a red / pink / coloured page background, card background, band or colour wash (the page and cards must be white; red may appear only as headings, thin rules, arrows, outlines and small badges - never as a fill behind text or formulas); any accent colour other than red (e.g. navy or blue fills); serif, script or decorative fonts; flat icons or clip-art used as a section's main visual instead of photorealistic imagery or a diagram.
 
 OUTPUT: respond with ONLY a JSON object, no other text:
 {{"ok": true}} if there are no issues, otherwise
@@ -821,9 +842,11 @@ REVISION BRIEF:
             "exactly the symbols, subscripts, exponents and bracket placement given in "
             "the correction, with nothing dropped, added or rearranged. Text must be "
             "spelled correctly and fully legible. Show no numerical worked examples or "
-            "calculated answers. The page background must be pure white with no red or "
-            "coloured tint; use a single navy/charcoal accent colour. Do not add any "
-            "content that is not in the brief.\n\n"
+            "calculated answers. The page and all cards must stay pure white with no "
+            "red or coloured tint or fills; the only accent is deep red used for "
+            "headings, thin rules, arrows, outlines and small badges, and formula "
+            "boxes are white with a thin red left border. Keep one clean sans-serif "
+            "font family. Do not add any content that is not in the brief.\n\n"
             f"REVISION BRIEF (source of truth):\n{notes_brief}"
         )
         client = _get_async_openai_client()

@@ -15,7 +15,7 @@ import threading
 import uuid as uuid_module
 from pdf_processor import extract_text_from_file
 from tutor_ai import TutorAI
-from infographic_email import is_email_configured, normalise_email, email_infographic
+from infographic_email import is_email_configured, normalise_email, email_infographic, email_transport
 from database_storage_manager import DatabaseStorageManager as StorageManager
 from performance_optimizations import optimized_storage, resource_monitor, rate_limit, start_periodic_cleanup
 
@@ -51,6 +51,20 @@ Compress(app)
 
 # Performance optimizations for Autoscale deployment
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 86400  # 24 hours cache for static files
+
+
+@app.template_global()
+def static_version(filename):
+    """Cache-busting query value for a static file: its modification time, so a
+    deploy that changes the file automatically invalidates the browser cache
+    (static files are otherwise cached for 24 hours)."""
+    try:
+        return int(os.path.getmtime(os.path.join(app.static_folder, filename)))
+    except OSError:
+        return 0
+
+
+logging.info(f"INFOGRAPHIC EMAIL: transport = {email_transport() or 'none (set RESEND_API_KEY to enable the email-as-PDF option)'}")
 # Secure cookies only in production (HTTPS); allow plain HTTP in local development
 app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV') == 'production'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -2343,8 +2357,14 @@ def clear_session_data(session_id=None):
             except Exception as e:
                 logging.debug(f"Could not delete {content_type} for session {session_id}: {e}")
     
-    # Clear Flask session
+    # Clear the Flask session but KEEP the session id. Regenerating it here made
+    # any request that raced the clear (e.g. an upload started in the same
+    # moment) store content under the old id while later requests looked it up
+    # under a new one -> "Document content not available" right after a
+    # successful upload.
     session.clear()
+    if session_id:
+        session['session_id'] = session_id
 
 @app.route('/clear_session', methods=['POST'])
 @csrf.exempt

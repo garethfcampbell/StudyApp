@@ -479,8 +479,9 @@ function addNewMessage(role, content) {
             benefitsSummary.style.display = 'none';
         }
         
-        // Clear session on backend
-        fetch('/clear_session', {
+        // Clear session on backend. Returns a promise so the caller can wait
+        // for it before uploading (the clear must not race the upload).
+        return fetch('/clear_session', {
             method: 'POST'
         })
         .then(response => response.json())
@@ -616,8 +617,9 @@ function addNewMessage(role, content) {
         const file = event.target.files[0];
         if (!file) return;
         
-        // Immediately clear session and chat messages for new upload
-        clearSessionSilent();
+        // Clear session and chat messages for the new upload. The upload itself
+        // waits for this to finish so the two requests cannot race.
+        const sessionCleared = clearSessionSilent();
         
         const formData = new FormData();
         formData.append('file', file);
@@ -789,10 +791,10 @@ function addNewMessage(role, content) {
         // NOTE: We no longer start summary generation based on timeout
         // Summary generation will ONLY start after upload completion is confirmed
         
-        fetch('/upload', {
+        sessionCleared.then(() => fetch('/upload', {
             method: 'POST',
             body: formData
-        })
+        }))
         .then(response => response.json())
         .then(data => {
             if (data.error) {

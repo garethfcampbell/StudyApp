@@ -282,11 +282,11 @@ class TutorAI:
             raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
 
         self.context = None
-        self.doc_type = None  # 'exam_paper', 'exercise_set', 'lecture_notes' or None (unknown)
+        self.doc_type = None  # 'exam_paper', 'exercise_set', 'research_article', 'lecture_notes' or None
         self.conversation_history = []
 
         # System prompt for the AI tutor
-        self.system_prompt = r"""You are an intelligent and patient AI tutor. Your role is to help students learn and understand their study material (lecture notes, past exam/test papers, or tutorial/exercise/homework question sheets) effectively.
+        self.system_prompt = r"""You are an intelligent and patient AI tutor. Your role is to help students learn and understand their study material (lecture notes, past exam/test papers, tutorial/exercise/homework question sheets, or academic research articles) effectively.
 
         Key behaviors:
         - Be encouraging and supportive
@@ -295,7 +295,7 @@ class TutorAI:
         - Ask follow-up questions to check for understanding
         - Provide practice questions and exercises when appropriate
         - Adapt your teaching style to the student's needs
-        - Always base your responses on the provided study material context (lecture notes, an exam paper, or a tutorial/homework question sheet)
+        - Always base your responses on the provided study material context (lecture notes, an exam paper, a tutorial/homework question sheet, or a research article)
         - If asked about something not in the material, acknowledge this and provide general guidance
         - Use emojis sparingly but appropriately to maintain engagement
 
@@ -603,7 +603,7 @@ class TutorAI:
         images API prompt budget, so the infographic covers the whole lecture
         rather than just whatever survives a head/tail truncation."""
         full_context = self._get_truncated_context()
-        summary_prompt = rf"""Condense the following uploaded university material (lecture slides, notes, a test/exam paper, or a tutorial/exercise/homework question sheet) into a revision brief that will be handed to an image-generation model to design a one-page revision infographic.
+        summary_prompt = rf"""Condense the following uploaded university material (lecture slides, notes, a test/exam paper, a tutorial/exercise/homework question sheet, or an academic research article) into a revision brief that will be handed to an image-generation model to design a one-page revision infographic.
 
 STRICT REQUIREMENTS:
 - The brief MUST be under {char_limit} characters in total.
@@ -677,9 +677,9 @@ SOURCE FIDELITY (MOST IMPORTANT):
         )
 
         client = _get_async_openai_client()
-        logging.info("INFOGRAPHIC: Requesting image generation (gpt-image-2, 1024x1536, high quality)")
+        logging.info("INFOGRAPHIC: Requesting image generation (gpt-image-2.5-flare, 1024x1536, high quality)")
         response = await client.images.generate(
-            model="gpt-image-2",
+            model="gpt-image-2.5-flare",
             prompt=prompt,
             n=1,
             size="1024x1536",
@@ -695,7 +695,7 @@ SOURCE FIDELITY (MOST IMPORTANT):
     def set_context(self, pdf_content, doc_type=None):
 
         self.context = pdf_content
-        self.doc_type = doc_type  # 'exam_paper', 'exercise_set', 'lecture_notes' or None (unknown)
+        self.doc_type = doc_type  # 'exam_paper', 'exercise_set', 'research_article', 'lecture_notes' or None
         self.conversation_history = []  # Reset conversation when new context is set
 
     # Cheap textual cues used only when no LLM classification has been stored
@@ -716,7 +716,14 @@ SOURCE FIDELITY (MOST IMPORTANT):
         r"\bassignment\b|\bseminar\b|practice\s+questions|self[- ]study\s+questions|"
         r"questions\s+for\s+discussion|\bworkshop\b)", re.I)
 
-    DOC_TYPES = ("exam_paper", "exercise_set", "lecture_notes")
+    # Academic research article cues.
+    _RESEARCH_HINT_RE = re.compile(
+        r"(\babstract\b|\bkeywords?\b|jel\s+classification|literature\s+review|"
+        r"\bmethodology\b|\bet\s+al\.|\breferences\b|\bjournal\s+of\b|\bdoi\b|"
+        r"\bhypothes[ie]s\b|\bwe\s+find\b|\bour\s+(results|findings|sample)\b|"
+        r"\bworking\s+paper\b|robustness|\bempirical\b)", re.I)
+
+    DOC_TYPES = ("exam_paper", "exercise_set", "research_article", "lecture_notes")
 
     def _classify_heuristically(self):
         """Keyword fallback for the document type; caches the result on the instance."""
@@ -724,14 +731,18 @@ SOURCE FIDELITY (MOST IMPORTANT):
         exam_hits = len(self._EXAM_HINT_RE.findall(sample))
         strong_exam = len(self._EXAM_STRONG_RE.findall(sample))
         exercise_hits = len(self._EXERCISE_HINT_RE.findall(sample))
-        if exercise_hits >= 2 and strong_exam == 0:
+        research_hits = len(self._RESEARCH_HINT_RE.findall(sample))
+        if research_hits >= 5 and strong_exam == 0:
+            self.doc_type = "research_article"
+        elif exercise_hits >= 2 and strong_exam == 0:
             self.doc_type = "exercise_set"
         elif exam_hits >= 4:
             self.doc_type = "exam_paper"
         else:
             self.doc_type = "lecture_notes"
         logging.info(f"DOC TYPE: heuristic classified document as {self.doc_type} "
-                     f"({exam_hits} exam cues, {strong_exam} strong, {exercise_hits} exercise cues)")
+                     f"({exam_hits} exam cues, {strong_exam} strong, {exercise_hits} exercise cues, "
+                     f"{research_hits} research cues)")
         return self.doc_type
 
     def get_doc_type(self):
@@ -749,25 +760,44 @@ SOURCE FIDELITY (MOST IMPORTANT):
         """True for tutorial sheets, exercise sets, homework and problem sets."""
         return self.get_doc_type() == "exercise_set"
 
+    def is_research_article(self):
+        """True for academic journal articles, working papers and similar research papers."""
+        return self.get_doc_type() == "research_article"
+
     def is_question_set(self):
         """True when the document is made up of questions (exam paper OR exercise set)."""
         return self.get_doc_type() in ("exam_paper", "exercise_set")
 
     def _material_label(self):
         return {"exam_paper": "Exam Paper",
-                "exercise_set": "Tutorial / Exercise Questions"}.get(self.get_doc_type(), "Lecture Notes")
+                "exercise_set": "Tutorial / Exercise Questions",
+                "research_article": "Research Article"}.get(self.get_doc_type(), "Lecture Notes")
 
     def _material_noun(self):
         """Short lower-case noun for use inside prompt sentences."""
         return {"exam_paper": "exam paper",
-                "exercise_set": "exercise sheet"}.get(self.get_doc_type(), "lecture notes")
+                "exercise_set": "exercise sheet",
+                "research_article": "research article"}.get(self.get_doc_type(), "lecture notes")
 
     def _material_description(self):
         return {"exam_paper": "an EXAM / TEST PAPER",
-                "exercise_set": "a TUTORIAL / EXERCISE / HOMEWORK QUESTION SHEET"}.get(self.get_doc_type(), "")
+                "exercise_set": "a TUTORIAL / EXERCISE / HOMEWORK QUESTION SHEET",
+                "research_article": "an ACADEMIC RESEARCH ARTICLE"}.get(self.get_doc_type(), "")
+
+    _RESEARCH_GUIDANCE = (
+        "MATERIAL TYPE: The uploaded document is an ACADEMIC RESEARCH ARTICLE (journal article or "
+        "working paper), not lecture notes. Organise your output around the paper's structure: the "
+        "research question and motivation, the theory or hypotheses, the data and methodology, the "
+        "key findings, the contribution to the literature, and any limitations or implications. "
+        "Report the paper's results, figures and conclusions exactly as the authors state them - do "
+        "NOT recompute, extrapolate or add findings that are not in the paper. Where useful, cite "
+        "sections, tables or page markers that appear in the document.\n\n"
+    )
 
     def _material_guidance(self):
-        """Extra instructions injected into feature prompts when the document is a set of questions."""
+        """Extra instructions injected into feature prompts for question sets and research articles."""
+        if self.is_research_article():
+            return self._RESEARCH_GUIDANCE
         if not self.is_question_set():
             return ""
         return (
@@ -782,7 +812,16 @@ SOURCE FIDELITY (MOST IMPORTANT):
         )
 
     def _chat_material_guidance(self):
-        """Question-set guidance for the interactive chat (tutoring, not content generation)."""
+        """Material-specific guidance for the interactive chat (tutoring, not content generation)."""
+        if self.is_research_article():
+            return (
+                "MATERIAL TYPE: The uploaded document is an ACADEMIC RESEARCH ARTICLE, not lecture notes. "
+                "Help the student understand and critically evaluate it: clarify the research question, "
+                "theory, data, methodology, findings and contribution, explain technical terms and "
+                "econometric methods in plain language, and encourage them to question assumptions and "
+                "limitations. Report the authors' results exactly as stated and never invent numbers. "
+                "Cite the section, table or page marker you are drawing on.\n\n"
+            )
         if not self.is_question_set():
             return ""
         return (
@@ -824,7 +863,7 @@ SOURCE FIDELITY (MOST IMPORTANT):
     async def get_response_async(self, user_message):
 
         if not self.context:
-            return "I need you to upload your lecture notes, an exam paper or a tutorial/homework question sheet first before I can help you study! 📚"
+            return "I need you to upload your lecture notes, an exam paper, a question sheet or a research article first before I can help you study! 📚"
 
         messages = self._build_chat_messages(user_message)
 
@@ -868,7 +907,7 @@ SOURCE FIDELITY (MOST IMPORTANT):
     async def get_response_stream_async(self, user_message):
         """Stream chat response chunks via an async generator."""
         if not self.context:
-            yield "I need you to upload your lecture notes, an exam paper or a tutorial/homework question sheet first before I can help you study! 📚"
+            yield "I need you to upload your lecture notes, an exam paper, a question sheet or a research article first before I can help you study! 📚"
             return
 
         messages = self._build_chat_messages(user_message)
@@ -964,7 +1003,7 @@ SOURCE FIDELITY (MOST IMPORTANT):
         """Return the summary/cheat sheet prompt text (single source for streaming and non-streaming)."""
         return r"""
 
-Create an executive summary from the study material I provide (lecture notes, an exam/test paper, or a tutorial/exercise/homework question sheet - for any set of questions, summarise the topics and concepts the questions test, never the answers). Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering the most important ideas - this is a quick-reference revision aid, not exhaustive notes.
+Create an executive summary from the study material I provide (lecture notes, an exam/test paper, a tutorial/exercise/homework question sheet, or a research article - for any set of questions, summarise the topics and concepts the questions test, never the answers; for a research article, summarise its question, method, findings and contribution). Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering the most important ideas - this is a quick-reference revision aid, not exhaustive notes.
 
 ### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
 - **BE SELECTIVE BUT THOROUGH:** Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must know for an exam - leave out restatements and minor variations of the same idea, but make sure every major topic of the material is represented.
@@ -990,7 +1029,7 @@ You MUST use the following structure and formatting precisely.
 
 ***OVERVIEW***
 
-Summarise the main subject/topic of the material (for an exam paper or question sheet, the areas its questions cover). Write it in a professional, academic tone suitable for quick review before an exam.
+Summarise the main subject/topic of the material (for an exam paper or question sheet, the areas its questions cover; for a research article, what it investigates and finds). Write it in a professional, academic tone suitable for quick review before an exam.
 
 ***KEY CONCEPTS***
 
@@ -1193,7 +1232,7 @@ Provide a suggested essay structure with 3-5 concise, actionable tips for how th
 
         try:
             messages = self._build_feature_messages(
-                "You are a patient AI tutor helping students understand the key concepts in their study material (lecture notes, an exam paper or a tutorial/homework question sheet).",
+                "You are a patient AI tutor helping students understand the key concepts in their study material (lecture notes, an exam paper, a tutorial/homework question sheet or a research article).",
                 self._get_key_concepts_prompt()
             )
 
@@ -1215,7 +1254,7 @@ Provide a suggested essay structure with 3-5 concise, actionable tips for how th
     def _get_key_concepts_prompt(self):
         """Return the key concepts prompt text (single source for streaming and non-streaming)."""
         return r"""
-Identify and briefly explain exactly 5 key concepts from this study material (for an exam paper or question sheet, the 5 most important concepts its questions test). Present them in a clear, accessible way that helps students understand complex ideas without being condescending.
+Identify and briefly explain exactly 5 key concepts from this study material (for an exam paper or question sheet, the 5 most important concepts its questions test; for a research article, the 5 concepts needed to understand it). Present them in a clear, accessible way that helps students understand complex ideas without being condescending.
 
 CRITICAL FORMATTING REQUIREMENTS:
 - **ABSOLUTELY NO MATHEMATICAL NOTATION:** Do NOT use LaTeX formatting, mathematical equations, symbols, or any notation anywhere in your response
@@ -1281,7 +1320,7 @@ End the overall response with: "Would you like to explore any of these topics in
 
         try:
             messages = self._build_feature_messages(
-                "You are a patient AI tutor helping students understand the key concepts in their study material (lecture notes, an exam paper or a tutorial/homework question sheet).",
+                "You are a patient AI tutor helping students understand the key concepts in their study material (lecture notes, an exam paper, a tutorial/homework question sheet or a research article).",
                 self._get_key_concepts_prompt()
             )
 
@@ -1527,13 +1566,14 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
 
     async def detect_document_type_async(self):
         """Detect whether the uploaded document is an exam paper, a tutorial/exercise/homework
-        question sheet, or lecture notes. Returns 'exam_paper', 'exercise_set' or 'lecture_notes'."""
+        question sheet, a research article, or lecture notes. Returns 'exam_paper', 'exercise_set',
+        'research_article' or 'lecture_notes'."""
         if not self.context:
             return "lecture_notes"
 
         try:
             sample = self.context[:8000]
-            prompt = f"""Classify this document as EXACTLY ONE of "exam_paper", "exercise_set" or "lecture_notes".
+            prompt = f"""Classify this document as EXACTLY ONE of "exam_paper", "exercise_set", "research_article" or "lecture_notes".
 
 exam_paper: a formal examination or class test. It contains numbered questions asking students to
 calculate, solve, evaluate or discuss specific problems, and typically has marks allocated
@@ -1544,15 +1584,22 @@ homework/assignment. It is ALSO mainly a list of questions or problems for stude
 but is not a formal timed exam - it may be titled "Tutorial 3", "Exercises", "Problem Set 2",
 "Homework", "Seminar questions", etc., and may or may not include solutions.
 
+research_article: an academic journal article, working paper or similar research paper. It typically
+has authors and affiliations, an abstract, keywords or JEL codes, an introduction and literature
+review, data and methodology sections, empirical or theoretical results, a conclusion and a
+reference list.
+
 lecture_notes: slides or notes containing explanations, theory, derivations, definitions and
-worked examples used for teaching - NOT primarily a set of questions to be answered.
+worked examples used for teaching - NOT primarily a set of questions to be answered and NOT a
+research paper.
 
 DOCUMENT EXCERPT:
 {sample}
 
-Reply with ONLY one of these three strings, nothing else:
+Reply with ONLY one of these four strings, nothing else:
 exam_paper
 exercise_set
+research_article
 lecture_notes"""
 
             messages = [{"role": "user", "content": prompt}]
@@ -1562,7 +1609,9 @@ lecture_notes"""
                         messages, model=model, max_tokens=1000, timeout=30
                     )
                     result = content.strip().lower().replace('"', '').replace("'", "")
-                    if "exercise" in result or "tutorial" in result or "homework" in result:
+                    if "research" in result or "article" in result:
+                        doc_type = "research_article"
+                    elif "exercise" in result or "tutorial" in result or "homework" in result:
                         doc_type = "exercise_set"
                     elif "exam" in result:
                         doc_type = "exam_paper"

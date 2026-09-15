@@ -44,7 +44,7 @@
                 <div class="home-hero-icon"><i class="fas fa-graduation-cap"></i></div>
                 <div>
                     <h4 class="home-title">Your AI Finance Tutor</h4>
-                    <p class="home-subtitle">Built by the Finance department at Queen's University Belfast for QUB students. Upload your material, then study for 30 minutes a day.</p>
+                    <p class="home-subtitle">Built by the Finance department at Queen's University Belfast for QUB students. Upload lecture notes, past exam papers or research articles, then study for 30 minutes a day.</p>
                 </div>
             </div>
 
@@ -827,7 +827,9 @@ function addNewMessage(role, content) {
                                                     ? 'Exam paper detected - the tutor will focus on the topics its questions test.'
                                                     : data.document_type === 'exercise_set'
                                                         ? 'Tutorial / homework questions detected - the tutor will focus on the topics they cover.'
-                                                        : 'Upload successful!'} Executive summary will be generated automatically.
+                                                        : data.document_type === 'research_article'
+                                                            ? 'Research article detected - the tutor will focus on its question, methods and findings.'
+                                                            : 'Upload successful!'} Executive summary will be generated automatically.
                                             </small>
                                         </div>
                                     </div>

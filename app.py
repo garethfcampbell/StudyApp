@@ -222,7 +222,7 @@ def get_tutor_ai():
 
 
 def _stored_doc_type(session_id=None):
-    """Return the document classification ('exam_paper' / 'exercise_set' / 'lecture_notes') stored
+    """Return the document classification ('exam_paper' / 'exercise_set' / 'research_article' / 'lecture_notes') stored
     for the session at upload time, or None if unknown."""
     try:
         sid = session_id or session.get('session_id')
@@ -1726,7 +1726,7 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 storage_manager.store_content(session_id, 'exam_questions', None)
                 storage_manager.store_content(session_id, 'current_equation_index', 0)
 
-                # Classify the document once (exam paper / exercise sheet / lecture notes) so every
+                # Classify the document once (exam paper / exercise sheet / research article / lecture notes) so every
                 # feature can adapt; falls back to a keyword heuristic in TutorAI.
                 doc_type = None
                 try:

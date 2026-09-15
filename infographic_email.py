@@ -37,6 +37,7 @@ FROM_NAME_DEFAULT = "QUB Finance AI Tutor"
 RESEND_API_URL = "https://api.resend.com/emails"
 RESEND_FROM_DEFAULT = f"{FROM_NAME_DEFAULT} <onboarding@resend.dev>"
 EMAIL_SUBJECT = "Your revision infographic (PDF)"
+USER_AGENT = "QUB-Finance-AI-Tutor/1.0 (Flask; +https://github.com/garethfcampbell/StudyApp)"
 
 
 def _resend_configured():
@@ -128,6 +129,10 @@ def _send_via_resend(to_email, pdf_bytes, filename, document_name=None):
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Resend's API is fronted by Cloudflare, which rejects Python's
+            # default "Python-urllib/x.y" agent with error 1010 (bot signature).
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )

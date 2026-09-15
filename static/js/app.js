@@ -916,7 +916,7 @@ class AITutor {
                         <i class="fas fa-image fa-2x text-primary"></i>
                     </div>
                     <div class="flex-grow-1">
-                        <h6 class="mb-2">🎨 Creating Infographic...</h6>
+                        <h6 class="mb-2">🎨 Creating your revision infographic</h6>
                         <div class="progress">
                             <div class="progress-bar progress-bar-striped progress-bar-animated"
                                  role="progressbar" style="width: 0%; background-color: #FF6600;"
@@ -926,7 +926,7 @@ class AITutor {
                         </div>
                         <small class="text-muted mt-1">
                             <i class="fas fa-paint-brush me-1"></i>
-                            Designing your infographic, then checking and correcting it before it is shown. This can take several minutes.
+                            This takes a few minutes (we check it before showing it). No need to wait: enter your email below and we will send it as a PDF.
                         </small>
                     </div>
                 </div>
@@ -960,8 +960,8 @@ class AITutor {
                 console.log('✓ Infographic generation task started:', data.task_id);
                 this.lastInfographicTaskId = data.task_id;
                 this.attachInfographicEmailForm(progressDiv.querySelector('.flex-grow-1'), data.task_id, {
-                    label: 'Email me a PDF copy when it is ready',
-                    buttonText: 'Notify me'
+                    label: 'Email me the infographic PDF when it is ready',
+                    buttonText: 'Email me'
                 });
                 this.startInfographicPolling(data.task_id, progressDiv, interval);
             } else {

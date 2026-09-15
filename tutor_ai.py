@@ -611,8 +611,9 @@ STRICT REQUIREMENTS:
 - Start with a single title line naming the subject of the material.
 - Then give 4-6 clearly titled sections (fewer, broader sections are better than many small ones). In each section give AT MOST 3 bullet points, each a crisp phrase of no more than 9 words that fits on ONE line of a poster - only the single most important concepts, definitions and takeaways. This is a visual poster, not notes: leave out detail.
 - After each section's bullets add ONE line starting "VISUAL:" that suggests either a diagram (e.g. "VISUAL: diagram - timeline of bond cash flows from purchase to maturity") or a photorealistic photograph-style illustration (e.g. "VISUAL: photo - a trading floor with screens of price charts") that depicts an idea genuinely present in that section. Prefer photorealistic images over diagrams unless the idea is a structure, process or relationship that a diagram explains better; never suggest icons or clip-art. Diagrams must only show relationships or structures described in the material, never invented data.
-- If the material contains equations, include the main equations a student must learn for the exam INSIDE the section they belong to (not in a separate formulas section), each on its own line starting "FORMULA:" in GENERAL symbolic form with a few-word note of what each symbol means (e.g. "FORMULA: F = P(1 + r)^t  - F future value, P present value, r rate, t years"). Write formulas in simple plain-text notation, NOT LaTeX. Include at most 6 formulas across the whole brief - the ones that matter most - and no more than 2 per section. A FORMULA line does not count towards the 3-bullet limit.
-- FORMULA ACCURACY: copy each formula from the material exactly. Be meticulous about brackets - what is inside versus outside each bracket, and which terms an exponent, root, sum or division applies to. Write explicit brackets wherever the structure could be misread, e.g. "PV = C / (1 + r)^t" (the whole (1 + r) is raised to t, then divides C), not "PV = C / 1 + r^t". Use the "^" symbol for powers and "/" for division, and keep subscripts as plain suffixes (P0, P1, Nd1). Never rearrange, simplify or merge formulas.
+- If the material contains equations, include the main equations a student must learn for the exam INSIDE the section they belong to (not in a separate formulas section), each on its own line starting "FORMULA:" in GENERAL symbolic form written in LaTeX math notation, followed by " KEY: " and a few-word plain-text note of what each symbol means (e.g. "FORMULA: F = P(1 + r)^t KEY: F future value, P present value, r rate, t years"). Include at most 6 formulas across the whole brief - the ones that matter most - and no more than 2 per section. A FORMULA line does not count towards the 3-bullet limit.
+- FORMULA NOTATION (LaTeX, so the poster can typeset real mathematics): use \frac{{numerator}}{{denominator}} for EVERY division (never a "/" slash); _{{ }} and ^{{ }} for subscripts and superscripts (r_{{i}}, \sigma^{{2}}, P_{{0}}); \bar{{r}} for a mean, \hat{{x}} for an estimate; Greek letters as commands (\sigma, \rho, \beta, \mu); \sum for summation (with limits if the material shows them, e.g. \sum_{{i=1}}^{{n}}); \sqrt{{ }} for roots; \times for multiplication. NEVER spell a symbol as a word (not "rbar", "sigma", "sqrt", "sum"). Example: "FORMULA: \sigma^{{2}} = \frac{{\sum (r_{{i}} - \bar{{r}})^{{2}}}}{{n - 1}} KEY: r_i return, r-bar mean return, n observations". The KEY part is plain words.
+- FORMULA ACCURACY: copy each formula from the material exactly. Be meticulous about brackets - what is inside versus outside each bracket, and which terms an exponent, root, sum or division applies to. Write explicit brackets and braces wherever the structure could be misread, e.g. "PV = \frac{{C}}{{(1 + r)^{{t}}}}" (the whole (1 + r) is raised to t, then divides C), not "PV = C / 1 + r^t". Never rearrange, simplify or merge formulas.
 - Plain text only: no markdown symbols, no page/slide citations, no commentary about these instructions — output the brief and nothing else.
 
 THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
@@ -719,10 +720,12 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             "TEXT RULES:\n"
             "- Keep text minimal: one bold title, one short heading per section, and at "
             "most 3 short bullet phrases per section. No paragraphs, no small print.\n"
-            "- TYPOGRAPHY: one clean, modern geometric sans-serif family throughout "
-            "(in the style of Inter, Helvetica Neue or Roboto) - no serif, script, "
-            "handwritten, condensed, decorative or display fonts anywhere, and never "
-            "mix families. Regular weight for body text, semi-bold for section "
+            "- TYPOGRAPHY: one clean, modern geometric sans-serif family for ALL "
+            "text (in the style of Inter, Helvetica Neue or Roboto) - no serif, "
+            "script, handwritten, condensed, decorative or display fonts for text, "
+            "and never mix text families. The ONLY exception is mathematics: "
+            "formulas are set in a classic LaTeX-style math font (Computer Modern / "
+            "Latin Modern look: serif, italic variables, upright operators). Regular weight for body text, semi-bold for section "
             "headings, bold only for the main title. Consistent sizes: one size for "
             "all section headings, one for all bullet text, one for formula "
             "callouts. Dark charcoal text on white, left-aligned, generous line "
@@ -733,17 +736,28 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             "FORMULAS: Lines marked FORMULA belong inside the section they appear "
             "in - do NOT gather them into a separate formulas panel. Within each "
             "section, show its formula(s) as a callout: a white or very pale grey box "
-            "with a thin red left border, the formula large in charcoal, exactly "
-            "as written in general symbolic form (letters, not numbers), with the "
-            "short symbol key in small grey text beneath. Formulas must be typeset with complete "
-            "accuracy: reproduce every bracket exactly, keeping the same terms inside "
-            "and outside each bracket as in the brief, and make it visually clear "
-            "which terms an exponent, fraction bar, root or summation applies to "
-            "(e.g. in PV = C / (1 + r)^t the whole (1 + r) is raised to the power t "
-            "and C is divided by that). Do not drop, add, move or nest brackets, and "
-            "do not alter, merge or invent symbols, subscripts or exponents. If a "
-            "formula cannot be rendered exactly, render it as plain text exactly as "
-            "written in the brief rather than approximating it.\n\n"
+            "with a thin red left border, the formula large in charcoal, with the "
+            "short symbol KEY in small grey sans-serif text beneath.\n"
+            "MATHS TYPESETTING: each FORMULA in the brief is written in LaTeX "
+            "notation. Render it as properly typeset mathematics, exactly as a "
+            "LaTeX document would print it - in a Computer Modern / Latin Modern "
+            "style math font, with italic single-letter variables and upright "
+            "operators and numbers. Specifically:\n"
+            "- Every division (frac) is a STACKED fraction: numerator on the top "
+            "line, a horizontal fraction bar, denominator on the bottom line - "
+            "never an inline slash.\n"
+            "- Subscripts and superscripts are true small raised/lowered glyphs.\n"
+            "- A bar over a letter for a mean (r with a bar above it), a hat for an "
+            "estimate; Greek letters as their proper glyphs; summation as a large "
+            "sigma sign with any limits above and below; square roots with a "
+            "radical sign spanning the whole radicand.\n"
+            "- NEVER print LaTeX source (no backslashes, braces or command names) "
+            "and NEVER spell symbols as words (no 'rbar', 'sigma', 'sqrt', 'sum').\n"
+            "- Reproduce every bracket exactly, keeping the same terms inside and "
+            "outside each bracket as in the brief, and make it visually clear "
+            "which terms an exponent, fraction bar, root or summation applies to. "
+            "Do not drop, add, move or nest brackets, and do not alter, merge or "
+            "invent symbols, subscripts or exponents.\n\n"
             "STRICT CONTENT RULES: This is a revision record of key concepts and "
             "general formulas. Show ONLY information contained in the brief. Do not "
             "add facts, formulas, examples or explanations from outside it. Show NO "
@@ -781,7 +795,7 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
         review_prompt = f"""You are proofreading a one-page revision infographic that was generated from the REVISION BRIEF below. Inspect the image carefully and report every problem that would mislead a student or that breaks the required style.
 
 CHECK, IN THIS ORDER OF IMPORTANCE:
-1. FORMULAS: every formula shown must match the brief EXACTLY - the same symbols, subscripts and exponents, and the same bracket placement (the same terms inside and outside each bracket, and the correct scope of every exponent, fraction or root). Any deviation is an issue. State the exact correct formula as written in the brief.
+1. FORMULAS: every formula shown must be the brief's LaTeX formula rendered as properly typeset mathematics: the same symbols, subscripts and exponents, and the same bracket placement (the same terms inside and outside each bracket, and the correct scope of every exponent, fraction or root). ALSO flag: any division shown inline with a slash instead of a stacked fraction (numerator over a horizontal bar over denominator); any symbol spelled as a word (e.g. 'rbar', 'sigma', 'sqrt') instead of the proper glyph (bar over the letter, Greek letter, radical sign); any visible LaTeX source (backslashes, braces, command names); formulas set in a plain sans-serif font instead of a LaTeX-style (Computer Modern) math font. Any deviation is an issue. In 'correction', give the exact formula from the brief and say how it must be typeset.
 2. TEXT ACCURACY: misspelled, garbled, truncated or unreadable words; headings or bullets that say something the brief does not.
 3. CONTENT RULES: any numerical worked example, practice question, substituted numbers or calculated answer (none are allowed); any fact, formula or example not in the brief; any section of the brief missing entirely.
 4. STYLE: a red / pink / coloured page background, card background, band or colour wash (the page and cards must be white; red may appear only as headings, thin rules, arrows, outlines and small badges - never as a fill behind text or formulas); any accent colour other than red (e.g. navy or blue fills); serif, script or decorative fonts; flat icons or clip-art used as a section's main visual instead of photorealistic imagery or a diagram.
@@ -840,7 +854,11 @@ REVISION BRIEF:
             f"CORRECTIONS:\n{corrections}\n\n"
             "RULES WHILE EDITING: formulas must be typeset with complete accuracy - "
             "exactly the symbols, subscripts, exponents and bracket placement given in "
-            "the correction, with nothing dropped, added or rearranged. Text must be "
+            "the correction, with nothing dropped, added or rearranged - as proper "
+            "LaTeX-style mathematics (Computer Modern look): stacked fractions with a "
+            "horizontal bar, true sub/superscripts, bars and hats over letters, Greek "
+            "glyphs, a large sigma for sums; never a slash for division, never symbols "
+            "spelled as words, never visible LaTeX source. Text must be "
             "spelled correctly and fully legible. Show no numerical worked examples or "
             "calculated answers. The page and all cards must stay pure white with no "
             "red or coloured tint or fills; the only accent is deep red used for "

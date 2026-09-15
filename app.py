@@ -551,30 +551,46 @@ def run_key_concepts_generation_background(task_id, pdf_content, doc_type=None):
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 # ---- "Email me the infographic as a PDF when it is ready" requests ----
-# task_id -> (email, document_name). Delivered by the background thread once the
-# image is complete; if the task already finished, the route sends immediately.
-_INFOGRAPHIC_EMAIL_REQUESTS = {}
-_INFOGRAPHIC_EMAIL_LOCK = threading.Lock()
+# Stored in the shared PostgreSQL session store keyed by task_id (NOT in process
+# memory): the request may be handled by a different gunicorn worker from the
+# one running the generation thread, and the student may close the tab. The
+# background thread delivers the PDF once the image is complete; if the task has
+# already finished, the route sends immediately.
+_INFOGRAPHIC_EMAIL_CONTENT_TYPE = 'infographic_email_request'
 
 
 def register_infographic_email(task_id, email, document_name=None):
-    with _INFOGRAPHIC_EMAIL_LOCK:
-        _INFOGRAPHIC_EMAIL_REQUESTS[task_id] = (email, document_name)
+    with app.app_context():
+        StorageManager().store_content(task_id, _INFOGRAPHIC_EMAIL_CONTENT_TYPE,
+                                       {'email': email, 'document_name': document_name})
 
 
 def pop_infographic_email(task_id):
-    with _INFOGRAPHIC_EMAIL_LOCK:
-        return _INFOGRAPHIC_EMAIL_REQUESTS.pop(task_id, None)
+    """Return {'email', 'document_name'} for the task and remove it, or None."""
+    with app.app_context():
+        storage = StorageManager()
+        req = storage.retrieve_content(task_id, _INFOGRAPHIC_EMAIL_CONTENT_TYPE)
+        if req:
+            try:
+                storage.delete_content(task_id, _INFOGRAPHIC_EMAIL_CONTENT_TYPE)
+            except Exception as e:
+                logging.debug(f"INFOGRAPHIC EMAIL: could not delete request for {task_id}: {e}")
+        return req if isinstance(req, dict) and req.get('email') else None
 
 
 def _deliver_pending_infographic_email(task_id, image_b64):
     """Send the finished infographic to any address registered for this task."""
-    req = pop_infographic_email(task_id)
-    if not req or not image_b64:
+    if not image_b64:
         return
-    email, document_name = req
     try:
-        email_infographic(email, image_b64, document_name=document_name)
+        req = pop_infographic_email(task_id)
+    except Exception as e:
+        logging.error(f"INFOGRAPHIC EMAIL: could not read pending request for task {task_id}: {e}")
+        return
+    if not req:
+        return
+    try:
+        email_infographic(req['email'], image_b64, document_name=req.get('document_name'))
         logging.info(f"INFOGRAPHIC EMAIL: delivered PDF for task {task_id}")
     except Exception as e:
         logging.error(f"INFOGRAPHIC EMAIL: delivery for task {task_id} failed: {e}")
@@ -614,7 +630,10 @@ def run_infographic_generation_background(task_id, pdf_content, doc_type=None):
 
     except Exception as e:
         logging.error(f"INFOGRAPHIC BACKGROUND: Error in task {task_id}: {e}")
-        pop_infographic_email(task_id)
+        try:
+            pop_infographic_email(task_id)
+        except Exception:
+            pass
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 def run_chat_response_background(task_id, user_message, pdf_content, conversation_history, doc_type=None):
@@ -2288,8 +2307,16 @@ def email_infographic_route():
             task = get_task_status(task_id)
             if task and task.get('status') == 'pending':
                 register_infographic_email(task_id, email, document_name)
-                logging.info(f"INFOGRAPHIC EMAIL: scheduled delivery for task {task_id}")
-                return jsonify({'status': 'scheduled', 'email': email})
+                # The task may have completed while we were registering (the
+                # background thread checks for a request only once, right after
+                # finishing). Re-check; if it is done now, send immediately.
+                task = get_task_status(task_id)
+                if not (task and task.get('status') == 'complete'):
+                    logging.info(f"INFOGRAPHIC EMAIL: scheduled delivery for task {task_id}")
+                    return jsonify({'status': 'scheduled', 'email': email})
+                if pop_infographic_email(task_id) is None:
+                    # Background thread already took the request and is sending it
+                    return jsonify({'status': 'scheduled', 'email': email})
             if task and task.get('status') == 'complete' and task.get('success') and task.get('data'):
                 image_b64 = task['data']
 

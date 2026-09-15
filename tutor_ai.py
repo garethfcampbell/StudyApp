@@ -611,17 +611,17 @@ STRICT REQUIREMENTS:
 - Start with a single title line naming the subject of the material.
 - Then give 4-6 clearly titled sections (fewer, broader sections are better than many small ones). In each section give AT MOST 3 bullet points, each a short phrase of no more than 12 words - only the single most important concepts, definitions, formulas and takeaways. This is a visual poster, not notes: leave out detail.
 - After each section's bullets add ONE line starting "VISUAL:" that suggests either a diagram (e.g. "VISUAL: diagram - timeline of bond cash flows from purchase to maturity") or a photorealistic illustration (e.g. "VISUAL: photo - a trading floor with screens of price charts") that depicts an idea genuinely present in that section. Diagrams must only show relationships or structures described in the material, never invented data.
-- Write formulas in simple plain-text notation (e.g. r = (P1 - P0) / P0), NOT LaTeX, and include a formula only if it is central.
+- If the material contains equations, include the main equations a student must learn for the exam INSIDE the section they belong to (not in a separate formulas section), each on its own line starting "FORMULA:" in GENERAL symbolic form with a few-word note of what each symbol means (e.g. "FORMULA: F = P(1 + r)^t  - F future value, P present value, r rate, t years"). Write formulas in simple plain-text notation, NOT LaTeX. Include at most 6 formulas across the whole brief - the ones that matter most - and no more than 2 per section. A FORMULA line does not count towards the 3-bullet limit.
 - Plain text only: no markdown symbols, no page/slide citations, no commentary about these instructions — output the brief and nothing else.
 
-SOURCE FIDELITY (MOST IMPORTANT):
-- Use ONLY information that actually appears in the uploaded material. Do NOT add outside knowledge, extra formulas, examples, or explanations that are not in the document.
-- If the material contains a calculation question, exercise, or worked example, report the question and the figures it gives exactly as stated. Do NOT calculate, solve, or estimate an answer yourself.
-- Only include an answer, result, or worked solution if it is explicitly shown in the material, and then reproduce it as given.
-- If a question in the material is left unanswered, present it as an unanswered question (e.g. "Question: ...") rather than filling in a result.
+THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
+- The poster is a record of the key concepts and general formulas a student needs for the exam. Show ideas and general equations, NEVER specific numerical worked examples.
+- Do NOT include worked examples, practice questions, exercise figures or their answers. For instance, show "F = P(1 + r)^t" but do NOT show "when P = 100, r = 5% and t = 2 the answer is 110.25". If the material only presents a formula through a numerical example, restate it in general symbolic form.
+- Do NOT calculate anything yourself and do NOT invent formulas, facts or examples that are not in the material.
+- Use ONLY information that actually appears in the uploaded material - no outside knowledge.
 - VISUAL suggestions must also come only from what the material discusses - do not suggest imagery for topics it does not cover.
 
-{self._material_guidance()}UPLOADED MATERIAL:
+{self._infographic_material_note()}UPLOADED MATERIAL:
 {full_context}"""
         messages = [{"role": "user", "content": summary_prompt}]
 
@@ -644,6 +644,20 @@ SOURCE FIDELITY (MOST IMPORTANT):
             summary = summary[:char_limit]
         logging.info(f"INFOGRAPHIC: Lecture condensed to {len(summary)} chars for the image prompt")
         return summary
+
+    def _infographic_material_note(self):
+        """Material-type note for the infographic brief. Question sets become a record of the
+        concepts and formulas the questions require, never the questions or their figures."""
+        if self.is_research_article():
+            return self._RESEARCH_GUIDANCE
+        if self.is_question_set():
+            return (
+                f"MATERIAL TYPE: The uploaded document is {self._material_description()}. Do NOT list the "
+                "questions or their figures. Instead, extract the concepts, definitions and general "
+                "formulas a student would need to know to answer them, and present those as the "
+                "revision content.\n\n"
+            )
+        return ""
 
     async def generate_infographic_async(self):
         """Generate a one-page revision-guide infographic for the current
@@ -682,12 +696,17 @@ SOURCE FIDELITY (MOST IMPORTANT):
             "correctly and be readable.\n"
             "- Include every section of the brief, but let visuals carry the meaning "
             "wherever they can replace words.\n\n"
-            "STRICT CONTENT RULES: Show ONLY information contained in the brief. "
-            "Do not add facts, formulas, examples or explanations from outside it. "
-            "If the brief contains a calculation question, exercise or example, "
-            "display the question and its given figures exactly as written and "
-            "do NOT calculate or invent an answer. Show an answer or result only "
-            "if the brief itself states it, and reproduce it exactly.\n\n"
+            "FORMULAS: Lines marked FORMULA belong inside the section they appear "
+            "in - do NOT gather them into a separate formulas panel. Within each "
+            "section, show its formula(s) as a highlighted callout, large and exactly "
+            "as written in general symbolic form (letters, not numbers), with the "
+            "short symbol key beneath. Formulas must be typeset accurately - no "
+            "altered, merged or invented symbols.\n\n"
+            "STRICT CONTENT RULES: This is a revision record of key concepts and "
+            "general formulas. Show ONLY information contained in the brief. Do not "
+            "add facts, formulas, examples or explanations from outside it. Show NO "
+            "numerical worked examples, practice questions or calculated answers - "
+            "general equations only, never numbers substituted into them.\n\n"
             f"REVISION BRIEF:\n{notes_brief}"
         )
 

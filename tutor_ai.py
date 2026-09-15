@@ -1468,7 +1468,9 @@ End your response with: "Would you like to explore any of these topics in more d
             - NEVER use HTML tags - only use markdown formatting
             - ONLY USE HYPHENS FOR BULLETS (-) - never use asterisks (*) or dots (•)
             - Each bullet point must be on its own line with consistent hyphen formatting
-            - Use ONLY plain English words to describe ALL mathematical concepts
+            - Use ONLY plain English words to describe mathematical concepts and symbols (this rule is about formulas and symbols, NOT numbers)
+            - NUMBERS ARE ALWAYS DIGITS: write years, percentages, marks, question numbers and counts as digits - "1973", "60-69%", "[15 marks]", "Question 2" - NEVER as words ("nineteen seventy-three" is wrong)
+            - CITATION FORMAT: "Author(s) (Year), Title" with the year in digits, e.g. "Black and Scholes (1973), The Pricing of Options and Corporate Liabilities"
             - Always respond in plain text with markdown formatting only
 
             TASK: Run ONE round of essay-question practice, based strictly on the study material provided.
@@ -1500,9 +1502,7 @@ You MUST use the following structure and formatting precisely.
 **Why this answer scores highly** - 1-2 sentences explaining, with reference to the QUB Conceptual Equivalents Scale, what lifts it from a Lower Second (describing the concept) to an Upper Second (evaluating strengths and limitations with evidence) to a First (weighing competing perspectives with insight, well-chosen literature and examples).
 
 
-**YOUR QUESTION**
-
-YOUR QUESTION: [A DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper. Write it on this single line after the words "YOUR QUESTION:".]
+**YOUR QUESTION:** [A DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper. Write the question on the SAME line as the bold label, i.e. "**YOUR QUESTION:** <question>" - do not add a separate heading or repeat the words YOUR QUESTION.]
 
 **Hints** - 2-3 hyphen bullets naming which parts of the material (slide/page citations for lecture notes; for an exam paper, the concepts the question tests) to draw on and what kind of analysis is expected. Do NOT give the answer.
 
@@ -1518,7 +1518,7 @@ Write your answer in the box below (aim for 300-500 words - bullet points are fi
 STUDY MATERIAL (the module content the question is based on):
 {context_truncated}
 
-THE PRACTICE ROUND SHOWN TO THE STUDENT (the question they were asked is the line beginning "YOUR QUESTION:"):
+THE PRACTICE ROUND SHOWN TO THE STUDENT (the question they were asked is the line containing "YOUR QUESTION:"):
 {essay_round_text}
 
 STUDENT'S ANSWER:
@@ -1532,7 +1532,8 @@ If the answer is empty, off-topic or says "I don't know", say so kindly, give th
 
 CRITICAL FORMATTING REQUIREMENTS:
 - Use markdown formatting for emphasis: **bold text**, *italic text*
-- ABSOLUTELY NO MATHEMATICAL NOTATION (no LaTeX, no $ signs, no mathematical symbols) - plain English words only
+- ABSOLUTELY NO MATHEMATICAL NOTATION (no LaTeX, no $ signs, no mathematical symbols) - describe formulas and symbols in plain English words
+- NUMBERS ARE ALWAYS DIGITS: years, percentages, marks and counts as digits ("1973", "60-69%"), never as words; citations as "Author(s) (Year), Title"
 - NEVER use HTML tags
 - ONLY USE HYPHENS FOR BULLETS (-), each bullet on its own line
 - Main heading in block capitals with bold and italic like ***THIS***; sub-headings in block capitals with bold like **THIS**

@@ -70,7 +70,7 @@
                 </div>
                 <div class="home-feature">
                     <i class="fas fa-image"></i>
-                    <div><strong>Infographic guide</strong><span>A one-page visual revision poster</span></div>
+                    <div><strong>Revision infographic</strong><span>A one-page visual revision poster</span></div>
                 </div>
                 <div class="home-feature">
                     <i class="fas fa-comments"></i>
@@ -224,18 +224,18 @@
                     </button>
                 </div>
                 <div class="col-md-6 mb-2">
-                    <button class="btn btn-outline-primary w-100" onclick="quickAction('Calculation questions')" style="color: #D6000D; border-color: #D6000D;">
-                        <i class="fas fa-calculator me-2"></i>Calculation questions
-                    </button>
-                </div>
-                <div class="col-md-6 mb-2">
                     <button class="btn btn-outline-primary w-100" onclick="quickAction('Essay question')" style="color: #D6000D; border-color: #D6000D;">
                         <i class="fas fa-pen me-2"></i>Essay questions
                     </button>
                 </div>
                 <div class="col-md-6 mb-2">
+                    <button class="btn btn-outline-primary w-100" onclick="quickAction('Calculation questions')" style="color: #D6000D; border-color: #D6000D;">
+                        <i class="fas fa-calculator me-2"></i>Calculation questions
+                    </button>
+                </div>
+                <div class="col-md-6 mb-2">
                     <button class="btn btn-outline-primary w-100" onclick="aiTutor.startInfographic()" style="color: #D6000D; border-color: #D6000D;">
-                        <i class="fas fa-image me-2"></i>Infographic revision guide
+                        <i class="fas fa-image me-2"></i>Revision infographic
                     </button>
                 </div>
             </div>
@@ -1235,9 +1235,18 @@ function addNewMessage(role, content) {
                 }
             }
 
-            // Essay practice: switch to the essay answer box
+            // Essay practice: switch to the essay answer box, then (as for
+            // calculation questions) bring the TOP of the new question into view
+            // rather than the answer box at the bottom. Realign a few times while
+            // layout settles.
             if (streamAction === 'essay' && fullText && window.aiTutor && aiTutor.showEssayAnswerInput) {
                 aiTutor.showEssayAnswerInput();
+                const alignEssay = () => {
+                    messageDiv.scrollIntoView({ block: 'start' });
+                    messagesDiv.scrollTop = Math.max(0, messagesDiv.scrollTop - 10);
+                };
+                alignEssay();
+                [200, 600, 1200].forEach(ms => setTimeout(alignEssay, ms));
             }
 
             // Set button to active state (green) to show success

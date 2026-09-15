@@ -124,7 +124,7 @@ class AITutor {
         }
         const submitBtn = document.getElementById('essaySubmitBtn');
         if (submitBtn) submitBtn.disabled = false;
-        section.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        // No scroll here: the caller scrolls to the top of the question (see streamQuickAction)
     }
 
     hideEssayAnswerInput() {
@@ -1000,7 +1000,7 @@ class AITutor {
                         </div>
                         <small class="text-muted mt-1">
                             <i class="fas fa-paint-brush me-1"></i>
-                            This takes a few minutes (we check it before showing it). No need to wait: enter your email below and we will send it as a PDF.
+                            This may take a few minutes to generate, or you can enter your email below and we will send it as a PDF.
                         </small>
                     </div>
                 </div>

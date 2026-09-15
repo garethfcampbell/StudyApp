@@ -5,13 +5,13 @@
     <!-- Sidebar -->
     <div class="col-md-4">
         <div class="sidebar">
-            <h4><i class="fas fa-book me-2"></i>Lecture Notes</h4>
+            <h4><i class="fas fa-book me-2"></i>Study Material</h4>
             
             <!-- File Upload Area -->
-            <div class="file-upload-area" id="fileUploadArea" role="button" tabindex="0" aria-label="Upload lecture notes (PDF or PowerPoint)">
+            <div class="file-upload-area" id="fileUploadArea" role="button" tabindex="0" aria-label="Upload lecture notes, an exam paper or tutorial questions (PDF or PowerPoint)">
                 <div class="upload-content">
                     <i class="fas fa-cloud-upload-alt fa-3x text-muted mb-3"></i>
-                    <h5>Upload your lecture notes</h5>
+                    <h5>Upload lecture notes, an exam paper or tutorial questions</h5>
                     <p class="text-muted">Drag and drop or click to select PDF or PowerPoint files</p>
                     <input type="file" id="fileInput" accept=".pdf,.pptx" style="display: none;">
                 </div>
@@ -50,7 +50,7 @@
                     
                     
                     <ul>
-                        <li><strong><i class="fas fa-book me-2"></i>Upload your Lecture Notes</strong> - accepts PDFs and PowerPoint files of your QUB lecture notes to instantly create a personalized tutor</li>
+                        <li><strong><i class="fas fa-book me-2"></i>Upload your Lecture Notes, Exam Paper or Tutorial Questions</strong> - accepts PDFs and PowerPoint files of your QUB lecture notes, past exam/test papers, or tutorial/exercise/homework question sheets to instantly create a personalized tutor</li>
                         <li><strong><i class="fas fa-lightbulb me-2"></i>Key Concept Explanations</strong> - Get clear explanations of complex topics with real-world examples</li>
                         <li><strong><i class="fas fa-chart-bar me-2"></i>Calculation Questions</strong> - Practice calculations with worked examples and step-by-step solutions</li>
                         <li><strong><i class="fas fa-bullseye me-2"></i>Interactive Quizzes</strong> - Test your knowledge with retrieval practice questions</li>
@@ -805,7 +805,11 @@ function addNewMessage(role, content) {
                                             <h6 class="mb-1">✅ Successfully loaded: ${escapeHtml(data.filename)}</h6>
                                             <small>
                                                 <i class="fas fa-robot me-1"></i>
-                                                Upload successful! Executive summary will be generated automatically.
+                                                ${data.document_type === 'exam_paper'
+                                                    ? 'Exam paper detected - the tutor will focus on the topics its questions test.'
+                                                    : data.document_type === 'exercise_set'
+                                                        ? 'Tutorial / homework questions detected - the tutor will focus on the topics they cover.'
+                                                        : 'Upload successful!'} Executive summary will be generated automatically.
                                             </small>
                                         </div>
                                     </div>

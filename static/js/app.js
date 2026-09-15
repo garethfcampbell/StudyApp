@@ -898,7 +898,7 @@ class AITutor {
         }
         
         // Add completion message
-        this.addMessage('assistant', '🎯 Quiz completed! You can start another quiz or ask me any questions about your lecture notes.');
+        this.addMessage('assistant', '🎯 Quiz completed! You can start another quiz or ask me any questions about your study material.');
     }
     
     async startInfographic() {

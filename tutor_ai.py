@@ -282,10 +282,11 @@ class TutorAI:
             raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
 
         self.context = None
+        self.doc_type = None  # 'exam_paper', 'exercise_set', 'lecture_notes' or None (unknown)
         self.conversation_history = []
 
         # System prompt for the AI tutor
-        self.system_prompt = r"""You are an intelligent and patient AI tutor. Your role is to help students learn and understand their lecture notes effectively.
+        self.system_prompt = r"""You are an intelligent and patient AI tutor. Your role is to help students learn and understand their study material (lecture notes, past exam/test papers, or tutorial/exercise/homework question sheets) effectively.
 
         Key behaviors:
         - Be encouraging and supportive
@@ -294,8 +295,8 @@ class TutorAI:
         - Ask follow-up questions to check for understanding
         - Provide practice questions and exercises when appropriate
         - Adapt your teaching style to the student's needs
-        - Always base your responses on the provided lecture notes context
-        - If asked about something not in the notes, acknowledge this and provide general guidance
+        - Always base your responses on the provided study material context (lecture notes, an exam paper, or a tutorial/homework question sheet)
+        - If asked about something not in the material, acknowledge this and provide general guidance
         - Use emojis sparingly but appropriately to maintain engagement
 
         CRITICAL FORMATTING REQUIREMENTS FOR CHAT:
@@ -307,7 +308,7 @@ class TutorAI:
           * Currency: use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
           * Use \begin{align*} with \\[6pt] line spacing between lines for multi-step calculations
           * Do NOT use LaTeX spacing commands (\;, \!, \,, \:) or an overline/vinculum
-        • **CITATIONS:** The lecture notes contain markers like "--- Page 4 ---" or "--- Slide 12 ---". When your answer draws on a specific part of the notes, cite it naturally at the end of the relevant sentence, e.g. "(see Slide 12)" or "(Pages 4-5)". Only cite page or slide numbers that actually appear in the markers - NEVER invent them. Do not quote the markers themselves.
+        • **CITATIONS:** The study material contains markers like "--- Page 4 ---" or "--- Slide 12 ---". When your answer draws on a specific part of the notes, cite it naturally at the end of the relevant sentence, e.g. "(see Slide 12)" or "(Pages 4-5)". Only cite page or slide numbers that actually appear in the markers - NEVER invent them. Do not quote the markers themselves.
         • Use markdown formatting (**bold**, *italic*, `code`, bullet points with hyphens)
         • For bold and italic, use ONLY asterisk syntax (**bold**, *italic*) - NEVER underscore syntax (__bold__, _italic_)
         • **HEADING FORMATTING**: Main headings in your responses must be in BLOCK CAPITALS and formatted with both bold and italic markdown: ***LIKE THIS***.
@@ -382,7 +383,7 @@ class TutorAI:
             # Nothing scored: the question doesn't match page text
             return self._get_truncated_context(limit)
         logging.info(f"CHAT CONTEXT: selected {len(keep)}/{len(chunks)} pages ({used} chars) for query")
-        return ("[NOTE: only the pages of the lecture notes most relevant to the "
+        return ("[NOTE: only the pages of the study material most relevant to the "
                 "student's question are included below; the document has more pages "
                 "that are omitted here.]\n\n"
                 + "\n".join(chunks[i] for i in sorted(keep)))
@@ -391,7 +392,7 @@ class TutorAI:
         """Build the standard system+user message pair for a document feature."""
         truncated_context = self._get_truncated_context()
         return [
-            {"role": "system", "content": f"{persona}\n\nLecture Notes:\n{truncated_context}"},
+            {"role": "system", "content": f"{persona}\n\n{self._material_guidance()}{self._material_label()}:\n{truncated_context}"},
             {"role": "user", "content": prompt},
         ]
 
@@ -602,17 +603,23 @@ class TutorAI:
         images API prompt budget, so the infographic covers the whole lecture
         rather than just whatever survives a head/tail truncation."""
         full_context = self._get_truncated_context()
-        summary_prompt = rf"""Condense the following university lecture notes into a revision brief that will be handed to an image-generation model to design a one-page revision infographic.
+        summary_prompt = rf"""Condense the following uploaded university material (lecture slides, notes, a test/exam paper, or a tutorial/exercise/homework question sheet) into a revision brief that will be handed to an image-generation model to design a one-page revision infographic.
 
 STRICT REQUIREMENTS:
 - The brief MUST be under {char_limit} characters in total.
-- Cover the WHOLE lecture from beginning to end — every major topic must appear; do not stop early or skip later sections.
-- Start with a single title line naming the subject of the lecture.
+- Cover the WHOLE document from beginning to end — every major topic must appear; do not stop early or skip later sections.
+- Start with a single title line naming the subject of the material.
 - Then give 4-8 clearly titled sections. In each section list the key concepts, definitions, essential formulas and takeaways as short bullet points.
 - Write formulas in simple plain-text notation (e.g. r = (P1 - P0) / P0), NOT LaTeX.
 - Plain text only: no markdown symbols, no page/slide citations, no commentary about these instructions — output the brief and nothing else.
 
-LECTURE NOTES:
+SOURCE FIDELITY (MOST IMPORTANT):
+- Use ONLY information that actually appears in the uploaded material. Do NOT add outside knowledge, extra formulas, examples, or explanations that are not in the document.
+- If the material contains a calculation question, exercise, or worked example, report the question and the figures it gives exactly as stated. Do NOT calculate, solve, or estimate an answer yourself.
+- Only include an answer, result, or worked solution if it is explicitly shown in the material, and then reproduce it as given.
+- If a question in the material is left unanswered, present it as an unanswered question (e.g. "Question: ...") rather than filling in a result.
+
+{self._material_guidance()}UPLOADED MATERIAL:
 {full_context}"""
         messages = [{"role": "user", "content": summary_prompt}]
 
@@ -654,13 +661,19 @@ LECTURE NOTES:
         prompt = (
             "Create a detailed infographic which provides a detailed revision "
             "guide, which is aesthetically beautiful, for the subject of the "
-            "university lecture revision brief below. Organise the key "
+            "university revision brief below. Organise the key "
             "concepts, definitions, formulas and takeaways into clearly "
             "titled sections with a strong visual hierarchy, icons and simple "
             "diagrams, so the result works as a one-page revision poster. "
             "Include every section of the brief. All text must be legible and "
             "factually faithful to the brief.\n\n"
-            f"LECTURE REVISION BRIEF:\n{notes_brief}"
+            "STRICT CONTENT RULES: Show ONLY information contained in the brief. "
+            "Do not add facts, formulas, examples or explanations from outside it. "
+            "If the brief contains a calculation question, exercise or example, "
+            "display the question and its given figures exactly as written and "
+            "do NOT calculate or invent an answer. Show an answer or result only "
+            "if the brief itself states it, and reproduce it exactly.\n\n"
+            f"REVISION BRIEF:\n{notes_brief}"
         )
 
         client = _get_async_openai_client()
@@ -679,10 +692,109 @@ LECTURE NOTES:
         logging.info(f"INFOGRAPHIC: Image received ({len(image_b64)} base64 chars)")
         return image_b64
 
-    def set_context(self, pdf_content):
+    def set_context(self, pdf_content, doc_type=None):
 
         self.context = pdf_content
+        self.doc_type = doc_type  # 'exam_paper', 'exercise_set', 'lecture_notes' or None (unknown)
         self.conversation_history = []  # Reset conversation when new context is set
+
+    # Cheap textual cues used only when no LLM classification has been stored
+    # for the session. Exam cues: marks, time limits, "Answer ALL questions"...
+    _EXAM_HINT_RE = re.compile(
+        r"(\[\s*\d+\s*marks?\s*\]|\(\s*\d+\s*marks?\s*\)|answer\s+all\s+questions|"
+        r"answer\s+any\s+\w+\s+questions|time\s+allowed|\bquestion\s+\d+\b|"
+        r"\bq\s*\d+\s*[.)]|total\s+marks|this\s+paper|examination|exam\s+paper)",
+        re.I,
+    )
+    # Strong exam-only cues that override exercise cues.
+    _EXAM_STRONG_RE = re.compile(
+        r"(time\s+allowed|answer\s+all\s+questions|answer\s+any\s+\w+\s+questions|"
+        r"examination|exam\s+paper|total\s+marks|invigilat)", re.I)
+    # Tutorial / exercise / homework / problem-set cues.
+    _EXERCISE_HINT_RE = re.compile(
+        r"(\btutorial\b|\bexercises?\b|\bhomework\b|problem\s+(set|sheet)|worksheet|"
+        r"\bassignment\b|\bseminar\b|practice\s+questions|self[- ]study\s+questions|"
+        r"questions\s+for\s+discussion|\bworkshop\b)", re.I)
+
+    DOC_TYPES = ("exam_paper", "exercise_set", "lecture_notes")
+
+    def _classify_heuristically(self):
+        """Keyword fallback for the document type; caches the result on the instance."""
+        sample = self.context[:20000]
+        exam_hits = len(self._EXAM_HINT_RE.findall(sample))
+        strong_exam = len(self._EXAM_STRONG_RE.findall(sample))
+        exercise_hits = len(self._EXERCISE_HINT_RE.findall(sample))
+        if exercise_hits >= 2 and strong_exam == 0:
+            self.doc_type = "exercise_set"
+        elif exam_hits >= 4:
+            self.doc_type = "exam_paper"
+        else:
+            self.doc_type = "lecture_notes"
+        logging.info(f"DOC TYPE: heuristic classified document as {self.doc_type} "
+                     f"({exam_hits} exam cues, {strong_exam} strong, {exercise_hits} exercise cues)")
+        return self.doc_type
+
+    def get_doc_type(self):
+        """'exam_paper', 'exercise_set' or 'lecture_notes' (never None once context is set)."""
+        if self.doc_type in self.DOC_TYPES:
+            return self.doc_type
+        if not self.context:
+            return "lecture_notes"
+        return self._classify_heuristically()
+
+    def is_exam_paper(self):
+        return self.get_doc_type() == "exam_paper"
+
+    def is_exercise_set(self):
+        """True for tutorial sheets, exercise sets, homework and problem sets."""
+        return self.get_doc_type() == "exercise_set"
+
+    def is_question_set(self):
+        """True when the document is made up of questions (exam paper OR exercise set)."""
+        return self.get_doc_type() in ("exam_paper", "exercise_set")
+
+    def _material_label(self):
+        return {"exam_paper": "Exam Paper",
+                "exercise_set": "Tutorial / Exercise Questions"}.get(self.get_doc_type(), "Lecture Notes")
+
+    def _material_noun(self):
+        """Short lower-case noun for use inside prompt sentences."""
+        return {"exam_paper": "exam paper",
+                "exercise_set": "exercise sheet"}.get(self.get_doc_type(), "lecture notes")
+
+    def _material_description(self):
+        return {"exam_paper": "an EXAM / TEST PAPER",
+                "exercise_set": "a TUTORIAL / EXERCISE / HOMEWORK QUESTION SHEET"}.get(self.get_doc_type(), "")
+
+    def _material_guidance(self):
+        """Extra instructions injected into feature prompts when the document is a set of questions."""
+        if not self.is_question_set():
+            return ""
+        return (
+            f"MATERIAL TYPE: The uploaded document is {self._material_description()} made up of questions, "
+            "not lecture notes. Treat the questions as the syllabus: work from the topics, concepts, "
+            "definitions, formulas and methods that the questions test, and organise your output "
+            "around those topics. Reproduce question wording and any given figures exactly. Do NOT "
+            "calculate, solve or invent answers to the questions, and only state an answer or "
+            "result if the document itself shows it (e.g. a marking scheme, model answer or solutions "
+            "section). You may refer to question numbers, marks and instructions that appear in the "
+            "document.\n\n"
+        )
+
+    def _chat_material_guidance(self):
+        """Question-set guidance for the interactive chat (tutoring, not content generation)."""
+        if not self.is_question_set():
+            return ""
+        return (
+            f"MATERIAL TYPE: The uploaded document is {self._material_description()}, not lecture notes. "
+            "When the student asks about a question from it, explain the concepts and method "
+            "it tests and guide them through it step by step, checking their understanding, rather "
+            "than handing over a complete model answer (this is especially important for homework "
+            "and assessed work). Quote the question's given figures exactly and cite the question "
+            "number (e.g. \"(Question 3)\") instead of a page or slide. If the document includes a "
+            "marking scheme, model answer or solutions, you may use them; otherwise make clear that "
+            "any final figure you reach is your own working, not an official answer.\n\n"
+        )
 
     def clear_context(self):
 
@@ -695,7 +807,7 @@ LECTURE NOTES:
             return None
 
         truncated_context = self._select_relevant_context(user_message)
-        system_content = f"{self.system_prompt}\n\nLecture Notes Context:\n{truncated_context}"
+        system_content = f"{self.system_prompt}\n\n{self._chat_material_guidance()}{self._material_label()} Context:\n{truncated_context}"
 
         if self.conversation_history:
             recent_history = self.conversation_history[-10:]
@@ -712,7 +824,7 @@ LECTURE NOTES:
     async def get_response_async(self, user_message):
 
         if not self.context:
-            return "I need you to upload your lecture notes first before I can help you study! 📚"
+            return "I need you to upload your lecture notes, an exam paper or a tutorial/homework question sheet first before I can help you study! 📚"
 
         messages = self._build_chat_messages(user_message)
 
@@ -756,7 +868,7 @@ LECTURE NOTES:
     async def get_response_stream_async(self, user_message):
         """Stream chat response chunks via an async generator."""
         if not self.context:
-            yield "I need you to upload your lecture notes first before I can help you study! 📚"
+            yield "I need you to upload your lecture notes, an exam paper or a tutorial/homework question sheet first before I can help you study! 📚"
             return
 
         messages = self._build_chat_messages(user_message)
@@ -782,7 +894,7 @@ LECTURE NOTES:
     async def generate_cheat_sheet_async(self):
 
         if not self.context:
-            return "No lecture notes available to create sheet from."
+            return "No study material available to create sheet from."
 
         try:
             messages = self._build_feature_messages(
@@ -824,7 +936,7 @@ LECTURE NOTES:
     async def generate_cheat_sheet_stream_async(self):
         """Streaming version of generate_cheat_sheet_async. Yields text chunks."""
         if not self.context:
-            yield "No lecture notes available to create sheet from."
+            yield "No study material available to create sheet from."
             return
 
         try:
@@ -852,10 +964,10 @@ LECTURE NOTES:
         """Return the summary/cheat sheet prompt text (single source for streaming and non-streaming)."""
         return r"""
 
-Create an executive summary from the lecture notes I provide. Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering the most important ideas - this is a quick-reference revision aid, not exhaustive notes.
+Create an executive summary from the study material I provide (lecture notes, an exam/test paper, or a tutorial/exercise/homework question sheet - for any set of questions, summarise the topics and concepts the questions test, never the answers). Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering the most important ideas - this is a quick-reference revision aid, not exhaustive notes.
 
 ### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
-- **BE SELECTIVE BUT THOROUGH:** Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must know for an exam - leave out restatements and minor variations of the same idea, but make sure every major topic of the lecture is represented.
+- **BE SELECTIVE BUT THOROUGH:** Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must know for an exam - leave out restatements and minor variations of the same idea, but make sure every major topic of the material is represented.
 - **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence.
 - **SHORT OVERVIEW:** The overview must be no more than 3 sentences, written as ONE continuous paragraph on a single line. Do NOT put each sentence on its own line and do NOT insert line breaks anywhere inside the overview.
 - **ONLY USE HYPHENS FOR BULLETS:** You MUST use only hyphens (`-`) for ALL bullet points. Do NOT use asterisks (*), bullet symbols (•), or any other characters. EVERY bullet point must start with a hyphen.
@@ -866,7 +978,7 @@ Create an executive summary from the lecture notes I provide. Your output should
   * Dollar signs around variables: NO $x$, $\delta$, $P_t$, $\alpha$, etc.
   * Backslash notation: NO \(x\), \[equation\], \delta, \alpha, etc.
   * Mathematical symbols: NO √, ∑, ∫, ≤, ≥, ≠, π, etc.
-  * If the lecture notes contain LaTeX like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove the dollar signs)
+  * If the material contains LaTeX like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove the dollar signs)
   * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
   * Use ONLY plain text to describe all mathematical concepts
 
@@ -878,7 +990,7 @@ You MUST use the following structure and formatting precisely.
 
 ***OVERVIEW***
 
-Summarise the main subject/topic of the lecture. Write it in a professional, academic tone suitable for quick review before an exam.
+Summarise the main subject/topic of the material (for an exam paper or question sheet, the areas its questions cover). Write it in a professional, academic tone suitable for quick review before an exam.
 
 ***KEY CONCEPTS***
 
@@ -912,7 +1024,7 @@ End your response with: "Would you like to explore any of these topics in more d
     async def generate_essay_question_async(self):
 
         if not self.context:
-            return "No lecture notes available to create essay question from."
+            return "No study material available to create essay question from."
 
         try:
             messages = self._build_feature_messages(
@@ -954,7 +1066,7 @@ End your response with: "Would you like to explore any of these topics in more d
     async def generate_essay_question_stream_async(self):
         """Streaming version of generate_essay_question_async. Yields text chunks."""
         if not self.context:
-            yield "No lecture notes available to create essay question from."
+            yield "No study material available to create essay question from."
             return
 
         try:
@@ -1000,7 +1112,7 @@ End your response with: "Would you like to explore any of these topics in more d
             **ESSAY QUESTION:**
 
             Create ONE substantial essay question, with several suggested sub-questions, that:
-            - Requires integration of multiple concepts from the lecture notes, and
+            - Requires integration of multiple concepts from the study material (for an exam paper or question sheet, the topics its questions test), and
             - Asks for the citation of additional reading of other academic literature, and
             - Asks for commentary on real-world applications
             - Asks for analysis, evaluation, or application (not just description)
@@ -1016,13 +1128,13 @@ You MUST use the following structure and formatting precisely.
 
 **MAIN QUESTION**
 
-[The primary essay prompt — a single, clearly worded question that integrates multiple concepts from the lecture notes and invites critical analysis]
+[The primary essay prompt — a single, clearly worded question that integrates multiple concepts from the study material and invites critical analysis]
 
 Example format:
 
 *[The question]*
 
-    [2-3 sentences of specific guidance consistent with the structure that will be used for the sub-questions — e.g. "Begin by defining X and Y from the lecture notes, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
+    [2-3 sentences of specific guidance consistent with the structure that will be used for the sub-questions — e.g. "Begin by defining X and Y from the material, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
 
 
 **SUB-QUESTIONS**
@@ -1031,13 +1143,13 @@ The sub-questions should break down the main question into smaller, manageable p
 
 *The sub-question itself*
 
-    A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the lecture notes to draw on, what kind of analysis is expected, and what evidence or examples to include.
+    A specific suggestion explaining what the student should do to answer this sub-question well. Reference which concepts from the material to draw on, what kind of analysis is expected, and what evidence or examples to include.
 
 Example format:
 
 *1: [The question]*
 
-    [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the lecture notes, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
+    [2-3 sentences of specific guidance — e.g. "Begin by defining X and Y from the material, then compare how they interact in the context of Z. Use a real-world example such as... to illustrate your argument."]
 
 *2: [The question]*
 
@@ -1076,12 +1188,12 @@ Provide a suggested essay structure with 3-5 concise, actionable tips for how th
     async def explain_key_concepts_stream_async(self):
         """Streaming version of explain_key_concepts_async. Yields text chunks."""
         if not self.context:
-            yield "No lecture notes available to explain key concepts from."
+            yield "No study material available to explain key concepts from."
             return
 
         try:
             messages = self._build_feature_messages(
-                "You are a patient AI tutor helping students understand the key concepts in their lecture notes.",
+                "You are a patient AI tutor helping students understand the key concepts in their study material (lecture notes, an exam paper or a tutorial/homework question sheet).",
                 self._get_key_concepts_prompt()
             )
 
@@ -1103,14 +1215,14 @@ Provide a suggested essay structure with 3-5 concise, actionable tips for how th
     def _get_key_concepts_prompt(self):
         """Return the key concepts prompt text (single source for streaming and non-streaming)."""
         return r"""
-Identify and briefly explain exactly 5 key concepts from these lecture notes. Present them in a clear, accessible way that helps students understand complex ideas without being condescending.
+Identify and briefly explain exactly 5 key concepts from this study material (for an exam paper or question sheet, the 5 most important concepts its questions test). Present them in a clear, accessible way that helps students understand complex ideas without being condescending.
 
 CRITICAL FORMATTING REQUIREMENTS:
 - **ABSOLUTELY NO MATHEMATICAL NOTATION:** Do NOT use LaTeX formatting, mathematical equations, symbols, or any notation anywhere in your response
   * NO dollar signs around variables: $x$, $\delta$, $P_t$, etc.
   * NO backslash notation: \(x\), \[equation\], etc.
   * NO mathematical symbols: √, ∑, ∫, ≤, ≥, ≠, π, etc.
-  * If the lecture notes contain LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
+  * If the material contains LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
   * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
 - Use only plain text with markdown formatting (bold, italic, bullet points)
 - NEVER use hash heading syntax (#, ##, ###) anywhere in the response
@@ -1165,11 +1277,11 @@ End the overall response with: "Would you like to explore any of these topics in
     async def explain_key_concepts_async(self):
 
         if not self.context:
-            return "No lecture notes available to explain key concepts from."
+            return "No study material available to explain key concepts from."
 
         try:
             messages = self._build_feature_messages(
-                "You are a patient AI tutor helping students understand the key concepts in their lecture notes.",
+                "You are a patient AI tutor helping students understand the key concepts in their study material (lecture notes, an exam paper or a tutorial/homework question sheet).",
                 self._get_key_concepts_prompt()
             )
 
@@ -1318,9 +1430,9 @@ End the overall response with: "Would you like to explore any of these topics in
         try:
             context_truncated = self._get_truncated_context()
 
-            prompt = rf"""Based on these lecture notes, create exactly 15 simple multiple choice questions about the key concepts. Do NOT include any mathematical equations or formulas.
+            prompt = rf"""Based on this study material, create exactly 15 simple multiple choice questions about the key concepts. Do NOT include any mathematical equations or formulas.
 
-{context_truncated}
+{self._material_guidance()}{context_truncated}
 
 CRITICAL INSTRUCTIONS:
 1. Your response must start immediately with {{ and end with }} - NO other characters
@@ -1332,7 +1444,7 @@ CRITICAL INSTRUCTIONS:
 {{
     "questions": [
         {{
-            "question": "What is the main topic of this lecture?",
+            "question": "What is the main topic of this material?",
             "options": ["First answer choice", "Second answer choice", "Third answer choice", "Fourth answer choice"],
             "correct_answer": "Second answer choice",
             "explanation": "Brief explanation without saying 'Correct!' at the beginning"
@@ -1356,7 +1468,7 @@ CRITICAL FORMATTING RULES:
   * NO dollar signs: $x$, $\delta$, $P_t$, etc.
   * NO backslash notation: \(x\), \[equation\], etc.
   * NO mathematical symbols: √, ∑, ∫, ≤, ≥, ≠, π, etc.
-  * If the lecture notes contain LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
+  * If the material contains LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
   * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
 - Use ONLY plain English words to describe all mathematical concepts
 - Use only plain text - no mathematical notation or formulas
@@ -1414,27 +1526,33 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
     # Legacy sync method removed - all quiz operations now use async polling
 
     async def detect_document_type_async(self):
-        """Detect whether the uploaded document is an exam paper or lecture notes."""
+        """Detect whether the uploaded document is an exam paper, a tutorial/exercise/homework
+        question sheet, or lecture notes. Returns 'exam_paper', 'exercise_set' or 'lecture_notes'."""
         if not self.context:
             return "lecture_notes"
 
         try:
             sample = self.context[:8000]
-            prompt = f"""Classify this document as EITHER "exam_paper" or "lecture_notes".
+            prompt = f"""Classify this document as EXACTLY ONE of "exam_paper", "exercise_set" or "lecture_notes".
 
-An exam paper contains numbered questions that ask students to calculate, solve, or evaluate
-specific problems with given numerical data. It typically has marks allocated (e.g. [10 marks]),
-time limits, instructions like "Answer ALL questions", question numbers, and specific numerical
-scenarios for students to work through.
+exam_paper: a formal examination or class test. It contains numbered questions asking students to
+calculate, solve, evaluate or discuss specific problems, and typically has marks allocated
+(e.g. [10 marks]), a time limit, instructions like "Answer ALL questions", and formal exam rubric.
 
-Lecture notes contain explanations, theory, derivations, definitions, and examples used for
-teaching — they are NOT a set of questions to be answered.
+exercise_set: a tutorial sheet, exercise set, problem set, seminar/workshop questions, worksheet or
+homework/assignment. It is ALSO mainly a list of questions or problems for students to attempt,
+but is not a formal timed exam - it may be titled "Tutorial 3", "Exercises", "Problem Set 2",
+"Homework", "Seminar questions", etc., and may or may not include solutions.
+
+lecture_notes: slides or notes containing explanations, theory, derivations, definitions and
+worked examples used for teaching - NOT primarily a set of questions to be answered.
 
 DOCUMENT EXCERPT:
 {sample}
 
-Reply with ONLY one of these two strings, nothing else:
+Reply with ONLY one of these three strings, nothing else:
 exam_paper
+exercise_set
 lecture_notes"""
 
             messages = [{"role": "user", "content": prompt}]
@@ -1444,12 +1562,14 @@ lecture_notes"""
                         messages, model=model, max_tokens=1000, timeout=30
                     )
                     result = content.strip().lower().replace('"', '').replace("'", "")
-                    if "exam" in result:
-                        logging.info(f"Document classified as exam_paper by {model}")
-                        return "exam_paper"
+                    if "exercise" in result or "tutorial" in result or "homework" in result:
+                        doc_type = "exercise_set"
+                    elif "exam" in result:
+                        doc_type = "exam_paper"
                     else:
-                        logging.info(f"Document classified as lecture_notes by {model}")
-                        return "lecture_notes"
+                        doc_type = "lecture_notes"
+                    logging.info(f"Document classified as {doc_type} by {model}")
+                    return doc_type
                 except Exception as e:
                     logging.error(f"Document classification failed with {model}: {e}")
 
@@ -1459,23 +1579,23 @@ lecture_notes"""
             return "lecture_notes"
 
     async def extract_exam_questions_async(self):
-        """Extract individual calculation questions from an exam paper, preserving exact wording and numbers."""
+        """Extract individual calculation questions from an exam paper or exercise/homework sheet, preserving exact wording and numbers."""
         if not self.context:
             return []
 
         try:
             context_truncated = self._get_truncated_context()
 
-            prompt = f"""You are analysing an exam paper to extract each individual calculation question.
+            prompt = f"""You are analysing a {self._material_noun()} to extract each individual calculation question.
 
-EXAM PAPER:
+DOCUMENT ({self._material_label()}):
 {context_truncated}
 
-TASK: Extract every calculation question from this exam paper as a list of self-contained question objects.
+TASK: Extract every calculation question from this document as a list of self-contained question objects.
 
 Rules:
 - Include EVERY question and sub-question that requires a numerical calculation (e.g. 1a, 1b, 2a, 2b, 2c etc.).
-- Preserve the EXACT wording, numbers, and data from the exam paper — do not alter, summarise, or rephrase.
+- Preserve the EXACT wording, numbers, and data from the document — do not alter, summarise, or rephrase.
 - Each entry must be completely self-contained: include any shared data, tables, or context from the parent question that the sub-question depends on so it can be understood in isolation.
 - Preserve the original question ordering.
 - Exclude purely discursive questions that ask students to "explain", "discuss", or "describe" without any calculation.
@@ -1749,9 +1869,9 @@ Choose ONE equation from the lecture notes that has not been used before."""
         q_id = exam_question.get("id", "?")
         q_text = exam_question.get("question", "")
 
-        return rf"""You are helping a student revise for their exam. Below is the full exam paper for context, followed by ONE specific exam question.
+        return rf"""You are helping a student work through their {self._material_noun()}. Below is the full document for context, followed by ONE specific question from it.
 
-EXAM PAPER (for reference/context):
+DOCUMENT ({self._material_label()}, for reference/context):
 {context_truncated}
 
 SPECIFIC QUESTION TO SOLVE (Question {q_id}):
@@ -1759,7 +1879,7 @@ SPECIFIC QUESTION TO SOLVE (Question {q_id}):
 
 YOUR TASK:
 1. Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given.
-2. If the exam paper already includes a solution or answer for this question, cross-check YOUR calculated answer against the PROVIDED solution. If they differ, carefully re-examine both approaches, identify where any error lies (yours or the paper's), and explain the discrepancy to the student.
+2. If the document already includes a solution or answer for this question, cross-check YOUR calculated answer against the PROVIDED solution. If they differ, carefully re-examine both approaches, identify where any error lies (yours or the paper's), and explain the discrepancy to the student.
 3. Then set the student a new challenge using different numbers.
 
 REQUIRED LAYOUT:
@@ -1796,8 +1916,8 @@ calculation &= ... \\[6pt]
 \text{{Answer}} &= ...
 \end{{align*}}
 
-**SOLUTION VERIFICATION** (include this section ONLY if the exam paper provides a solution or answer)
-Compare your calculated answer with the solution provided in the exam paper. If they match, confirm this. If they differ, explain clearly where the discrepancy is, which approach contains the error, and why.
+**SOLUTION VERIFICATION** (include this section ONLY if the document provides a solution or answer)
+Compare your calculated answer with the solution provided in the document. If they match, confirm this. If they differ, explain clearly where the discrepancy is, which approach contains the error, and why.
 
 **CHALLENGE**
 Now try a similar problem with DIFFERENT numerical values (you invent new, realistic values).

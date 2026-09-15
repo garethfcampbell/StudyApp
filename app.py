@@ -220,6 +220,27 @@ def get_tutor_ai():
         logging.error(f"Failed to initialize TutorAI: {e}")
         return None
 
+
+def _stored_doc_type(session_id=None):
+    """Return the document classification ('exam_paper' / 'exercise_set' / 'lecture_notes') stored
+    for the session at upload time, or None if unknown."""
+    try:
+        sid = session_id or session.get('session_id')
+        if sid:
+            return StorageManager().retrieve_content(sid, 'calc_doc_type')
+    except Exception as e:
+        logging.debug(f"Could not read stored document type: {e}")
+    return None
+
+
+def _make_tutor(pdf_content, session_id=None, doc_type=None):
+    """Create a TutorAI with the document loaded and its exam/notes type applied,
+    so every feature (chat, summary, essay, concepts, quiz, infographic) adapts.
+    Background threads with no request context pass doc_type explicitly."""
+    tutor_ai = TutorAI()
+    tutor_ai.set_context(pdf_content, doc_type=doc_type or _stored_doc_type(session_id))
+    return tutor_ai
+
 # Task handling helper functions for PostgreSQL migration
 def create_task(task_id, status='pending'):
     """Create a new task in PostgreSQL database"""
@@ -306,8 +327,7 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
         try:
             logging.info(f"BACKGROUND TASK: Starting calculation generation for task {task_id}")
 
-            tutor_ai = TutorAI()
-            tutor_ai.set_context(pdf_content)
+            tutor_ai = _make_tutor(pdf_content, session_id)
 
             # Access storage inside app context (before entering async)
             _storage = StorageManager()
@@ -326,14 +346,14 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
                         _storage.store_content(session_id, 'calc_doc_type', doc_type)
                         logging.info(f"BACKGROUND TASK: Document classified as {doc_type}")
 
-                    if doc_type == "exam_paper":
+                    if doc_type in ("exam_paper", "exercise_set"):
                         # --- EXAM PAPER PATH ---
                         if not exam_questions:
                             logging.info("BACKGROUND TASK: Extracting exam questions...")
                             exam_questions = await tutor_ai.extract_exam_questions_async()
                             logging.info(f"BACKGROUND TASK: Extracted {len(exam_questions) if exam_questions else 0} exam questions")
                             if not exam_questions:
-                                return "I couldn't find any calculation questions in this exam paper. Please check the document contains numerical questions."
+                                return "I couldn't find any calculation questions in this document. Please check it contains numerical questions."
                             _storage.store_content(session_id, 'exam_questions', exam_questions)
                             _storage.store_content(session_id, 'current_equation_index', 0)
                             current_index = 0
@@ -380,7 +400,7 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
             logging.error(traceback.format_exc())
             update_task_failed(task_id, "An internal error occurred. Please try again.")
 
-def run_calculation_answer_check_background(task_id, challenge_question, user_answer, pdf_content):
+def run_calculation_answer_check_background(task_id, challenge_question, user_answer, pdf_content, doc_type=None):
     """
     Background function to check calculation answers using async gpt-5.6-terra.
     This runs in a separate thread to avoid blocking the web server.
@@ -389,8 +409,7 @@ def run_calculation_answer_check_background(task_id, challenge_question, user_an
         logging.info(f"CALC ANSWER BACKGROUND: Starting answer check for task {task_id}")
         
         # Initialize TutorAI and set context
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
         
         # Check calculation answer using async method with gpt-5.6-terra
         async def async_answer_check():
@@ -414,7 +433,7 @@ def run_calculation_answer_check_background(task_id, challenge_question, user_an
         logging.error(f"CALC ANSWER BACKGROUND: Error in task {task_id}: {e}")
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
-def run_summary_generation_background(task_id, pdf_content):
+def run_summary_generation_background(task_id, pdf_content, doc_type=None):
     """
     Background function to generate executive summaries using async Gemini.
     This runs in a separate thread to avoid blocking the web server.
@@ -423,8 +442,7 @@ def run_summary_generation_background(task_id, pdf_content):
         logging.info(f"SUMMARY BACKGROUND: Starting summary generation for task {task_id}")
         
         # Initialize TutorAI and set context
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
         
         # Generate summary using async method
         async def async_summary_generation():
@@ -449,7 +467,7 @@ def run_summary_generation_background(task_id, pdf_content):
         logging.error(f"SUMMARY BACKGROUND: Error in task {task_id}: {e}")
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
-def run_essay_generation_background(task_id, pdf_content):
+def run_essay_generation_background(task_id, pdf_content, doc_type=None):
     """
     Background function to generate essay questions using async Gemini.
     This runs in a separate thread to avoid blocking the web server.
@@ -458,8 +476,7 @@ def run_essay_generation_background(task_id, pdf_content):
         logging.info(f"ESSAY BACKGROUND: Starting essay generation for task {task_id}")
         
         # Initialize TutorAI and set context
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
         
         # Generate essay using async method
         async def async_essay_generation():
@@ -484,7 +501,7 @@ def run_essay_generation_background(task_id, pdf_content):
         logging.error(f"ESSAY BACKGROUND: Error in task {task_id}: {e}")
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
-def run_key_concepts_generation_background(task_id, pdf_content):
+def run_key_concepts_generation_background(task_id, pdf_content, doc_type=None):
     """
     Background function to generate key concepts explanations using async Gemini.
     This runs in a separate thread to avoid blocking the web server.
@@ -493,8 +510,7 @@ def run_key_concepts_generation_background(task_id, pdf_content):
         logging.info(f"KEY CONCEPTS BACKGROUND: Starting key concepts generation for task {task_id}")
         
         # Initialize TutorAI and set context
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
         
         # Generate key concepts using async method
         async def async_key_concepts_generation():
@@ -519,7 +535,7 @@ def run_key_concepts_generation_background(task_id, pdf_content):
         logging.error(f"KEY CONCEPTS BACKGROUND: Error in task {task_id}: {e}")
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
-def run_infographic_generation_background(task_id, pdf_content):
+def run_infographic_generation_background(task_id, pdf_content, doc_type=None):
     """
     Background function to generate a revision-guide infographic image.
     This runs in a separate thread to avoid blocking the web server.
@@ -528,8 +544,7 @@ def run_infographic_generation_background(task_id, pdf_content):
         logging.info(f"INFOGRAPHIC BACKGROUND: Starting infographic generation for task {task_id}")
 
         # Initialize TutorAI and set context
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
 
         # Generate infographic using async method
         async def async_infographic_generation():
@@ -555,7 +570,7 @@ def run_infographic_generation_background(task_id, pdf_content):
         logging.error(f"INFOGRAPHIC BACKGROUND: Error in task {task_id}: {e}")
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
-def run_chat_response_background(task_id, user_message, pdf_content, conversation_history):
+def run_chat_response_background(task_id, user_message, pdf_content, conversation_history, doc_type=None):
     """
     Background function to generate chat responses using async processing.
     This runs in a separate thread to avoid blocking the web server.
@@ -564,8 +579,7 @@ def run_chat_response_background(task_id, user_message, pdf_content, conversatio
         logging.info(f"CHAT BACKGROUND: Starting chat response generation for task {task_id}")
         
         # Initialize TutorAI and set context
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
         tutor_ai.conversation_history = conversation_history or []
         
         # Generate chat response using async method
@@ -689,8 +703,7 @@ def simple_chat():
                 }, 400
             
             # Create tutor AI instance and set context
-            tutor_ai = TutorAI()
-            tutor_ai.set_context(pdf_content)
+            tutor_ai = _make_tutor(pdf_content, session_id)
             logging.info(f"SIMPLE_CHAT: Set context with {len(pdf_content)} characters")
             
             # Load existing conversation history from storage to maintain context
@@ -836,8 +849,7 @@ def simple_chat_stream():
         if not pdf_content:
             return jsonify({'success': False, 'error': 'No document content found.'}), 400
 
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+        tutor_ai = _make_tutor(pdf_content, session_id)
 
         calc_q = queue.Queue()
 
@@ -889,8 +901,7 @@ def simple_chat_stream():
     if not pdf_content:
         return jsonify({'success': False, 'error': 'I need you to upload your lecture notes first before I can help you study! 📚'}), 400
 
-    tutor_ai = TutorAI()
-    tutor_ai.set_context(pdf_content)
+    tutor_ai = _make_tutor(pdf_content, session_id)
 
     stored_messages = storage_manager.retrieve_content(session_id, 'messages') or []
     for msg in stored_messages:
@@ -986,8 +997,7 @@ def quickaction_stream():
             stream_ok = False
             tutor_ai = None
             try:
-                tutor_ai = TutorAI()
-                tutor_ai.set_context(pdf_content)
+                tutor_ai = _make_tutor(pdf_content, session_id)
 
                 if action == 'key_concepts':
                     gen = tutor_ai.explain_key_concepts_stream_async()
@@ -1067,8 +1077,7 @@ def calculation_stream():
             nonlocal doc_type, exam_questions, equation_list, current_index
             full_response = ""
             try:
-                tutor_ai = TutorAI()
-                tutor_ai.set_context(pdf_content)
+                tutor_ai = _make_tutor(pdf_content, session_id)
                 _storage = StorageManager()
 
                 # --- Detect document type on first call ---
@@ -1078,13 +1087,13 @@ def calculation_stream():
                     _storage.store_content(session_id, 'calc_doc_type', doc_type)
                     logging.info(f"CALCULATION STREAM: Document classified as {doc_type}")
 
-                if doc_type == "exam_paper":
+                if doc_type in ("exam_paper", "exercise_set"):
                     # --- EXAM PAPER PATH (streaming) ---
                     if not exam_questions:
                         logging.info("CALCULATION STREAM: Extracting exam questions...")
                         exam_questions = await tutor_ai.extract_exam_questions_async()
                         if not exam_questions:
-                            q.put("I couldn't find any calculation questions in this exam paper. Please check the document contains numerical questions.")
+                            q.put("I couldn't find any calculation questions in this document. Please check it contains numerical questions.")
                             return
                         _storage.store_content(session_id, 'exam_questions', exam_questions)
                         _storage.store_content(session_id, 'current_equation_index', 0)
@@ -1201,8 +1210,7 @@ def summary_stream():
             stream_ok = False
             tutor_ai = None
             try:
-                tutor_ai = TutorAI()
-                tutor_ai.set_context(pdf_content)
+                tutor_ai = _make_tutor(pdf_content, session_id)
                 async for chunk in tutor_ai.generate_cheat_sheet_stream_async():
                     full_response += chunk
                     q.put(chunk)
@@ -1275,7 +1283,7 @@ def start_summary_generation():
         # Start background task in separate thread
         thread = threading.Thread(
             target=run_summary_generation_background,
-            args=(task_id, pdf_content),
+            args=(task_id, pdf_content, _stored_doc_type()),
             daemon=True
         )
         thread.start()
@@ -1320,7 +1328,7 @@ def get_summary_status(task_id):
         logging.exception("SUMMARY POLLING: Error checking task status")
         return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
-def run_quiz_generation_background(task_id, pdf_content):
+def run_quiz_generation_background(task_id, pdf_content, doc_type=None):
     """Background task to generate retrieval quiz using async methods"""
     def run_async():
         # Create a new event loop for this thread
@@ -1329,14 +1337,14 @@ def run_quiz_generation_background(task_id, pdf_content):
         
         try:
             # Run the async function
-            result = loop.run_until_complete(run_quiz_generation_async(task_id, pdf_content))
+            result = loop.run_until_complete(run_quiz_generation_async(task_id, pdf_content, doc_type=doc_type))
             return result
         finally:
             loop.close()
     
     return run_async()
 
-async def run_quiz_generation_async(task_id, pdf_content):
+async def run_quiz_generation_async(task_id, pdf_content, doc_type=None):
     """Async worker function for quiz generation"""
     try:
         logging.info(f"ASYNC QUIZ WORKER: Starting async quiz generation for task {task_id}")
@@ -1346,8 +1354,7 @@ async def run_quiz_generation_async(task_id, pdf_content):
         pass  # Running state will be implicit between pending and complete
         
         # Create TutorAI instance and set context
-        tutor_ai = TutorAI()
-        tutor_ai.set_context(pdf_content)
+        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
         
         # Generate quiz using async method
         try:
@@ -1403,7 +1410,7 @@ def start_quiz_generation():
         # Start background task in separate thread
         thread = threading.Thread(
             target=run_quiz_generation_background,
-            args=(task_id, pdf_content),
+            args=(task_id, pdf_content, _stored_doc_type()),
             daemon=True
         )
         thread.start()
@@ -1612,7 +1619,7 @@ def start_calculation_answer_check():
         # Start background task in separate thread
         thread = threading.Thread(
             target=run_calculation_answer_check_background,
-            args=(task_id, challenge_question, user_answer, pdf_content),
+            args=(task_id, challenge_question, user_answer, pdf_content, _stored_doc_type()),
             daemon=True
         )
         thread.start()
@@ -1717,14 +1724,31 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 # Reset equation list / exam questions so fresh document starts from question 1
                 storage_manager.store_content(session_id, 'equation_list', None)
                 storage_manager.store_content(session_id, 'exam_questions', None)
-                storage_manager.store_content(session_id, 'calc_doc_type', None)
                 storage_manager.store_content(session_id, 'current_equation_index', 0)
+
+                # Classify the document once (exam paper / exercise sheet / lecture notes) so every
+                # feature can adapt; falls back to a keyword heuristic in TutorAI.
+                doc_type = None
+                try:
+                    _classifier = TutorAI()
+                    _classifier.set_context(pdf_text)
+                    _loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(_loop)
+                    try:
+                        doc_type = _loop.run_until_complete(_classifier.detect_document_type_async())
+                    finally:
+                        _loop.close()
+                    logging.info(f"Upload {task_id}: document classified as {doc_type}")
+                except Exception as e:
+                    logging.error(f"Upload {task_id}: document classification failed: {e}")
+                storage_manager.store_content(session_id, 'calc_doc_type', doc_type)
 
                 update_task_complete(task_id, success=True, data={
                     'success': True,
                     'filename': filename,
                     'message': f'Successfully loaded: {filename}',
-                    'content_length': len(pdf_text) if pdf_text else 0
+                    'content_length': len(pdf_text) if pdf_text else 0,
+                    'document_type': doc_type
                 })
                 logging.info(f"Upload processing completed for task {task_id}")
             else:
@@ -1924,7 +1948,7 @@ def start_chat_response():
         # Start background thread for async chat generation
         thread = threading.Thread(
             target=run_chat_response_background, 
-            args=(task_id, user_message, pdf_content, conversation_history)
+            args=(task_id, user_message, pdf_content, conversation_history, _stored_doc_type())
         )
         thread.daemon = True
         thread.start()
@@ -2000,7 +2024,7 @@ def start_essay_generation():
         # Start background task in separate thread
         thread = threading.Thread(
             target=run_essay_generation_background,
-            args=(task_id, pdf_content),
+            args=(task_id, pdf_content, _stored_doc_type()),
             daemon=True
         )
         thread.start()
@@ -2089,7 +2113,7 @@ def start_key_concepts_generation():
         # Start background task in separate thread
         thread = threading.Thread(
             target=run_key_concepts_generation_background,
-            args=(task_id, pdf_content),
+            args=(task_id, pdf_content, _stored_doc_type()),
             daemon=True
         )
         thread.start()
@@ -2174,7 +2198,7 @@ def start_infographic_generation():
         # Start background task in separate thread
         thread = threading.Thread(
             target=run_infographic_generation_background,
-            args=(task_id, pdf_content),
+            args=(task_id, pdf_content, _stored_doc_type()),
             daemon=True
         )
         thread.start()

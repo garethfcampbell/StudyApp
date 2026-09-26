@@ -39,13 +39,13 @@ _STOPWORDS = frozenset((
 ))
 
 # Primary and fallback model names used across all features.
-MODEL_PRIMARY = "gpt-5.6-terra"
-MODEL_FALLBACK = "gpt-5.6-luna"
+MODEL_PRIMARY = "gpt-6-sol"
+MODEL_FALLBACK = "gpt-6-luna"
 
 # Models in this family do not support system messages (all messages must be
 # combined into a single user message), use max_completion_tokens instead of
 # max_tokens, and reject non-default temperature values.
-NO_SYSTEM_MESSAGE_MODELS = ("gpt-5.6-terra", "gpt-5", "gpt-5-mini", "gpt-5.6-luna", "gpt-5.4")
+NO_SYSTEM_MESSAGE_MODELS = ("gpt-6-sol", "gpt-5", "gpt-5-mini", "gpt-6-luna", "gpt-5.4")
 
 # Reasoning effort applied to every reasoning-model call unless a feature passes
 # its own value explicitly (the calculation features pass "medium" themselves).

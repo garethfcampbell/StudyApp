@@ -69,3 +69,7 @@ Thumbs.db
 
 # Lock files (optional - keep uv.lock for reproducibility)
 # uv.lock
+
+# local infographic test output
+tools/test_infographic_output.png
+tools/test_infographic_fixed.png

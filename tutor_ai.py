@@ -777,10 +777,20 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             "of a subject different from every other vignette on the page.\n"
             "- Diagrams must depict only the structures and relationships described in "
             "the brief; graph axes may be labelled but show NO invented numbers.\n"
-            "- CLEAN STYLE: the page background must be pure white (no red, pink or "
-            "any colour tint, no gradient, no textured or coloured backdrop). Section "
-            "cards are white with a hairline light-grey border and a very soft "
-            "shadow; card interiors stay white.\n"
+            "- CLEAN STYLE: the page background must be pure white (no colour tint, "
+            "no gradient, no textured or coloured backdrop). Each section card sits "
+            "on its OWN soft PASTEL tint, a different one per card, chosen from a "
+            "harmonious set of very light, low-saturation pastels - for example pale "
+            "sky blue (#EAF2FB), pale mint (#E9F7EF), pale peach (#FDF1E7), pale "
+            "lavender (#F1ECFA), pale butter yellow (#FFF8E1), pale aqua (#E6F6F8). "
+            "Use each tint once, in order down the page, so neighbouring cards differ "
+            "and the whole page feels calm and coordinated. Every tint must be flat "
+            "and uniform, light enough that charcoal text is fully legible, and "
+            "clearly pastel: never red or pink, never a saturated, dark or neon "
+            "colour, never a gradient or texture. Cards have a hairline border a "
+            "shade darker than their tint and a very soft shadow. Formula callouts "
+            "and diagram boxes inside a card are white, so they contrast with the "
+            "card.\n"
             "- ACCENT COLOUR: a single deep red (like #D6000D) used ONLY as thin "
             "strokes and text - section headings, a thin rule under each heading, "
             "arrows and connector lines in diagrams, the left border of formula "
@@ -882,7 +892,7 @@ CHECK, IN THIS ORDER OF IMPORTANCE:
 1. FORMULAS: every formula shown must be the brief's LaTeX formula rendered as properly typeset mathematics: the same symbols, subscripts and exponents, and the same bracket placement (the same terms inside and outside each bracket, and the correct scope of every exponent, fraction or root). ALSO flag: any division shown inline with a slash instead of a stacked fraction (numerator over a horizontal bar over denominator); any symbol spelled as a word (e.g. 'rbar', 'sigma', 'sqrt') instead of the proper glyph (bar over the letter, Greek letter, radical sign); any visible LaTeX source (backslashes, braces, command names); formulas set in a plain sans-serif font instead of a LaTeX-style (Computer Modern) math font. Any deviation is an issue. In 'correction', give the exact formula from the brief and say how it must be typeset.
 2. TEXT ACCURACY: misspelled, garbled, truncated or unreadable words; headings or bullets that say something the brief does not.
 3. CONTENT RULES: any numerical worked example, practice question, substituted numbers or calculated answer (none are allowed); any fact, formula or example not in the brief; any section of the brief missing entirely.
-4. STYLE: a red / pink / coloured page background, card background, band or colour wash (the page and cards must be white; red may appear only as headings, thin rules, arrows, outlines and small badges - never as a fill behind text or formulas); any accent colour other than red (e.g. navy or blue fills); serif, script or decorative fonts; flat icons or clip-art used as a section's main visual; a photo that dominates its card (larger than about one fifth of the card, or full card height); more than 2 photos on the page besides the small hero image, or two photos of the same kind of scene (e.g. people at trading screens twice); a photo containing screens, charts or readable text; a symbol key that omits the symbols (e.g. 'portfolio return, risk-free rate' without r_p, r_f).
+4. STYLE: a coloured page background or colour wash (the page must be white); a section card whose fill is red, pink, saturated, dark or neon, or a gradient/texture (cards should each have a DIFFERENT soft light pastel tint - pale blue, mint, peach, lavender, yellow, aqua - and a pastel card tint is CORRECT and must not be reported; two adjacent cards sharing the same tint is a minor issue); red may appear only as headings, thin rules, arrows, outlines and small badges - never as a fill behind text or formulas; any accent colour other than red (e.g. navy or blue fills); serif, script or decorative fonts; flat icons or clip-art used as a section's main visual; a photo that dominates its card (larger than about one fifth of the card, or full card height); more than 2 photos on the page besides the small hero image, or two photos of the same kind of scene (e.g. people at trading screens twice); a photo containing screens, charts or readable text; a symbol key that omits the symbols (e.g. 'portfolio return, risk-free rate' without r_p, r_f).
 
 OUTPUT: respond with ONLY a JSON object, no other text:
 {{"ok": true}} if there are no issues, otherwise
@@ -945,8 +955,10 @@ REVISION BRIEF:
             "glyphs, a large sigma for sums; never a slash for division, never symbols "
             "spelled as words, never visible LaTeX source. Text must be "
             "spelled correctly and fully legible. Show no numerical worked examples or "
-            "calculated answers. The page and all cards must stay pure white with no "
-            "red or coloured tint or fills; the only accent is deep red used for "
+            "calculated answers. The page must stay pure white; each card keeps its "
+            "own soft light pastel tint (different per card - pale blue, mint, peach, "
+            "lavender, yellow, aqua), never red, pink, saturated or dark fills; the "
+            "only accent is deep red used for "
             "headings, thin rules, arrows, outlines and small badges, and formula "
             "boxes are white with a thin red left border. Keep one clean sans-serif "
             "font family. Photos may only be small rounded vignettes (about one fifth "
@@ -960,16 +972,24 @@ REVISION BRIEF:
         client = _get_async_openai_client()
         image_bytes = base64.b64decode(image_b64)
         logging.info(f"INFOGRAPHIC FIX: requesting edit for {len(issues)} issue(s)")
-        response = await client.images.edit(
+        edit_args = dict(
             model=self.INFOGRAPHIC_MODEL,
             image=("infographic.png", image_bytes, "image/png"),
             prompt=fix_prompt,
-            input_fidelity="high",
             n=1,
             size="1024x1536",
             quality="high",
             timeout=300,
         )
+        try:
+            # input_fidelity="high" keeps untouched areas faithful; older SDKs
+            # (and the pinned uv.lock version) do not accept the parameter.
+            response = await client.images.edit(input_fidelity="high", **edit_args)
+        except TypeError as e:
+            if "input_fidelity" not in str(e):
+                raise
+            logging.info("INFOGRAPHIC FIX: SDK does not support input_fidelity; retrying without it")
+            response = await client.images.edit(**edit_args)
         fixed_b64 = response.data[0].b64_json if response.data else None
         if not fixed_b64:
             raise ValueError("Image edit returned no image data")

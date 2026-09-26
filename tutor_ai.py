@@ -1,4 +1,5 @@
 
+import io
 import os
 import asyncio
 import json
@@ -896,19 +897,31 @@ CHECK, IN THIS ORDER OF IMPORTANCE:
 
 OUTPUT: respond with ONLY a JSON object, no other text:
 {{"ok": true}} if there are no issues, otherwise
-{{"ok": false, "issues": [{{"location": "<section heading or area of the page>", "problem": "<what is wrong>", "correction": "<exactly what it should show instead>"}}]}}
+{{"ok": false, "issues": [{{"location": "<section heading or area of the page>", "problem": "<what is wrong>", "correction": "<exactly what it should show instead>", "box": [x0, y0, x1, y1]}}]}}
+"box" is the bounding box of the WHOLE card or panel that contains the problem, as fractions of the poster's width and height measured from the top-left corner (e.g. [0.02, 0.70, 0.66, 0.96]). Give it for every issue and be generous so the box fully contains the card; use [0, 0, 1, 1] only for a page-wide problem.
 List at most 8 issues, most important first. Be precise and literal - do not invent problems, and do not report stylistic preferences beyond rule 4.
 
 REVISION BRIEF:
 {notes_brief}"""
+        result = await self._vision_json(review_prompt, [image_b64], "INFOGRAPHIC CHECK")
+        issues = [i for i in (result.get("issues") or []) if isinstance(i, dict)][:8]
+        # Second, narrow pass: letter-by-letter spell-check over enlarged tiles.
+        try:
+            issues += await self._spellcheck_infographic(image_b64, notes_brief, already=issues)
+        except Exception as e:
+            logging.error(f"INFOGRAPHIC CHECK: spell-check pass unavailable: {e}")
+        result = {"ok": not issues, "issues": issues}
+        logging.info(f"INFOGRAPHIC CHECK: ok={result['ok']}, {len(issues)} issue(s)")
+        return result
+
+    async def _vision_json(self, prompt_text, images_b64, label):
+        """Send text + one or more PNGs to the vision-capable chat model (primary then
+        fallback) and return the parsed JSON object. Raises if both models fail."""
         client = _get_async_openai_client()
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": review_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}", "detail": "high"}},
-            ],
-        }]
+        content = [{"type": "text", "text": prompt_text}]
+        content += [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}", "detail": "high"}}
+                    for b in images_b64]
+        messages = [{"role": "user", "content": content}]
         last_error = None
         for model in (MODEL_PRIMARY, MODEL_FALLBACK):
             try:
@@ -919,77 +932,212 @@ REVISION BRIEF:
                     "response_format": {"type": "json_object"},
                     "reasoning_effort": DEFAULT_REASONING_EFFORT,
                 }
-                response = await asyncio.wait_for(client.chat.completions.create(**api_args), timeout=120)
-                content = (response.choices[0].message.content or "").strip()
-                result = json.loads(content)
+                response = await asyncio.wait_for(client.chat.completions.create(**api_args), timeout=180)
+                content_text = (response.choices[0].message.content or "").strip()
+                result = json.loads(content_text)
                 if not isinstance(result, dict):
-                    raise ValueError("Review response was not a JSON object")
-                issues = result.get("issues") or []
-                result = {"ok": bool(result.get("ok", not issues)) and not issues, "issues": issues[:8]}
-                logging.info(f"INFOGRAPHIC CHECK ({model}): ok={result['ok']}, {len(result['issues'])} issue(s)")
+                    raise ValueError("Response was not a JSON object")
+                logging.info(f"{label} ({model}): response received")
                 return result
             except Exception as e:
                 last_error = e
-                logging.error(f"INFOGRAPHIC CHECK: review with {model} failed: {e}")
-        raise last_error if last_error else RuntimeError("Infographic review failed")
+                logging.error(f"{label}: {model} failed: {e}")
+        raise last_error if last_error else RuntimeError(f"{label} failed")
+
+    # ---------------- spell-check pass (adapted from the daily infographic pipelines) ----------------
+    @staticmethod
+    def _image_tiles(image_bytes, cols=2, rows=6, overlap=30, scale=3):
+        """Overlapping tiles of the poster, enlarged so small labels survive the API's
+        downscaling. Returns base64 PNG strings, row by row from the top left."""
+        import base64
+        from PIL import Image
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        w, h = img.size
+        out = []
+        for r in range(rows):
+            for c in range(cols):
+                box = (max(0, c * w // cols - overlap), max(0, r * h // rows - overlap),
+                       min(w, (c + 1) * w // cols + overlap), min(h, (r + 1) * h // rows + overlap))
+                tile = img.crop(box).resize(((box[2] - box[0]) * scale, (box[3] - box[1]) * scale), Image.LANCZOS)
+                buf = io.BytesIO()
+                tile.save(buf, format="PNG")
+                out.append(base64.b64encode(buf.getvalue()).decode())
+        return out
+
+    async def _spellcheck_infographic(self, image_b64, notes_brief, already=()):
+        """Narrow vision pass: find misspelled or garbled words (and mangled formulas) by
+        reading enlarged tiles letter by letter. Returns issues in the review format."""
+        import base64
+        image_bytes = base64.b64decode(image_b64)
+        tiles = self._image_tiles(image_bytes)
+        prompt_text = f"""This revision poster was generated by an image model, which sometimes garbles individual words - most often in short labels: headings, bullet text, symbol keys, chart and axis labels, diagram boxes - and occasionally a formula symbol. Your ONLY job is to find misspelled or garbled words and garbled formula symbols.
+
+The first image is the whole poster; the remaining images are enlarged tiles of it, row by row from the top left, overlapping slightly.
+
+Step 1: for every short label (heading, bullet, symbol key, chart or axis label, diagram box, caption) write it out LETTER BY LETTER separated by hyphens, e.g. V-o-l-a-t-i-l-i-t-y, reading the glyphs as drawn rather than the word you expect, checking especially for doubled, dropped or swapped letters; transcribe longer text exactly as printed, spelling out letter by letter any word you are not certain of.
+
+Step 2: compare every transcribed word with the REVISION BRIEF below (the poster should print only words that appear there, plus ordinary connecting words). Report each word that is misspelled, truncated, has letters swapped or dropped, or is otherwise not a correctly spelled word, and any formula symbol that is visibly mangled (a broken glyph, a stray character, a subscript rendered as a normal letter).
+
+Do NOT report differences of layout, hyphenation at a line break, capitalisation, curly versus straight quotes, a missing or doubled space, or a hyphen in place of a space: those are not misspellings. Report only words you are certain are wrong.
+
+Return ONLY a JSON object: {{"typos": [{{"printed": "<as printed>", "expected": "<correct word>", "where": "<section heading>", "box": [x0, y0, x1, y1]}}]}} where "box" is the bounding box of the WHOLE card or panel containing the word, as fractions of the WHOLE poster's width and height (use the first image), generous enough to contain the card.
+
+REVISION BRIEF:
+{notes_brief}"""
+        data = await self._vision_json(prompt_text, [image_b64] + tiles, "INFOGRAPHIC SPELLCHECK")
+        issues, seen = [], {str(i.get("problem", "")).lower() for i in already}
+        for t in data.get("typos", []) or []:
+            if not isinstance(t, dict):
+                continue
+            printed, expected = str(t.get("printed", "")).strip(), str(t.get("expected", "")).strip()
+            if not printed or printed.lower() == expected.lower():
+                continue
+            key = f'"{printed}"'.lower()
+            if any(key in s_ for s_ in seen):
+                continue
+            seen.add(key)
+            issues.append({
+                "location": t.get("where") or "poster",
+                "problem": f'"{printed}" is printed where "{expected}" is intended',
+                "correction": f'Print "{expected}" exactly, spelled correctly, in the same style and size',
+                "box": t.get("box"),
+            })
+        logging.info(f"INFOGRAPHIC SPELLCHECK: {len(issues)} typo(s)")
+        return issues[:6]
+
+    # ---------------- masked repair ----------------
+    @staticmethod
+    def _repair_boxes(issues, pad=0.02):
+        """Bounding boxes for a masked repair, or None if any issue lacks a usable box."""
+        boxes = []
+        for i in issues:
+            b = i.get("box") if isinstance(i, dict) else None
+            if not (isinstance(b, list) and len(b) == 4):
+                return None
+            try:
+                x0, y0, x1, y1 = [max(0.0, min(1.0, float(v))) for v in b]
+            except (TypeError, ValueError):
+                return None
+            if x1 <= x0 or y1 <= y0:
+                return None
+            boxes.append([max(0.0, x0 - pad), max(0.0, y0 - pad), min(1.0, x1 + pad), min(1.0, y1 + pad)])
+        return boxes or None
+
+    @staticmethod
+    def _make_mask_png(image_bytes, boxes):
+        """PNG mask the size of the poster: transparent where the edit may happen, opaque
+        elsewhere (the images edit endpoint repaints only transparent pixels)."""
+        from PIL import Image, ImageDraw
+        img = Image.open(io.BytesIO(image_bytes))
+        w, h = img.size
+        mask = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+        draw = ImageDraw.Draw(mask)
+        for x0, y0, x1, y1 in boxes:
+            draw.rectangle([int(x0 * w), int(y0 * h), int(x1 * w), int(y1 * h)], fill=(0, 0, 0, 0))
+        buf = io.BytesIO()
+        mask.save(buf, format="PNG")
+        return buf.getvalue()
+
+    _FIX_RULES = (
+        "RULES WHILE EDITING: formulas must be typeset with complete accuracy - "
+        "exactly the symbols, subscripts, exponents and bracket placement given in "
+        "the correction, with nothing dropped, added or rearranged - as proper "
+        "LaTeX-style mathematics (Computer Modern look): stacked fractions with a "
+        "horizontal bar, true sub/superscripts, bars and hats over letters, Greek "
+        "glyphs, a large sigma for sums; never a slash for division, never symbols "
+        "spelled as words, never visible LaTeX source. Text must be "
+        "spelled correctly and fully legible. Show no numerical worked examples or "
+        "calculated answers. The page must stay pure white; each card keeps its "
+        "own soft light pastel tint (different per card - pale blue, mint, peach, "
+        "lavender, yellow, aqua), never red, pink, saturated or dark fills; the "
+        "only accent is deep red used for "
+        "headings, thin rules, arrows, outlines and small badges, and formula "
+        "boxes are white with a thin red left border. Keep one clean sans-serif "
+        "font family. Photos may only be small rounded vignettes (about one fifth "
+        "of a card), at most 2 on the page plus a small hero image, all of "
+        "different subjects, with no screens, charts or text inside them - "
+        "shrink, replace or remove a photo if a correction asks for it and give "
+        "the space to the diagram, formula or white space. Do not add any "
+        "content that is not in the brief.\n\n"
+    )
+
+    # Whether the image model / SDK accept input_fidelity. Learned on first use:
+    # older SDKs raise TypeError, and some image models (gpt-image-2.5-sunburst)
+    # reject it with a 400, in which case we stop sending it.
+    _INPUT_FIDELITY_SUPPORTED = True
+
+    async def _images_edit(self, edit_args):
+        """images.edit with input_fidelity="high" when the SDK and model accept it."""
+        client = _get_async_openai_client()
+        if TutorAI._INPUT_FIDELITY_SUPPORTED:
+            try:
+                return await client.images.edit(input_fidelity="high", **edit_args)
+            except (TypeError, openai.BadRequestError) as e:
+                if "input_fidelity" not in str(e):
+                    raise
+                TutorAI._INPUT_FIDELITY_SUPPORTED = False
+                logging.info("INFOGRAPHIC FIX: input_fidelity not accepted by the SDK/model; retrying without it")
+        return await client.images.edit(**edit_args)
 
     async def _fix_infographic(self, image_b64, issues, notes_brief):
-        """Use the image edit endpoint to correct the listed issues while keeping the
-        rest of the poster unchanged. Returns the corrected base64 PNG."""
+        """Correct the listed issues. When every issue carries a bounding box, repaint ONLY
+        those cards through a masked edit (everything outside the mask is preserved
+        pixel for pixel); otherwise fall back to a whole-image edit that is asked to
+        change only the affected areas. Returns the corrected base64 PNG."""
         import base64
         corrections = "\n".join(
             f"{i + 1}. {issue.get('location', 'page')}: {issue.get('problem', '')} -> "
             f"Correct to: {issue.get('correction', '')}"
             for i, issue in enumerate(issues)
         )
+        image_bytes = base64.b64decode(image_b64)
+        base_args = dict(model=self.INFOGRAPHIC_MODEL, n=1, size="1024x1536", quality="high", timeout=300)
+
+        boxes = self._repair_boxes(issues)
+        if boxes:
+            repair_prompt = (
+                "REPAIR of an existing revision poster. The attached image is the finished "
+                "poster and the mask marks the ONLY area you may change. Repaint that area "
+                "so that it corrects these problems found by a reviewer:\n\n"
+                f"CORRECTIONS:\n{corrections}\n\n"
+                "Everything outside the masked area must stay exactly as it is. Inside the "
+                "area keep the same card tint, heading style, fonts, text size and layout as "
+                "the rest of the poster, and keep every correct element of that card.\n\n"
+                + self._FIX_RULES
+                + f"REVISION BRIEF (source of truth):\n{notes_brief}"
+            )
+            logging.info(f"INFOGRAPHIC FIX: masked repair of {len(boxes)} card(s) for {len(issues)} issue(s): "
+                         f"{[[round(v, 2) for v in b] for b in boxes]}")
+            try:
+                mask_bytes = self._make_mask_png(image_bytes, boxes)
+                response = await self._images_edit(dict(
+                    image=("infographic.png", image_bytes, "image/png"),
+                    mask=("mask.png", mask_bytes, "image/png"),
+                    prompt=repair_prompt[:32000],
+                    **base_args,
+                ))
+                fixed_b64 = response.data[0].b64_json if response.data else None
+                if fixed_b64:
+                    logging.info(f"INFOGRAPHIC FIX: masked repair received ({len(fixed_b64)} base64 chars)")
+                    return fixed_b64
+                logging.warning("INFOGRAPHIC FIX: masked repair returned no image; falling back to whole-image edit")
+            except Exception as e:
+                logging.warning(f"INFOGRAPHIC FIX: masked repair failed ({str(e)[:200]}); falling back to whole-image edit")
+
         fix_prompt = (
             "Edit this revision infographic. Keep the overall layout, section order, "
             "photographs, diagrams and all correct text exactly as they are. Apply ONLY "
             "the corrections listed below, redrawing just the affected areas.\n\n"
             f"CORRECTIONS:\n{corrections}\n\n"
-            "RULES WHILE EDITING: formulas must be typeset with complete accuracy - "
-            "exactly the symbols, subscripts, exponents and bracket placement given in "
-            "the correction, with nothing dropped, added or rearranged - as proper "
-            "LaTeX-style mathematics (Computer Modern look): stacked fractions with a "
-            "horizontal bar, true sub/superscripts, bars and hats over letters, Greek "
-            "glyphs, a large sigma for sums; never a slash for division, never symbols "
-            "spelled as words, never visible LaTeX source. Text must be "
-            "spelled correctly and fully legible. Show no numerical worked examples or "
-            "calculated answers. The page must stay pure white; each card keeps its "
-            "own soft light pastel tint (different per card - pale blue, mint, peach, "
-            "lavender, yellow, aqua), never red, pink, saturated or dark fills; the "
-            "only accent is deep red used for "
-            "headings, thin rules, arrows, outlines and small badges, and formula "
-            "boxes are white with a thin red left border. Keep one clean sans-serif "
-            "font family. Photos may only be small rounded vignettes (about one fifth "
-            "of a card), at most 2 on the page plus a small hero image, all of "
-            "different subjects, with no screens, charts or text inside them - "
-            "shrink, replace or remove a photo if a correction asks for it and give "
-            "the space to the diagram, formula or white space. Do not add any "
-            "content that is not in the brief.\n\n"
-            f"REVISION BRIEF (source of truth):\n{notes_brief}"
+            + self._FIX_RULES
+            + f"REVISION BRIEF (source of truth):\n{notes_brief}"
         )
-        client = _get_async_openai_client()
-        image_bytes = base64.b64decode(image_b64)
-        logging.info(f"INFOGRAPHIC FIX: requesting edit for {len(issues)} issue(s)")
-        edit_args = dict(
-            model=self.INFOGRAPHIC_MODEL,
+        logging.info(f"INFOGRAPHIC FIX: whole-image edit for {len(issues)} issue(s)")
+        response = await self._images_edit(dict(
             image=("infographic.png", image_bytes, "image/png"),
             prompt=fix_prompt,
-            n=1,
-            size="1024x1536",
-            quality="high",
-            timeout=300,
-        )
-        try:
-            # input_fidelity="high" keeps untouched areas faithful; older SDKs
-            # (and the pinned uv.lock version) do not accept the parameter.
-            response = await client.images.edit(input_fidelity="high", **edit_args)
-        except TypeError as e:
-            if "input_fidelity" not in str(e):
-                raise
-            logging.info("INFOGRAPHIC FIX: SDK does not support input_fidelity; retrying without it")
-            response = await client.images.edit(**edit_args)
+            **base_args,
+        ))
         fixed_b64 = response.data[0].b64_json if response.data else None
         if not fixed_b64:
             raise ValueError("Image edit returned no image data")

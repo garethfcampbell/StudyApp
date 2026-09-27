@@ -43,6 +43,21 @@ _STOPWORDS = frozenset((
 MODEL_PRIMARY = "gpt-6-sol"
 MODEL_FALLBACK = "gpt-6-luna"
 
+# How many times the PRIMARY model is attempted (timeouts, connection errors,
+# rate limits, 5xx, empty responses) before a feature falls back to
+# MODEL_FALLBACK. Client errors (4xx) and content filtering fail fast.
+PRIMARY_MAX_ATTEMPTS = 3
+PRIMARY_RETRY_DELAY = 2  # seconds; multiplied by the attempt number
+
+
+def _model_attempt_order():
+    """Models to try in order: the primary several times, then the fallback once."""
+    return [MODEL_PRIMARY] * PRIMARY_MAX_ATTEMPTS + [MODEL_FALLBACK]
+
+
+class _RetryableEmptyResponse(ValueError):
+    """The API returned no content without a content-filter or length reason."""
+
 # Models in this family do not support system messages (all messages must be
 # combined into a single user message), use max_completion_tokens instead of
 # max_tokens, and reject non-default temperature values.
@@ -514,16 +529,20 @@ class TutorAI:
                                         response_format=response_format,
                                         reasoning_effort=reasoning_effort)
 
-        # The shared SDK client is configured with max_retries=2, so transient
-        # connection/rate-limit/5xx errors are already retried with backoff
-        # inside the SDK. Keep exactly one application-level retry, for
-        # overall-call timeouts only.
-        max_retries = 1
-        for attempt in range(max_retries + 1):
+        # The SDK client already retries transient errors (max_retries=2) inside
+        # each call. On top of that, the PRIMARY model is attempted several times
+        # - with a longer timeout each time, since reasoning responses can be slow
+        # - before the caller falls back to the secondary model. Client errors
+        # (4xx) and content filtering are never retried.
+        attempts = PRIMARY_MAX_ATTEMPTS if model == MODEL_PRIMARY else 1
+        last_error = None
+        for attempt in range(1, attempts + 1):
+            attempt_timeout = min(timeout * (1 + 0.5 * (attempt - 1)), 300)
+            reason = None
             try:
                 response = await asyncio.wait_for(
                     client.chat.completions.create(**api_args),
-                    timeout=timeout
+                    timeout=attempt_timeout
                 )
 
                 content = response.choices[0].message.content
@@ -536,38 +555,36 @@ class TutorAI:
                         raise ValueError("Content was filtered by AI safety systems. Please try generating a different question.")
                     elif finish_reason == "length":
                         raise ValueError("Response was truncated due to length limits. Please try again.")
-                    else:
-                        raise ValueError("Async OpenAI service returned an empty response.")
+                    raise _RetryableEmptyResponse("Async OpenAI service returned an empty response.")
 
+                if attempt > 1:
+                    logging.info(f"Async OpenAI call to {model} succeeded on attempt {attempt}/{attempts}")
                 return content
 
-            except asyncio.TimeoutError:
-                logging.error(f"Async OpenAI call to {model} timed out after {timeout}s (attempt {attempt + 1}/{max_retries + 1})")
-                if attempt < max_retries:
-                    await asyncio.sleep(1)
-                    continue
-                raise
-
-            # Classification is by exception TYPE (never by substring matching
-            # on str(e)). The original exception is always logged and re-raised
-            # so callers can decide on the user-facing message.
+            except asyncio.TimeoutError as e:
+                last_error, reason = e, f"timed out after {attempt_timeout:.0f}s"
             except (openai.APIConnectionError, openai.RateLimitError) as e:
-                # Retryable classes (APITimeoutError subclasses
-                # APIConnectionError) - the SDK has already retried these.
-                logging.error(f"Async OpenAI call to {model} failed with retryable error after SDK retries: {type(e).__name__} - {e}")
-                raise
+                # Retryable classes (APITimeoutError subclasses APIConnectionError)
+                last_error, reason = e, f"{type(e).__name__}: {e}"
             except openai.APIStatusError as e:
-                if e.status_code >= 500:
-                    # Retryable server error - already retried by the SDK.
-                    logging.error(f"Async OpenAI call to {model} failed with server error {e.status_code} after SDK retries: {type(e).__name__} - {e}")
-                else:
-                    # Client error (4xx) - not retryable, fail fast.
+                if e.status_code < 500:
                     logging.error(f"Async OpenAI call to {model} failed with non-retryable API error {e.status_code}: {type(e).__name__} - {e}")
-                raise
+                    raise
+                last_error, reason = e, f"server error {e.status_code}: {type(e).__name__}"
+            except _RetryableEmptyResponse as e:
+                last_error, reason = ValueError(str(e)), "empty response"
             except Exception as e:
-                # Anything else (parsing errors, empty responses, etc.) - fail fast.
+                # Anything else (parsing errors, content filter, length) - fail fast.
                 logging.error(f"Async OpenAI call to {model} failed with non-retryable error: {type(e).__name__} - {e}")
                 raise
+
+            if attempt < attempts:
+                delay = PRIMARY_RETRY_DELAY * attempt
+                logging.warning(f"Async OpenAI call to {model} {reason} (attempt {attempt}/{attempts}); retrying in {delay}s")
+                await asyncio.sleep(delay)
+            else:
+                logging.error(f"Async OpenAI call to {model} {reason} (attempt {attempt}/{attempts}); giving up on this model")
+        raise last_error
 
     async def _make_async_openai_streaming_call(self, messages, model=MODEL_FALLBACK, temperature=0.7,
                                                 max_tokens=20000, timeout=60, reasoning_effort=None,
@@ -639,18 +656,30 @@ class TutorAI:
         """
         emitted = False
         primary_error = None
-        try:
-            async for chunk in stream_factory(MODEL_PRIMARY):
-                emitted = True
-                yield chunk
-            return
-        except Exception as e:
-            primary_error = e
-            if emitted:
-                logging.error(f"{label}: {MODEL_PRIMARY} failed mid-stream after output was emitted: {e}")
-                yield "\n\n[Connection interrupted - please ask me to continue]"
+        for attempt in range(1, PRIMARY_MAX_ATTEMPTS + 1):
+            try:
+                async for chunk in stream_factory(MODEL_PRIMARY):
+                    emitted = True
+                    yield chunk
                 return
-            logging.error(f"{label}: {MODEL_PRIMARY} failed before emitting output: {e}; falling back to {MODEL_FALLBACK}")
+            except Exception as e:
+                primary_error = e
+                if emitted:
+                    logging.error(f"{label}: {MODEL_PRIMARY} failed mid-stream after output was emitted: {e}")
+                    yield "\n\n[Connection interrupted - please ask me to continue]"
+                    return
+                # A 4xx (other than rate limiting) will not succeed on retry
+                client_error = (isinstance(e, openai.APIStatusError) and e.status_code < 500
+                                and not isinstance(e, openai.RateLimitError))
+                if attempt < PRIMARY_MAX_ATTEMPTS and not client_error:
+                    delay = PRIMARY_RETRY_DELAY * attempt
+                    logging.warning(f"{label}: {MODEL_PRIMARY} failed before emitting output "
+                                    f"(attempt {attempt}/{PRIMARY_MAX_ATTEMPTS}): {type(e).__name__}: {e}; retrying in {delay}s")
+                    await asyncio.sleep(delay)
+                    continue
+                logging.error(f"{label}: {MODEL_PRIMARY} failed before emitting output "
+                              f"(attempt {attempt}/{PRIMARY_MAX_ATTEMPTS}): {type(e).__name__}: {e}; falling back to {MODEL_FALLBACK}")
+                break
 
         try:
             async for chunk in stream_factory(MODEL_FALLBACK):
@@ -925,7 +954,8 @@ REVISION BRIEF:
                     for b in images_b64]
         messages = [{"role": "user", "content": content}]
         last_error = None
-        for model in (MODEL_PRIMARY, MODEL_FALLBACK):
+        order = _model_attempt_order()
+        for attempt, model in enumerate(order, 1):
             try:
                 api_args = {
                     "model": model,
@@ -943,7 +973,14 @@ REVISION BRIEF:
                 return result
             except Exception as e:
                 last_error = e
-                logging.error(f"{label}: {model} failed: {e}")
+                if attempt < len(order):
+                    delay = PRIMARY_RETRY_DELAY * attempt if model == MODEL_PRIMARY else 0
+                    logging.warning(f"{label}: {model} failed (attempt {attempt}/{len(order)}): {type(e).__name__}: {e}; "
+                                    f"next: {order[attempt]}")
+                    if delay:
+                        await asyncio.sleep(delay)
+                else:
+                    logging.error(f"{label}: {model} failed on the final attempt: {type(e).__name__}: {e}")
         raise last_error if last_error else RuntimeError(f"{label} failed")
 
     # ---------------- spell-check pass (adapted from the daily infographic pipelines) ----------------
@@ -2133,7 +2170,9 @@ research_article
 lecture_notes"""
 
             messages = [{"role": "user", "content": prompt}]
-            for model in (MODEL_PRIMARY, MODEL_FALLBACK):
+            # Classification is a short, cheap call: use the faster secondary model
+            # first and keep the primary only as a fallback.
+            for model in (MODEL_FALLBACK, MODEL_PRIMARY):
                 try:
                     content = await self._make_async_openai_fallback_call(
                         messages, model=model, max_tokens=1000, timeout=30

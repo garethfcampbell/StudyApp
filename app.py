@@ -1938,18 +1938,34 @@ def process_upload_background(task_id, file_data, filename, session_id):
             success, pdf_text, error_message = process_document_with_fallback(file_obj)
             
             if success:
-                storage_manager.store_content(session_id, 'pdf_content', pdf_text)
+                # One write: primary_storage persists to the same table as
+                # storage_manager and also fills its in-memory cache.
                 primary_storage.store_content(session_id, 'pdf_content', pdf_text)
 
-                # Reset equation list / exam questions so fresh document starts from question 1
+                # Reset per-document state so a fresh document starts from question 1
+                # (and no document type from a previous upload lingers).
                 storage_manager.store_content(session_id, 'equation_list', None)
                 storage_manager.store_content(session_id, 'exam_questions', None)
                 storage_manager.store_content(session_id, 'current_equation_index', 0)
+                storage_manager.store_content(session_id, 'calc_doc_type', None)
                 for _k in ESSAY_STATE_KEYS:
                     storage_manager.store_content(session_id, _k, None)
 
-                # Classify the document once (exam paper / exercise sheet / research article / lecture notes) so every
-                # feature can adapt; falls back to a keyword heuristic in TutorAI.
+                # Report the upload complete NOW so the page can start the summary;
+                # the document-type classification below runs in this thread
+                # afterwards (features that need it fall back to a keyword check
+                # until it is stored).
+                update_task_complete(task_id, success=True, data={
+                    'success': True,
+                    'filename': filename,
+                    'message': f'Successfully loaded: {filename}',
+                    'content_length': len(pdf_text) if pdf_text else 0,
+                    'document_type': None
+                })
+                logging.info(f"Upload processing completed for task {task_id}")
+
+                # Classify the document once (exam paper / exercise sheet / research
+                # article / lecture notes) so every feature can adapt.
                 doc_type = None
                 try:
                     _classifier = TutorAI()
@@ -1966,15 +1982,6 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 storage_manager.store_content(session_id, 'calc_doc_type', doc_type)
                 record_upload(filename, session_id, True, doc_type=doc_type,
                               content_chars=len(pdf_text) if pdf_text else 0)
-
-                update_task_complete(task_id, success=True, data={
-                    'success': True,
-                    'filename': filename,
-                    'message': f'Successfully loaded: {filename}',
-                    'content_length': len(pdf_text) if pdf_text else 0,
-                    'document_type': doc_type
-                })
-                logging.info(f"Upload processing completed for task {task_id}")
             else:
                 logging.error(f"Document processing failed for task {task_id}: {error_message}")
                 record_upload(filename, session_id, False, error=error_message or 'Document processing failed')

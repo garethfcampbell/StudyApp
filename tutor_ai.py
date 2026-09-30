@@ -47,6 +47,12 @@ MODEL_FALLBACK = "gpt-6-luna"
 # rate limits, 5xx, empty responses) before a feature falls back to
 # MODEL_FALLBACK. Client errors (4xx) and content filtering fail fast.
 PRIMARY_MAX_ATTEMPTS = 3
+
+# The executive summary is retrieval and condensation, not reasoning: low effort
+# roughly halves its latency (benchmarked 11 s -> 6.5 s on gpt-6-sol).
+SUMMARY_REASONING_EFFORT = "low"
+# Document-type classification is a short recognition task: low effort.
+CLASSIFIER_REASONING_EFFORT = "low"
 PRIMARY_RETRY_DELAY = 2  # seconds; multiplied by the attempt number
 
 
@@ -1471,7 +1477,8 @@ REVISION BRIEF:
             try:
                 logging.info(f"ASYNC SUMMARY: Trying {MODEL_PRIMARY} for executive summary generation...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=MODEL_PRIMARY, temperature=0.2, max_tokens=15000, timeout=60
+                    messages=messages, model=MODEL_PRIMARY, temperature=0.2, max_tokens=15000, timeout=60,
+                    reasoning_effort=SUMMARY_REASONING_EFFORT
                 )
                 if result and result.strip():
                     logging.info(f"ASYNC SUMMARY: {MODEL_PRIMARY} succeeded")
@@ -1484,7 +1491,8 @@ REVISION BRIEF:
             try:
                 logging.info(f"ASYNC SUMMARY: Trying {MODEL_FALLBACK} fallback...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=MODEL_FALLBACK, temperature=0.2, max_tokens=15000, timeout=60
+                    messages=messages, model=MODEL_FALLBACK, temperature=0.2, max_tokens=15000, timeout=60,
+                    reasoning_effort=SUMMARY_REASONING_EFFORT
                 )
                 logging.info(f"ASYNC SUMMARY: {MODEL_FALLBACK} fallback succeeded")
                 return _normalize_study_formatting(_strip_code_fences(result))
@@ -1510,7 +1518,8 @@ REVISION BRIEF:
 
             def factory(model):
                 return self._make_async_openai_streaming_call(
-                    messages=messages, model=model, temperature=0.2, max_tokens=15000, timeout=90
+                    messages=messages, model=model, temperature=0.2, max_tokens=15000, timeout=90,
+                    reasoning_effort=SUMMARY_REASONING_EFFORT
                 )
 
             async for chunk in _normalize_study_stream(self._stream_with_fallback(
@@ -2175,7 +2184,8 @@ lecture_notes"""
             for model in (MODEL_FALLBACK, MODEL_PRIMARY):
                 try:
                     content = await self._make_async_openai_fallback_call(
-                        messages, model=model, max_tokens=1000, timeout=30
+                        messages, model=model, max_tokens=1000, timeout=30,
+                        reasoning_effort=CLASSIFIER_REASONING_EFFORT
                     )
                     result = content.strip().lower().replace('"', '').replace("'", "")
                     if "research" in result or "article" in result:

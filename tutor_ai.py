@@ -57,6 +57,10 @@ CLASSIFIER_REASONING_EFFORT = "low"
 # halves chat's time to first token and takes a third off quiz generation.
 CHAT_REASONING_EFFORT = "low"
 QUIZ_REASONING_EFFORT = "low"
+# Essay-round generation and the infographic brief are content generation /
+# condensation: low effort (~40% faster). Essay MARKING keeps the medium default.
+ESSAY_REASONING_EFFORT = "low"
+INFOGRAPHIC_BRIEF_REASONING_EFFORT = "low"
 PRIMARY_RETRY_DELAY = 2  # seconds; multiplied by the attempt number
 
 
@@ -760,13 +764,13 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             logging.info(f"INFOGRAPHIC: Summarizing lecture with {MODEL_PRIMARY} for the image prompt...")
             summary = await self._make_async_openai_fallback_call(
                 messages=messages, model=MODEL_PRIMARY, temperature=0.2,
-                max_tokens=4000, timeout=90
+                max_tokens=4000, timeout=90, reasoning_effort=INFOGRAPHIC_BRIEF_REASONING_EFFORT
             )
         except Exception as primary_error:
             logging.error(f"INFOGRAPHIC: {MODEL_PRIMARY} summarization failed: {primary_error}; trying {MODEL_FALLBACK}")
             summary = await self._make_async_openai_fallback_call(
                 messages=messages, model=MODEL_FALLBACK, temperature=0.2,
-                max_tokens=4000, timeout=90
+                max_tokens=4000, timeout=90, reasoning_effort=INFOGRAPHIC_BRIEF_REASONING_EFFORT
             )
 
         summary = summary.strip()
@@ -960,11 +964,16 @@ List at most 8 issues, most important first. Be precise and literal - do not inv
 
 REVISION BRIEF:
 {notes_brief}"""
-        result = await self._vision_json(review_prompt, [image_b64], "INFOGRAPHIC CHECK")
+        # Main review and the narrow spell-check pass are independent: run them
+        # concurrently (saves ~15 s per infographic) and merge afterwards.
+        review_task = asyncio.create_task(self._vision_json(review_prompt, [image_b64], "INFOGRAPHIC CHECK"))
+        spell_task = asyncio.create_task(self._spellcheck_infographic(image_b64, notes_brief))
+        result = await review_task
         issues = [i for i in (result.get("issues") or []) if isinstance(i, dict)][:8]
-        # Second, narrow pass: letter-by-letter spell-check over enlarged tiles.
         try:
-            issues += await self._spellcheck_infographic(image_b64, notes_brief, already=issues)
+            spell_issues = await spell_task
+            seen = {str(i.get("problem", "")).lower() for i in issues}
+            issues += [t for t in spell_issues if str(t.get("problem", "")).lower() not in seen]
         except Exception as e:
             logging.error(f"INFOGRAPHIC CHECK: spell-check pass unavailable: {e}")
         result = {"ok": not issues, "issues": issues}
@@ -1634,7 +1643,8 @@ End your response with: "Would you like to explore any of these topics in more d
             try:
                 logging.info(f"ASYNC ESSAY: Trying {MODEL_PRIMARY} for essay generation...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=MODEL_PRIMARY, temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model=MODEL_PRIMARY, temperature=0.4, max_tokens=15000, timeout=60,
+                    reasoning_effort=ESSAY_REASONING_EFFORT
                 )
                 if result and result.strip():
                     logging.info(f"ASYNC ESSAY: {MODEL_PRIMARY} succeeded")
@@ -1647,7 +1657,8 @@ End your response with: "Would you like to explore any of these topics in more d
             try:
                 logging.info(f"ASYNC ESSAY: Trying {MODEL_FALLBACK} fallback...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=MODEL_FALLBACK, temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model=MODEL_FALLBACK, temperature=0.4, max_tokens=15000, timeout=60,
+                    reasoning_effort=ESSAY_REASONING_EFFORT
                 )
                 logging.info(f"ASYNC ESSAY: {MODEL_FALLBACK} fallback succeeded")
                 return _normalize_study_formatting(_strip_code_fences(result), mode='essay')
@@ -1674,7 +1685,8 @@ End your response with: "Would you like to explore any of these topics in more d
 
             def factory(model):
                 return self._make_async_openai_streaming_call(
-                    messages=messages, model=model, temperature=0.4, max_tokens=15000, timeout=60
+                    messages=messages, model=model, temperature=0.4, max_tokens=15000, timeout=60,
+                    reasoning_effort=ESSAY_REASONING_EFFORT
                 )
 
             async for chunk in _normalize_study_stream(self._stream_with_fallback(
@@ -1732,18 +1744,18 @@ You MUST use the following structure and formatting precisely.
 
 *[One short qualitative exam question on a major topic of the material, worded exactly as it would appear on an exam paper - in EXAM PAPER MODE, the next original question from the paper, quoted verbatim]*
 
-**Suggested answer** - 6-10 hyphen bullet points giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude). Each bullet must be one or two sentences, grounded in the material, with a citation such as "(see Slide 12)" for lecture notes or "(Question 3)" for an exam paper.
+**Suggested answer** - 5-8 hyphen bullet points giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude). Each bullet must be one or two sentences, grounded in the material, with a citation such as "(see Slide 12)" for lecture notes or "(Question 3)" for an exam paper.
 
-**Additional literature** - 2-3 hyphen bullets, each a real source with one sentence on the point it supports and where in the answer to use it.
+**Additional literature** - 2 hyphen bullets, each a real source with one sentence on the point it supports and where in the answer to use it.
 
-**Real-world examples** - 2-3 hyphen bullets, each a concrete example (named company, market, event, policy episode or crisis) with one sentence on how it strengthens the answer.
+**Real-world examples** - 2 hyphen bullets, each a concrete example (named company, market, event, policy episode or crisis) with one sentence on how it strengthens the answer.
 
 **Why this answer scores highly** - 1-2 sentences explaining, with reference to the QUB Conceptual Equivalents Scale, what lifts it from a Lower Second (describing the concept) to an Upper Second (evaluating strengths and limitations with evidence) to a First (weighing competing perspectives with insight, well-chosen literature and examples).
 
 
 **YOUR QUESTION:** [A DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper. Write the question on the SAME line as the bold label, i.e. "**YOUR QUESTION:** <question>" - do not add a separate heading or repeat the words YOUR QUESTION.]
 
-**Hints** - 2-3 hyphen bullets naming which parts of the material (slide/page citations for lecture notes; for an exam paper, the concepts the question tests) to draw on and what kind of analysis is expected. Do NOT give the answer.
+**Hints** - 2 hyphen bullets naming which parts of the material (slide/page citations for lecture notes; for an exam paper, the concepts the question tests) to draw on and what kind of analysis is expected. Do NOT give the answer.
 
 Write your answer in the box below (aim for 300-500 words - bullet points are fine), then click **Check Answer**. I will mark it against the QUB Conceptual Equivalents Scale and show you a suggested answer.
 
@@ -2497,25 +2509,17 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
         messages = [{"role": "user", "content": prompt}]
 
-        emitted = False
-        try:
-            logging.info(f"CALC_QUESTION_STREAM: Streaming with {MODEL_PRIMARY} + reasoning_effort=medium...")
-            async for chunk in self._make_async_openai_streaming_call(
-                messages=messages,
-                model=MODEL_PRIMARY,
-                max_tokens=8000,
-                timeout=120,
-                reasoning_effort="medium"
-            ):
-                emitted = True
-                yield chunk
-            logging.info("CALC_QUESTION_STREAM: Streaming completed")
-        except Exception as e:
-            logging.error(f"CALC_QUESTION_STREAM: Streaming failed: {e}")
-            if emitted:
-                yield "\n\n[Connection interrupted - please ask me to continue]"
-            else:
-                yield "I'm sorry, the AI service is taking too long to generate a calculation question right now. Please try again in a moment."
+        def factory(model):
+            return self._make_async_openai_streaming_call(
+                messages=messages, model=model, max_tokens=8000, timeout=120, reasoning_effort="medium"
+            )
+
+        # Same policy as the other features: retry the primary model, then fall
+        # back to the secondary, and only then show the failure message.
+        async for chunk in self._stream_with_fallback(
+            factory, "CALC_QUESTION_STREAM", "I'm sorry, the AI service is taking too long to generate a calculation question right now. Please try again in a moment."
+        ):
+            yield chunk
 
     def _get_exam_worked_example_prompt(self, context_truncated, exam_question):
         """Return the exam worked example prompt (single source for streaming and non-streaming)."""
@@ -2617,25 +2621,17 @@ FORMATTING REQUIREMENTS:
         prompt = self._get_exam_worked_example_prompt(context_truncated, exam_question)
         messages = [{"role": "user", "content": prompt}]
 
-        emitted = False
-        try:
-            logging.info(f"Streaming exam worked example for question {q_id}...")
-            async for chunk in self._make_async_openai_streaming_call(
-                messages=messages,
-                model=MODEL_PRIMARY,
-                max_tokens=8000,
-                timeout=120,
-                reasoning_effort="medium"
-            ):
-                emitted = True
-                yield chunk
-            logging.info(f"Exam worked example streaming completed for question {q_id}")
-        except Exception as e:
-            logging.error(f"Exam worked example streaming failed: {e}")
-            if emitted:
-                yield "\n\n[Connection interrupted - please ask me to continue]"
-            else:
-                yield "I'm sorry, the AI service is taking too long to generate a worked example right now. Please try again in a moment."
+        def factory(model):
+            return self._make_async_openai_streaming_call(
+                messages=messages, model=model, max_tokens=8000, timeout=120, reasoning_effort="medium"
+            )
+
+        # Same policy as the other features: retry the primary model, then fall
+        # back to the secondary, and only then show the failure message.
+        async for chunk in self._stream_with_fallback(
+            factory, "EXAM_WORKED_EXAMPLE_STREAM", "I'm sorry, the AI service is taking too long to generate a worked example right now. Please try again in a moment."
+        ):
+            yield chunk
 
     def _get_answer_check_prompt(self, truncated_context, challenge_question, user_answer):
         """Return the calculation answer-check prompt (single source for streaming and non-streaming)."""
@@ -2771,22 +2767,14 @@ CORRECT:
         prompt = self._get_answer_check_prompt(self._get_truncated_context(ANSWER_CHECK_CONTEXT_CHARS), challenge_question, user_answer)
         messages = [{"role": "user", "content": prompt}]
 
-        emitted = False
-        try:
-            logging.info(f"CHECK_CALC_ANSWER_STREAM: Streaming with {MODEL_PRIMARY} + reasoning_effort=medium...")
-            async for chunk in self._make_async_openai_streaming_call(
-                messages=messages,
-                model=MODEL_PRIMARY,
-                max_tokens=8000,
-                timeout=120,
-                reasoning_effort="medium"
-            ):
-                emitted = True
-                yield chunk
-            logging.info("CHECK_CALC_ANSWER_STREAM: Streaming completed")
-        except Exception as e:
-            logging.error(f"CHECK_CALC_ANSWER_STREAM: {MODEL_PRIMARY} streaming failed: {e}")
-            if emitted:
-                yield "\n\n[Connection interrupted - please ask me to continue]"
-            else:
-                yield f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing the evaluation right now. Please try again in a moment."
+        def factory(model):
+            return self._make_async_openai_streaming_call(
+                messages=messages, model=model, max_tokens=8000, timeout=120, reasoning_effort="medium"
+            )
+
+        # Same policy as the other features: retry the primary model, then fall
+        # back to the secondary, and only then show the failure message.
+        async for chunk in self._stream_with_fallback(
+            factory, "CHECK_CALC_ANSWER_STREAM", f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing the evaluation right now. Please try again in a moment."
+        ):
+            yield chunk

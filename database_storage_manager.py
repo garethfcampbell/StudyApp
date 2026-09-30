@@ -125,6 +125,29 @@ class DatabaseStorageManager:
             logging.error(f"Error retrieving content from DB after retries: {e}")
             return None
     
+    def batch_retrieve(self, session_id, content_types):
+        """Read several content types for a session in ONE query (no in-memory
+        cache, so the result is always current across gunicorn workers).
+        Returns {content_type: value} for the types that exist and are unexpired."""
+        def _do_batch():
+            with current_app.app_context():
+                rows = SessionData.query.filter(
+                    SessionData.session_id == session_id,
+                    SessionData.content_type.in_(list(content_types))
+                ).all()
+                out = {}
+                for row in rows:
+                    if row.is_expired():
+                        continue
+                    out[row.content_type] = row.get_content()
+                return out
+
+        try:
+            return self._retry_db_operation(_do_batch, operation_name="db_batch_retrieve") or {}
+        except Exception as e:
+            logging.error(f"Error batch-retrieving content from DB after retries: {e}")
+            return {}
+
     def delete_content(self, session_id, content_type):
         """Delete content for a session from database with retry"""
         def _do_delete():

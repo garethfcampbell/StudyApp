@@ -125,28 +125,34 @@ class TaskStatus(db.Model):
         return datetime.utcnow() > self.expires_at
 
 
-class UploadLog(db.Model):
-    """One row per document upload: what was uploaded and when. Kept for the
-    module team's records; the document text itself is NOT stored here."""
-    __tablename__ = 'upload_log'
+class ActivityLog(db.Model):
+    """One row per event: a document upload or a use of one of the study
+    features (executive summary, essay questions, calculation questions, quiz,
+    infographic, chat...). Kept for the module team's records; document text
+    and student messages are NOT stored here."""
+    __tablename__ = 'activity_log'
 
     id = db.Column(db.Integer, primary_key=True)
-    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)  # UTC
-    filename = db.Column(db.String(256), nullable=False)
-    session_ref = db.Column(db.String(16), nullable=True)   # first characters of the session id, to group a student's uploads
-    doc_type = db.Column(db.String(32), nullable=True)      # lecture_notes / exam_paper / exercise_set / research_article
-    content_chars = db.Column(db.Integer, nullable=True)    # extracted text length
+    occurred_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)  # UTC
+    event = db.Column(db.String(32), nullable=False, index=True)  # see EVENT_LABELS in app.py
+    filename = db.Column(db.String(256), nullable=True)           # document in use at the time
+    session_ref = db.Column(db.String(16), nullable=True)         # first characters of the session id
+    doc_type = db.Column(db.String(32), nullable=True)            # lecture_notes / exam_paper / exercise_set / research_article
+    content_chars = db.Column(db.Integer, nullable=True)          # extracted text length (uploads)
     success = db.Column(db.Boolean, nullable=False, default=True)
     error = db.Column(db.String(256), nullable=True)
+    detail = db.Column(db.String(256), nullable=True)             # short free-text note (e.g. "cached")
 
     def to_dict(self):
         return {
             'id': self.id,
-            'uploaded_at_utc': self.uploaded_at.isoformat() if self.uploaded_at else None,
+            'occurred_at_utc': self.occurred_at.isoformat() if self.occurred_at else None,
+            'event': self.event,
             'filename': self.filename,
             'session_ref': self.session_ref,
             'doc_type': self.doc_type,
             'content_chars': self.content_chars,
             'success': self.success,
             'error': self.error,
+            'detail': self.detail,
         }

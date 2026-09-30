@@ -989,6 +989,7 @@ def simple_chat_stream():
         if not pdf_content:
             return jsonify({'success': False, 'error': 'No document content found.'}), 400
 
+        record_activity('essay_answer' if (essay_mode and current_essay) else 'calculation_answer', session_id)
         tutor_ai = _make_tutor(pdf_content, session_id)
 
         calc_q = queue.Queue()
@@ -1047,6 +1048,7 @@ def simple_chat_stream():
     if not pdf_content:
         return jsonify({'success': False, 'error': 'I need you to upload your lecture notes first before I can help you study! 📚'}), 400
 
+    record_activity('chat', session_id)
     tutor_ai = _make_tutor(pdf_content, session_id)
 
     stored_messages = storage_manager.retrieve_content(session_id, 'messages') or []
@@ -1121,6 +1123,7 @@ def quickaction_stream():
     if not pdf_content:
         return jsonify({'success': False, 'error': 'No document content found. Please upload lecture notes first.'}), 400
 
+    record_activity('essay_questions' if action == 'essay' else 'key_concepts', session_id)
     # Serve from the AI result cache when this document was already processed
     cached = get_cached_ai_result(pdf_content, action) if action != 'essay' else None
     if cached:
@@ -1211,6 +1214,7 @@ def calculation_stream():
     if not pdf_content:
         return jsonify({'success': False, 'error': 'No document content found. Please upload lecture notes first.'}), 400
 
+    record_activity('calculation_question', session_id)
     # Read session data before entering the background thread
     storage_manager = StorageManager()
     doc_type = storage_manager.retrieve_content(session_id, 'calc_doc_type')
@@ -1339,6 +1343,7 @@ def summary_stream():
     if not pdf_content:
         return jsonify({'success': False, 'error': 'Document content not available. Please try uploading your file again.'}), 400
 
+    record_activity('executive_summary', session_id)
     # Serve from the AI result cache when this document was already summarised
     cached = get_cached_ai_result(pdf_content, 'summary')
     if cached:
@@ -1545,6 +1550,8 @@ def start_quiz_generation():
             logging.error("QUIZ POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
 
+        record_activity('multiple_choice_quiz')
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
 
@@ -1639,6 +1646,8 @@ def start_calculation_generation():
         if not pdf_content:
             logging.error("POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
+
+        record_activity('calculation_question')
         
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
@@ -1760,6 +1769,8 @@ def start_calculation_answer_check():
             logging.info("No document content found for calculation answer checking")
             return jsonify({'error': 'No document content found'}), 400
 
+        record_activity('calculation_answer')
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
 
@@ -1855,28 +1866,63 @@ def process_document_with_fallback(file, max_retries=3):
     
     return False, None, "Maximum retries exceeded"
 
-def record_upload(filename, session_id, success, doc_type=None, content_chars=None, error=None):
-    """Append one row to the upload log (never raises - logging must not break uploads)."""
+# Human-readable names for the activity log (event key -> label shown in the admin page)
+EVENT_LABELS = {
+    'upload': 'Upload',
+    'executive_summary': 'Executive summary',
+    'essay_questions': 'Essay questions',
+    'essay_answer': 'Essay answer marked',
+    'calculation_question': 'Calculation question',
+    'calculation_answer': 'Calculation answer checked',
+    'multiple_choice_quiz': 'Multiple choice quiz',
+    'key_concepts': 'Key concepts',
+    'infographic': 'Revision infographic',
+    'infographic_email': 'Infographic emailed',
+    'chat': 'Chat message',
+}
+
+
+def record_activity(event, session_id=None, filename=None, doc_type=None, content_chars=None,
+                    success=True, error=None, detail=None):
+    """Append one row to the activity log. Never raises - logging must not break a feature.
+    Inside a request the session id, filename and document type default to the
+    current session's values."""
     try:
+        if session_id is None or filename is None or doc_type is None:
+            try:
+                session_id = session_id or session.get('session_id')
+                filename = filename or session.get('pdf_filename')
+                if doc_type is None and session_id:
+                    doc_type = StorageManager().retrieve_content(session_id, 'calc_doc_type')
+            except Exception:
+                pass  # outside a request context
         with app.app_context():
-            from models import UploadLog
-            row = UploadLog(
-                filename=(filename or '')[:256],
+            from models import ActivityLog
+            row = ActivityLog(
+                event=(event or 'unknown')[:32],
+                filename=(filename or '')[:256] or None,
                 session_ref=(session_id or '')[:12] or None,
                 doc_type=doc_type,
                 content_chars=content_chars,
                 success=bool(success),
                 error=(str(error)[:256] if error else None),
+                detail=(str(detail)[:256] if detail else None),
             )
             postgres_db.session.add(row)
             postgres_db.session.commit()
-        logging.info(f"UPLOAD LOG: {'ok' if success else 'FAILED'} | {filename} | type={doc_type} | chars={content_chars}")
+        logging.info(f"ACTIVITY LOG: {event} | {'ok' if success else 'FAILED'} | {filename} | type={doc_type}"
+                     + (f" | {detail}" if detail else ""))
     except Exception as e:
         try:
             postgres_db.session.rollback()
         except Exception:
             pass
-        logging.error(f"UPLOAD LOG: could not record upload of {filename}: {e}")
+        logging.error(f"ACTIVITY LOG: could not record {event}: {e}")
+
+
+def record_upload(filename, session_id, success, doc_type=None, content_chars=None, error=None):
+    record_activity('upload', session_id=session_id, filename=filename, doc_type=doc_type or 'unknown',
+                    content_chars=content_chars, success=success, error=error)
 
 
 def process_upload_background(task_id, file_data, filename, session_id):
@@ -2189,6 +2235,8 @@ def start_essay_generation():
             logging.error("ESSAY POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
 
+        record_activity('essay_questions')
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
 
@@ -2278,6 +2326,8 @@ def start_key_concepts_generation():
             logging.error("KEY CONCEPTS POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
 
+        record_activity('key_concepts')
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
 
@@ -2363,6 +2413,8 @@ def start_infographic_generation():
             logging.error("INFOGRAPHIC POLLING: No document content found even with fallback")
             return jsonify({'error': 'No document content found'}), 400
 
+        record_activity('infographic')
+
         # Generate unique task ID
         task_id = str(uuid_module.uuid4())
 
@@ -2414,6 +2466,7 @@ def email_infographic_route():
         image_b64 = payload.get('image_b64')
         document_name = session.get('pdf_filename')
         session['infographic_email'] = email
+        record_activity('infographic_email', detail='requested')
         transport = email_transport()
         logging.info(f"INFOGRAPHIC EMAIL: request received (transport={transport}, task={task_id}, "
                      f"client_image={'yes' if image_b64 else 'no'})")
@@ -2531,21 +2584,54 @@ def clear_session():
     clear_session_data()
     return jsonify({'success': True})
 
+def _admin_authorised():
+    """True when the request carries valid admin credentials.
+
+    Browser access: HTTP Basic authentication (the browser shows a username /
+    password prompt) checked against the ADMIN_USER (default "admin") and
+    ADMIN_PASSWORD secrets. Scripts may instead send an X-Admin-Token header
+    equal to the ADMIN_TOKEN secret. Nothing is accepted in the URL.
+    """
+    password = os.environ.get('ADMIN_PASSWORD', '')
+    user = os.environ.get('ADMIN_USER', 'admin')
+    auth = request.authorization
+    if password and auth and auth.type == 'basic' and auth.username is not None and auth.password is not None:
+        if hmac.compare_digest(auth.username, user) and hmac.compare_digest(auth.password, password):
+            return True
+    token = os.environ.get('ADMIN_TOKEN', '').strip()
+    supplied = (request.headers.get('X-Admin-Token') or '').strip()
+    if token and supplied and hmac.compare_digest(token, supplied):
+        return True
+    return False
+
+
+def _admin_challenge():
+    """401 with a Basic-auth challenge so the browser prompts for the password.
+    If no admin password is configured at all, behave as if the page did not exist."""
+    if not os.environ.get('ADMIN_PASSWORD', '') and not os.environ.get('ADMIN_TOKEN', '').strip():
+        return jsonify({'error': 'Not found'}), 404
+    return Response('Authentication required', 401,
+                    {'WWW-Authenticate': 'Basic realm="QUB Finance AI Tutor admin", charset="UTF-8"'})
+
+
+@app.route('/admin/activity')
 @app.route('/admin/uploads')
 @csrf.exempt
-def admin_uploads():
-    """Upload log for the module team. Protected by the ADMIN_TOKEN secret:
-    open /admin/uploads?token=... (or send an X-Admin-Token header).
-    Add ?format=csv for a spreadsheet download; ?limit=N for more rows (default 500)."""
-    expected = os.environ.get('ADMIN_TOKEN', '').strip()
-    supplied = (request.args.get('token') or request.headers.get('X-Admin-Token') or '').strip()
-    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
-        return jsonify({'error': 'Not found'}), 404
+def admin_activity():
+    """Activity log for the module team: uploads and every feature use, newest first.
+    Password protected (HTTP Basic auth, ADMIN_USER / ADMIN_PASSWORD secrets).
+    ?event=upload (or any event key) filters; ?format=csv downloads; ?limit=N (default 500)."""
+    if not _admin_authorised():
+        return _admin_challenge()
     try:
-        from models import UploadLog
+        from models import ActivityLog
         from datetime import timezone as _tz
         limit = max(1, min(int(request.args.get('limit', 500)), 5000))
-        rows = UploadLog.query.order_by(UploadLog.uploaded_at.desc()).limit(limit).all()
+        event_filter = (request.args.get('event') or '').strip()
+        q = ActivityLog.query
+        if event_filter:
+            q = q.filter(ActivityLog.event == event_filter)
+        rows = q.order_by(ActivityLog.occurred_at.desc()).limit(limit).all()
         try:
             from zoneinfo import ZoneInfo
             display_tz, tz_label = ZoneInfo('Europe/London'), 'Europe/London'
@@ -2555,37 +2641,48 @@ def admin_uploads():
         def local_time(dt):
             return dt.replace(tzinfo=_tz.utc).astimezone(display_tz).strftime('%Y-%m-%d %H:%M:%S') if dt else ''
 
+        def label(ev):
+            return EVENT_LABELS.get(ev, ev)
+
         if request.args.get('format') == 'csv':
             import csv
             import io as _io
             buf = _io.StringIO()
             w = csv.writer(buf)
-            w.writerow([f'uploaded_at_{tz_label}', 'filename', 'document_type', 'text_chars', 'status', 'error', 'session_ref'])
+            w.writerow([f'time_{tz_label}', 'event', 'filename', 'document_type', 'status', 'error', 'detail',
+                        'text_chars', 'session_ref'])
             for r in rows:
-                w.writerow([local_time(r.uploaded_at), r.filename, r.doc_type or '', r.content_chars or '',
-                            'ok' if r.success else 'failed', r.error or '', r.session_ref or ''])
+                w.writerow([local_time(r.occurred_at), label(r.event), r.filename or '', r.doc_type or '',
+                            'ok' if r.success else 'failed', r.error or '', r.detail or '',
+                            r.content_chars or '', r.session_ref or ''])
             return Response(buf.getvalue(), mimetype='text/csv',
-                            headers={'Content-Disposition': 'attachment; filename="upload_log.csv"'})
+                            headers={'Content-Disposition': 'attachment; filename="activity_log.csv"'})
 
         failed_cell = '<span style="color:#b00">failed</span>'
         cells = ''.join(
-            f"<tr><td>{escape(local_time(r.uploaded_at))}</td><td>{escape(r.filename)}</td>"
-            f"<td>{escape(r.doc_type or '')}</td><td style='text-align:right'>{r.content_chars or ''}</td>"
+            f"<tr><td>{escape(local_time(r.occurred_at))}</td><td>{escape(label(r.event))}</td>"
+            f"<td>{escape(r.filename or '')}</td><td>{escape(r.doc_type or '')}</td>"
             f"<td>{'ok' if r.success else failed_cell}</td>"
-            f"<td>{escape(r.error or '')}</td><td>{escape(r.session_ref or '')}</td></tr>"
+            f"<td>{escape(r.error or r.detail or '')}</td><td>{escape(r.session_ref or '')}</td></tr>"
             for r in rows
         )
-        html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Upload log</title>
+        filters = ' '.join(
+            f'<a href="?event={k}">{escape(v)}</a>' for k, v in EVENT_LABELS.items()
+        )
+        html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Activity log</title>
 <style>body{{font-family:system-ui,sans-serif;margin:2rem;color:#222}}table{{border-collapse:collapse;width:100%;font-size:14px}}
-th,td{{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}}th{{background:#f4f4f4}}tr:nth-child(even){{background:#fafafa}}</style></head>
-<body><h2>Upload log</h2><p>{len(rows)} most recent upload(s), times in {tz_label}.
-<a href="?token={escape(supplied)}&amp;format=csv">Download CSV</a></p>
-<table><tr><th>Uploaded</th><th>Filename</th><th>Type</th><th>Text chars</th><th>Status</th><th>Error</th><th>Session</th></tr>{cells}</table>
+th,td{{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}}th{{background:#f4f4f4}}tr:nth-child(even){{background:#fafafa}}
+.f a{{margin-right:.8rem}}</style></head>
+<body><h2>Activity log</h2>
+<p>{len(rows)} most recent event(s){' - ' + escape(label(event_filter)) if event_filter else ''}, times in {tz_label}.
+<a href="?format=csv{'&amp;event=' + escape(event_filter) if event_filter else ''}">Download CSV</a></p>
+<p class="f">Filter: <a href="?">All</a> {filters}</p>
+<table><tr><th>Time</th><th>Event</th><th>Document</th><th>Type</th><th>Status</th><th>Note</th><th>Session</th></tr>{cells}</table>
 </body></html>"""
         return Response(html, mimetype='text/html')
     except Exception:
-        logging.exception("UPLOAD LOG: could not render admin view")
-        return jsonify({'error': 'Could not load the upload log'}), 500
+        logging.exception("ACTIVITY LOG: could not render admin view")
+        return jsonify({'error': 'Could not load the activity log'}), 500
 
 @app.route('/security_metrics')
 @csrf.exempt

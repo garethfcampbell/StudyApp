@@ -46,7 +46,8 @@ Create the following secrets/environment variables before running:
 | `OPENAI_API_KEY` | Yes | OpenAI API key |
 | `SESSION_SECRET` | Yes | Random secret string for Flask sessions |
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `ADMIN_TOKEN` | No | Enables the upload log page at `/admin/uploads?token=<value>` (filename, date/time, document type, status; `&format=csv` to download). If unset, the page returns 404. |
+| `ADMIN_PASSWORD` | No | Password for the activity log page at `/admin/activity` (every upload and feature use - executive summary, essay questions, calculation questions, quiz, infographic, chat - with date/time, document and status; `?event=upload` to filter, `?format=csv` to download). The browser prompts for it; username is `ADMIN_USER` (default `admin`). If neither this nor `ADMIN_TOKEN` is set, the page returns 404. |
+| `ADMIN_TOKEN` | No | Optional alternative for scripts: send it as an `X-Admin-Token` header. |
 | `RESEND_API_KEY` | No | Enables the "Email infographic as PDF" option, sent via Resend over HTTPS (works on Replit). If neither this nor `SMTP_HOST` is set, the option is hidden. |
 | `RESEND_FROM` | No | From address, e.g. `QUB Finance AI Tutor <tutor@yourdomain.ac.uk>` (domain must be verified in Resend). Defaults to `onboarding@resend.dev`, which only delivers to the Resend account owner - for testing. |
 | `SMTP_HOST` | No | Fallback SMTP transport, used only when `RESEND_API_KEY` is unset (e.g. `smtp.office365.com`; outbound SMTP may be blocked on Replit). |

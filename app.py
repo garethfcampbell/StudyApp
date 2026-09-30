@@ -270,10 +270,24 @@ def _activate_essay_practice(session_id, round_text):
 def _stored_doc_type(session_id=None):
     """Return the document classification ('exam_paper' / 'exercise_set' / 'research_article' / 'lecture_notes') stored
     for the session at upload time, or None if unknown."""
+    # Fast path: the type is remembered in the signed session cookie once seen,
+    # which is consistent across gunicorn workers and costs no database read.
+    try:
+        cached = session.get('doc_type')
+        if cached:
+            return cached
+    except Exception:
+        pass  # outside a request context
     try:
         sid = session_id or session.get('session_id')
         if sid:
-            return StorageManager().retrieve_content(sid, 'calc_doc_type')
+            doc_type = StorageManager().retrieve_content(sid, 'calc_doc_type')
+            if doc_type:
+                try:
+                    session['doc_type'] = doc_type
+                except Exception:
+                    pass
+            return doc_type
     except Exception as e:
         logging.debug(f"Could not read stored document type: {e}")
     return None
@@ -980,10 +994,14 @@ def simple_chat_stream():
     session_id = session.get('session_id')
     storage_manager = StorageManager()
 
-    calculation_mode = storage_manager.retrieve_content(session_id, 'calculation_mode_active')
-    current_calculation = storage_manager.retrieve_content(session_id, 'current_calculation_question')
-    essay_mode = storage_manager.retrieve_content(session_id, 'essay_mode_active')
-    current_essay = storage_manager.retrieve_content(session_id, 'current_essay_question')
+    # One query for the practice-mode flags instead of four round trips
+    _flags = storage_manager.batch_retrieve(session_id, [
+        'calculation_mode_active', 'current_calculation_question',
+        'essay_mode_active', 'current_essay_question'])
+    calculation_mode = _flags.get('calculation_mode_active')
+    current_calculation = _flags.get('current_calculation_question')
+    essay_mode = _flags.get('essay_mode_active')
+    current_essay = _flags.get('current_essay_question')
     if (essay_mode and current_essay) or (calculation_mode and current_calculation):
         pdf_content = get_pdf_content_with_fallback()
         if not pdf_content:
@@ -1892,32 +1910,43 @@ def record_activity(event, session_id=None, filename=None, doc_type=None, conten
             try:
                 session_id = session_id or session.get('session_id')
                 filename = filename or session.get('pdf_filename')
-                if doc_type is None and session_id:
-                    doc_type = StorageManager().retrieve_content(session_id, 'calc_doc_type')
+                if doc_type is None:
+                    doc_type = session.get('doc_type')  # cookie only: never a DB read here
             except Exception:
                 pass  # outside a request context
-        with app.app_context():
-            from models import ActivityLog
-            row = ActivityLog(
-                event=(event or 'unknown')[:32],
-                filename=(filename or '')[:256] or None,
-                session_ref=(session_id or '')[:12] or None,
-                doc_type=doc_type,
-                content_chars=content_chars,
-                success=bool(success),
-                error=(str(error)[:256] if error else None),
-                detail=(str(detail)[:256] if detail else None),
-            )
-            postgres_db.session.add(row)
-            postgres_db.session.commit()
+        fields = dict(
+            event=(event or 'unknown')[:32],
+            filename=(filename or '')[:256] or None,
+            session_ref=(session_id or '')[:12] or None,
+            doc_type=doc_type,
+            content_chars=content_chars,
+            success=bool(success),
+            error=(str(error)[:256] if error else None),
+            detail=(str(detail)[:256] if detail else None),
+        )
         logging.info(f"ACTIVITY LOG: {event} | {'ok' if success else 'FAILED'} | {filename} | type={doc_type}"
                      + (f" | {detail}" if detail else ""))
+        if app.testing:
+            _write_activity_row(fields)          # synchronous so tests can assert immediately
+        else:
+            threading.Thread(target=_write_activity_row, args=(fields,), daemon=True).start()
+    except Exception as e:
+        logging.error(f"ACTIVITY LOG: could not record {event}: {e}")
+
+
+def _write_activity_row(fields):
+    """Insert one activity row (runs in a background thread so the request is not delayed)."""
+    try:
+        with app.app_context():
+            from models import ActivityLog
+            postgres_db.session.add(ActivityLog(**fields))
+            postgres_db.session.commit()
     except Exception as e:
         try:
             postgres_db.session.rollback()
         except Exception:
             pass
-        logging.error(f"ACTIVITY LOG: could not record {event}: {e}")
+        logging.error(f"ACTIVITY LOG: could not write {fields.get('event')}: {e}")
 
 
 def record_upload(filename, session_id, success, doc_type=None, content_chars=None, error=None):
@@ -1982,6 +2011,30 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 storage_manager.store_content(session_id, 'calc_doc_type', doc_type)
                 record_upload(filename, session_id, True, doc_type=doc_type,
                               content_chars=len(pdf_text) if pdf_text else 0)
+
+                # Prepare calculation practice in the background so the first
+                # calculation question streams immediately instead of first
+                # spending ~10 s extracting the equation list / exam questions.
+                try:
+                    _prep = TutorAI()
+                    _prep.set_context(pdf_text, doc_type=doc_type)
+                    _loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(_loop)
+                    try:
+                        if _prep.is_question_set():
+                            questions = _loop.run_until_complete(_prep.extract_exam_questions_async())
+                            if questions:
+                                storage_manager.store_content(session_id, 'exam_questions', questions)
+                            logging.info(f"Upload {task_id}: pre-extracted {len(questions or [])} exam questions")
+                        else:
+                            equations = _loop.run_until_complete(_prep.extract_equation_list_async())
+                            if equations:
+                                storage_manager.store_content(session_id, 'equation_list', equations)
+                            logging.info(f"Upload {task_id}: pre-extracted {len(equations or [])} equations")
+                    finally:
+                        _loop.close()
+                except Exception as e:
+                    logging.error(f"Upload {task_id}: calculation pre-extraction failed (will extract on demand): {e}")
             else:
                 logging.error(f"Document processing failed for task {task_id}: {error_message}")
                 record_upload(filename, session_id, False, error=error_message or 'Document processing failed')
@@ -2060,6 +2113,7 @@ def upload_file():
 
             # Store sanitized filename in session
             session['pdf_filename'] = safe_filename
+            session.pop('doc_type', None)  # new document: the type is re-classified
 
             # Clear previous messages (if they exist)
             try:

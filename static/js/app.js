@@ -482,8 +482,8 @@ class AITutor {
     startQuizPolling(taskId, progressDiv, progressInterval) {
         console.log('🧠 Starting quiz polling for task:', taskId);
         
-        const pollInterval = 2000; // 2 seconds between polls
-        const maxAttempts = 45; // Maximum 45 attempts (90 seconds)
+        const pollInterval = 1000; // 1 second between polls
+        const maxAttempts = 90; // Maximum 90 attempts (90 seconds)
         let attempts = 0;
         
         const poll = () => {

@@ -53,6 +53,10 @@ PRIMARY_MAX_ATTEMPTS = 3
 SUMMARY_REASONING_EFFORT = "low"
 # Document-type classification is a short recognition task: low effort.
 CLASSIFIER_REASONING_EFFORT = "low"
+# Chat and the multiple-choice quiz are explanation / retrieval tasks: low effort
+# halves chat's time to first token and takes a third off quiz generation.
+CHAT_REASONING_EFFORT = "low"
+QUIZ_REASONING_EFFORT = "low"
 PRIMARY_RETRY_DELAY = 2  # seconds; multiplied by the attempt number
 
 
@@ -611,9 +615,25 @@ class TutorAI:
             timeout=timeout
         )
 
+        async def _guarded(raw_stream):
+            """Yield chunks; once the model has sent a finish_reason the answer is
+            complete, so a transport error while the connection closes must not
+            be reported to the student as an interruption."""
+            finished = False
+            try:
+                async for chunk in raw_stream:
+                    if chunk.choices and chunk.choices[0].finish_reason:
+                        finished = True
+                    yield chunk
+            except Exception as e:
+                if finished:
+                    logging.warning(f"Streaming ({model}): ignoring error after completion: {type(e).__name__}: {e}")
+                    return
+                raise
+
         lead_buffer = ""
         lead_done = False
-        async for chunk in stream:
+        async for chunk in _guarded(stream):
             if not (chunk.choices and chunk.choices[0].delta.content):
                 continue
             text = chunk.choices[0].delta.content
@@ -1404,7 +1424,8 @@ REVISION BRIEF:
                 model=MODEL_PRIMARY,
                 temperature=0.7,
                 max_tokens=15000,
-                timeout=60
+                timeout=60,
+                reasoning_effort=CHAT_REASONING_EFFORT
             )
 
             # Update conversation history
@@ -1421,7 +1442,8 @@ REVISION BRIEF:
                     model=MODEL_FALLBACK,
                     temperature=0.7,
                     max_tokens=15000,
-                    timeout=60
+                    timeout=60,
+                    reasoning_effort=CHAT_REASONING_EFFORT
                 )
 
                 # Update conversation history
@@ -1445,7 +1467,8 @@ REVISION BRIEF:
         async def _try_stream(model):
             full_response = ""
             async for text in self._make_async_openai_streaming_call(
-                messages=messages, model=model, temperature=0.7, max_tokens=15000, timeout=60
+                messages=messages, model=model, temperature=0.7, max_tokens=15000, timeout=60,
+                reasoning_effort=CHAT_REASONING_EFFORT
             ):
                 full_response += text
                 yield text
@@ -2103,7 +2126,8 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
                     response_format={"type": "json_object"},
                     temperature=0.3,
                     max_tokens=15000,
-                    timeout=60
+                    timeout=60,
+                    reasoning_effort=QUIZ_REASONING_EFFORT
                 )
 
                 logging.info(f"ASYNC QUIZ: {MODEL_PRIMARY} succeeded")
@@ -2121,6 +2145,7 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
                         model=MODEL_FALLBACK,
                         response_format={"type": "json_object"},
                         temperature=0.3,
+                        reasoning_effort=QUIZ_REASONING_EFFORT,
                         max_tokens=15000,
                         timeout=60
                     )

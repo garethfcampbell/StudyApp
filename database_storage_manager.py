@@ -168,6 +168,30 @@ class DatabaseStorageManager:
         except Exception as e:
             logging.error(f"Error deleting content from DB after retries: {e}")
     
+    def delete_many(self, session_id, content_types):
+        """Delete several content types for a session in ONE statement (instead of
+        one round trip per type) and keep the in-memory cache coherent."""
+        types = list(content_types)
+
+        def _do_delete_many():
+            with current_app.app_context():
+                n = SessionData.query.filter(
+                    SessionData.session_id == session_id,
+                    SessionData.content_type.in_(types)
+                ).delete(synchronize_session=False)
+                self.db.session.commit()
+                return n
+
+        try:
+            deleted = self._retry_db_operation(_do_delete_many, operation_name="db_delete_many")
+            for t in types:
+                self._invalidate_optimized_cache(session_id, t)
+            logging.debug(f"Deleted {deleted} row(s) for session {session_id} in one statement")
+            return deleted
+        except Exception as e:
+            logging.error(f"Error bulk-deleting content from DB after retries: {e}")
+            return 0
+
     def clear_session(self, session_id):
         """Clear all content for a session"""
         try:

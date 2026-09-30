@@ -9,6 +9,7 @@ import os
 import json
 import time
 import hashlib
+import hmac
 import logging
 import asyncio
 import threading
@@ -1854,6 +1855,30 @@ def process_document_with_fallback(file, max_retries=3):
     
     return False, None, "Maximum retries exceeded"
 
+def record_upload(filename, session_id, success, doc_type=None, content_chars=None, error=None):
+    """Append one row to the upload log (never raises - logging must not break uploads)."""
+    try:
+        with app.app_context():
+            from models import UploadLog
+            row = UploadLog(
+                filename=(filename or '')[:256],
+                session_ref=(session_id or '')[:12] or None,
+                doc_type=doc_type,
+                content_chars=content_chars,
+                success=bool(success),
+                error=(str(error)[:256] if error else None),
+            )
+            postgres_db.session.add(row)
+            postgres_db.session.commit()
+        logging.info(f"UPLOAD LOG: {'ok' if success else 'FAILED'} | {filename} | type={doc_type} | chars={content_chars}")
+    except Exception as e:
+        try:
+            postgres_db.session.rollback()
+        except Exception:
+            pass
+        logging.error(f"UPLOAD LOG: could not record upload of {filename}: {e}")
+
+
 def process_upload_background(task_id, file_data, filename, session_id):
     """Background function to process uploaded file"""
     import io
@@ -1893,6 +1918,8 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 except Exception as e:
                     logging.error(f"Upload {task_id}: document classification failed: {e}")
                 storage_manager.store_content(session_id, 'calc_doc_type', doc_type)
+                record_upload(filename, session_id, True, doc_type=doc_type,
+                              content_chars=len(pdf_text) if pdf_text else 0)
 
                 update_task_complete(task_id, success=True, data={
                     'success': True,
@@ -1904,10 +1931,12 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 logging.info(f"Upload processing completed for task {task_id}")
             else:
                 logging.error(f"Document processing failed for task {task_id}: {error_message}")
+                record_upload(filename, session_id, False, error=error_message or 'Document processing failed')
                 update_task_failed(task_id, error_message or 'Document processing failed')
                 
         except Exception as e:
             logging.error(f"Background file processing error for task {task_id}: {e}")
+            record_upload(filename, session_id, False, error=str(e))
             update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 @app.route('/upload', methods=['POST'])
@@ -2501,6 +2530,62 @@ def clear_session():
     """Clear current session"""
     clear_session_data()
     return jsonify({'success': True})
+
+@app.route('/admin/uploads')
+@csrf.exempt
+def admin_uploads():
+    """Upload log for the module team. Protected by the ADMIN_TOKEN secret:
+    open /admin/uploads?token=... (or send an X-Admin-Token header).
+    Add ?format=csv for a spreadsheet download; ?limit=N for more rows (default 500)."""
+    expected = os.environ.get('ADMIN_TOKEN', '').strip()
+    supplied = (request.args.get('token') or request.headers.get('X-Admin-Token') or '').strip()
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        return jsonify({'error': 'Not found'}), 404
+    try:
+        from models import UploadLog
+        from datetime import timezone as _tz
+        limit = max(1, min(int(request.args.get('limit', 500)), 5000))
+        rows = UploadLog.query.order_by(UploadLog.uploaded_at.desc()).limit(limit).all()
+        try:
+            from zoneinfo import ZoneInfo
+            display_tz, tz_label = ZoneInfo('Europe/London'), 'Europe/London'
+        except Exception:  # no tz database (e.g. Windows without tzdata): show UTC
+            display_tz, tz_label = _tz.utc, 'UTC'
+
+        def local_time(dt):
+            return dt.replace(tzinfo=_tz.utc).astimezone(display_tz).strftime('%Y-%m-%d %H:%M:%S') if dt else ''
+
+        if request.args.get('format') == 'csv':
+            import csv
+            import io as _io
+            buf = _io.StringIO()
+            w = csv.writer(buf)
+            w.writerow([f'uploaded_at_{tz_label}', 'filename', 'document_type', 'text_chars', 'status', 'error', 'session_ref'])
+            for r in rows:
+                w.writerow([local_time(r.uploaded_at), r.filename, r.doc_type or '', r.content_chars or '',
+                            'ok' if r.success else 'failed', r.error or '', r.session_ref or ''])
+            return Response(buf.getvalue(), mimetype='text/csv',
+                            headers={'Content-Disposition': 'attachment; filename="upload_log.csv"'})
+
+        failed_cell = '<span style="color:#b00">failed</span>'
+        cells = ''.join(
+            f"<tr><td>{escape(local_time(r.uploaded_at))}</td><td>{escape(r.filename)}</td>"
+            f"<td>{escape(r.doc_type or '')}</td><td style='text-align:right'>{r.content_chars or ''}</td>"
+            f"<td>{'ok' if r.success else failed_cell}</td>"
+            f"<td>{escape(r.error or '')}</td><td>{escape(r.session_ref or '')}</td></tr>"
+            for r in rows
+        )
+        html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Upload log</title>
+<style>body{{font-family:system-ui,sans-serif;margin:2rem;color:#222}}table{{border-collapse:collapse;width:100%;font-size:14px}}
+th,td{{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}}th{{background:#f4f4f4}}tr:nth-child(even){{background:#fafafa}}</style></head>
+<body><h2>Upload log</h2><p>{len(rows)} most recent upload(s), times in {tz_label}.
+<a href="?token={escape(supplied)}&amp;format=csv">Download CSV</a></p>
+<table><tr><th>Uploaded</th><th>Filename</th><th>Type</th><th>Text chars</th><th>Status</th><th>Error</th><th>Session</th></tr>{cells}</table>
+</body></html>"""
+        return Response(html, mimetype='text/html')
+    except Exception:
+        logging.exception("UPLOAD LOG: could not render admin view")
+        return jsonify({'error': 'Could not load the upload log'}), 500
 
 @app.route('/security_metrics')
 @csrf.exempt

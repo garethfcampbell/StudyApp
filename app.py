@@ -1398,12 +1398,50 @@ def summary_stream():
     _storage_s = StorageManager()
     early = _storage_s.retrieve_content(session_id, 'executive_summary')
     if not early and _storage_s.retrieve_content(session_id, 'summary_pending'):
-        deadline = time.time() + 12
-        while time.time() < deadline:
-            time.sleep(0.3)
-            early = _storage_s.retrieve_content(session_id, 'executive_summary')
-            if early or not _storage_s.retrieve_content(session_id, 'summary_pending'):
-                break
+        # The early job is still generating: relay its partial text as it grows
+        # (hybrid: first words within seconds AND the early finish).
+        def _relay():
+            sent = ""
+            full = None
+            deadline = time.time() + 90
+            try:
+                while time.time() < deadline:
+                    final = _storage_s.retrieve_content(session_id, 'executive_summary')
+                    if final:
+                        full = final
+                        if len(final) > len(sent):
+                            yield f"data: {json.dumps(final[len(sent):])}\n\n"
+                            sent = final
+                        break
+                    partial = _storage_s.retrieve_content(session_id, 'executive_summary_partial') or ""
+                    if len(partial) > len(sent) and partial.startswith(sent):
+                        yield f"data: {json.dumps(partial[len(sent):])}\n\n"
+                        sent = partial
+                    elif not _storage_s.retrieve_content(session_id, 'summary_pending'):
+                        break  # job finished without a final text (it failed): stop relaying
+                    time.sleep(0.3)
+                if full is None:
+                    full = sent
+                if not full:
+                    full = "I'm having trouble generating the summary right now. Please try again in a moment."
+                    yield f"data: {json.dumps(full)}\n\n"
+                yield "data: [DONE]\n\n"
+            finally:
+                try:
+                    msgs = _storage_s.retrieve_content(session_id, 'messages') or []
+                    msgs.append({'role': 'assistant', 'content': full or sent})
+                    _storage_s.store_content(session_id, 'messages', msgs)
+                except Exception as e:
+                    logging.error(f"SUMMARY STREAM: Error storing relayed summary: {e}")
+
+        def generate_from_store():
+            # The response generator runs after the request context is gone, and
+            # the relay reads the database, so give it an application context.
+            with app.app_context():
+                yield from _relay()
+
+        return Response(generate_from_store(), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
     cached = early or get_cached_ai_result(pdf_content, 'summary')
     if cached:
         try:
@@ -1999,7 +2037,7 @@ def record_upload(filename, session_id, success, doc_type=None, content_chars=No
 # route can answer "complete" directly for fast files instead of the page polling.
 _UPLOAD_DONE_EVENTS = {}
 _UPLOAD_DONE_LOCK = threading.Lock()
-SUMMARY_STATE_KEYS = ('executive_summary', 'summary_pending')
+SUMMARY_STATE_KEYS = ('executive_summary', 'executive_summary_partial', 'summary_pending')
 
 
 def _upload_event(task_id, create=False):
@@ -2016,10 +2054,15 @@ def _signal_upload_done(task_id):
         ev.set()
 
 
+SUMMARY_PARTIAL_WRITE_INTERVAL = 0.5  # seconds between partial-text writes while generating
+
+
 def _generate_summary_early(session_id, pdf_text, task_id):
     """Start the executive summary the moment the text is stored (before the
-    page asks for it) and keep the result in the shared session store, where
-    /summary_stream looks first."""
+    page asks for it). The text is streamed from the model and published to the
+    shared session store as it grows ('executive_summary_partial'), so
+    /summary_stream - possibly in another worker - can show the first words
+    within seconds; the finished text is stored as 'executive_summary'."""
     started = time.perf_counter()
     storage = StorageManager()
     try:
@@ -2028,8 +2071,20 @@ def _generate_summary_early(session_id, pdf_text, task_id):
             tutor.set_context(pdf_text)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+
+            async def _stream_and_publish():
+                buf = ""
+                last_write = 0.0
+                async for chunk in tutor.generate_cheat_sheet_stream_async():
+                    buf += chunk
+                    now = time.perf_counter()
+                    if now - last_write >= SUMMARY_PARTIAL_WRITE_INTERVAL:
+                        storage.store_content(session_id, 'executive_summary_partial', buf)
+                        last_write = now
+                return buf
+
             try:
-                text = loop.run_until_complete(tutor.generate_cheat_sheet_async())
+                text = loop.run_until_complete(_stream_and_publish())
             finally:
                 loop.close()
             if text and text.strip():
@@ -2066,17 +2121,15 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 primary_storage.store_content(session_id, 'pdf_content', pdf_text)
 
                 # Reset per-document state so a fresh document starts from question 1
-                # (and no document type from a previous upload lingers).
-                storage_manager.store_content(session_id, 'equation_list', None)
-                storage_manager.store_content(session_id, 'exam_questions', None)
+                # (and no document type from a previous upload lingers): one bulk
+                # delete instead of nine sequential writes, so the completion
+                # signal reaches the waiting /upload request sooner.
+                storage_manager.delete_many(session_id, ['equation_list', 'exam_questions', 'calc_doc_type',
+                                                         'executive_summary', 'executive_summary_partial', *ESSAY_STATE_KEYS])
                 storage_manager.store_content(session_id, 'current_equation_index', 0)
-                storage_manager.store_content(session_id, 'calc_doc_type', None)
-                for _k in ESSAY_STATE_KEYS:
-                    storage_manager.store_content(session_id, _k, None)
 
                 # Start the executive summary NOW, in parallel with everything
                 # below, so it is usually finished by the time the page asks.
-                storage_manager.store_content(session_id, 'executive_summary', None)
                 storage_manager.store_content(session_id, 'summary_pending', True)
                 threading.Thread(target=_generate_summary_early, args=(session_id, pdf_text, task_id),
                                  daemon=True).start()
@@ -2212,7 +2265,7 @@ def upload_file():
             # second, so wait briefly and, if the job has already reported,
             # return the completed status in this response (no polling needed).
             completed = None
-            if done_event.wait(timeout=1.5):
+            if done_event.wait(timeout=2.0):
                 try:
                     completed = get_task_status(task_id)
                 except Exception:
@@ -2728,7 +2781,7 @@ def clear_session_data(session_id=None):
             'equation_list', 'exam_questions', 'calc_doc_type', 'current_equation_index',
             'current_essay_question', 'essay_mode_active', 'used_essay_questions',
             'infographic_email_request', 'infographic_email_result',
-            'executive_summary', 'summary_pending'
+            'executive_summary', 'executive_summary_partial', 'summary_pending'
         ]
         
         # One DELETE for all types (this used to be 17 sequential round trips,

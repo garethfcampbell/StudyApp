@@ -365,7 +365,7 @@ def cleanup_task(task_id):
 
 def run_calculation_generation_background(task_id, session_id, pdf_content):
     """
-    Background function to generate calculation questions using async gpt-6.1-sol.
+    Background function to generate calculation questions using async gpt-6-sol.
     On first call, extracts an ordered equation list from the notes and stores it in the
     session. Subsequent calls use the stored list and advance the index.
     """
@@ -448,7 +448,7 @@ def run_calculation_generation_background(task_id, session_id, pdf_content):
 
 def run_calculation_answer_check_background(task_id, challenge_question, user_answer, pdf_content, doc_type=None):
     """
-    Background function to check calculation answers using async gpt-6.1-sol.
+    Background function to check calculation answers using async gpt-6-sol.
     This runs in a separate thread to avoid blocking the web server.
     """
     try:
@@ -457,7 +457,7 @@ def run_calculation_answer_check_background(task_id, challenge_question, user_an
         # Initialize TutorAI and set context
         tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
         
-        # Check calculation answer using async method with gpt-6.1-sol
+        # Check calculation answer using async method with gpt-6-sol
         async def async_answer_check():
             try:
                 return await tutor_ai.check_calculation_answer_async(challenge_question, user_answer)
@@ -901,7 +901,7 @@ def simple_chat():
                         'error': 'Error checking your answer. Please try again.'
                     }, 500
             else:
-                # Normal chat mode - get response asynchronously using gpt-6.1-sol primary with Gemini fallback
+                # Normal chat mode - get response asynchronously using gpt-6-sol primary with Gemini fallback
                 response = await tutor_ai.get_response_async(user_message)
                 
                 if response:

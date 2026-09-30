@@ -267,6 +267,26 @@ def _activate_essay_practice(session_id, round_text):
         logging.error(f"ESSAY PRACTICE: could not store round state: {e}")
 
 
+class _PhaseTimer:
+    """Accumulates elapsed-time marks for one request and logs them in a single
+    line, e.g. "CHAT PHASES: init_session=180ms flags=150ms ... first_token=2900ms"."""
+    def __init__(self, label):
+        self.label = label
+        self.t0 = time.perf_counter()
+        self.last = self.t0
+        self.marks = []
+
+    def mark(self, name):
+        now = time.perf_counter()
+        self.marks.append((name, int((now - self.last) * 1000), int((now - self.t0) * 1000)))
+        self.last = now
+
+    def log(self):
+        parts = " ".join(f"{n}=+{d}ms" for n, d, _ in self.marks)
+        total = self.marks[-1][2] if self.marks else 0
+        logging.info(f"{self.label} PHASES: {parts} | total_to_last_mark={total}ms")
+
+
 def _stored_doc_type(session_id=None):
     """Return the document classification ('exam_paper' / 'exercise_set' / 'research_article' / 'lecture_notes') stored
     for the session at upload time, or None if unknown."""
@@ -978,7 +998,9 @@ def simple_chat_stream():
     """Streaming chat endpoint using Server-Sent Events."""
     import queue
 
+    _ph = _PhaseTimer('CHAT')
     init_session()
+    _ph.mark('init_session')
 
     data = request.get_json()
     if not data or 'message' not in data:
@@ -1002,6 +1024,7 @@ def simple_chat_stream():
     current_calculation = _flags.get('current_calculation_question')
     essay_mode = _flags.get('essay_mode_active')
     current_essay = _flags.get('current_essay_question')
+    _ph.mark('mode_flags')
     if (essay_mode and current_essay) or (calculation_mode and current_calculation):
         pdf_content = get_pdf_content_with_fallback()
         if not pdf_content:
@@ -1066,12 +1089,15 @@ def simple_chat_stream():
     if not pdf_content:
         return jsonify({'success': False, 'error': 'I need you to upload your lecture notes first before I can help you study! 📚'}), 400
 
+    _ph.mark('pdf_content')
     record_activity('chat', session_id)
     tutor_ai = _make_tutor(pdf_content, session_id)
+    _ph.mark('tutor')
 
     stored_messages = storage_manager.retrieve_content(session_id, 'messages') or []
     for msg in stored_messages:
         tutor_ai.conversation_history.append({'role': msg['role'], 'content': msg['content']})
+    _ph.mark('history')
 
     # Use a thread to run the async generator and push chunks into a queue
     q = queue.Queue()
@@ -1080,8 +1106,13 @@ def simple_chat_stream():
         with app.app_context():
             async def _consume():
                 full_response = ""
+                first_logged = False
                 try:
                     async for chunk in tutor_ai.get_response_stream_async(user_message):
+                        if not first_logged:
+                            first_logged = True
+                            _ph.mark('first_token')
+                            _ph.log()
                         full_response += chunk
                         q.put(chunk)
                 except Exception as e:
@@ -1362,8 +1393,18 @@ def summary_stream():
         return jsonify({'success': False, 'error': 'Document content not available. Please try uploading your file again.'}), 400
 
     record_activity('executive_summary', session_id)
-    # Serve from the AI result cache when this document was already summarised
-    cached = get_cached_ai_result(pdf_content, 'summary')
+    # The upload job starts the summary as soon as the text is stored: use that
+    # result if it is ready (or about to be), otherwise the process cache.
+    _storage_s = StorageManager()
+    early = _storage_s.retrieve_content(session_id, 'executive_summary')
+    if not early and _storage_s.retrieve_content(session_id, 'summary_pending'):
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            time.sleep(0.3)
+            early = _storage_s.retrieve_content(session_id, 'executive_summary')
+            if early or not _storage_s.retrieve_content(session_id, 'summary_pending'):
+                break
+    cached = early or get_cached_ai_result(pdf_content, 'summary')
     if cached:
         try:
             _storage = StorageManager()
@@ -1954,6 +1995,59 @@ def record_upload(filename, session_id, success, doc_type=None, content_chars=No
                     content_chars=content_chars, success=success, error=error)
 
 
+# Signalled by the upload job as soon as the document is stored, so the upload
+# route can answer "complete" directly for fast files instead of the page polling.
+_UPLOAD_DONE_EVENTS = {}
+_UPLOAD_DONE_LOCK = threading.Lock()
+SUMMARY_STATE_KEYS = ('executive_summary', 'summary_pending')
+
+
+def _upload_event(task_id, create=False):
+    with _UPLOAD_DONE_LOCK:
+        ev = _UPLOAD_DONE_EVENTS.get(task_id)
+        if ev is None and create:
+            ev = _UPLOAD_DONE_EVENTS[task_id] = threading.Event()
+        return ev
+
+
+def _signal_upload_done(task_id):
+    ev = _upload_event(task_id)
+    if ev:
+        ev.set()
+
+
+def _generate_summary_early(session_id, pdf_text, task_id):
+    """Start the executive summary the moment the text is stored (before the
+    page asks for it) and keep the result in the shared session store, where
+    /summary_stream looks first."""
+    started = time.perf_counter()
+    storage = StorageManager()
+    try:
+        with app.app_context():
+            tutor = TutorAI()
+            tutor.set_context(pdf_text)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                text = loop.run_until_complete(tutor.generate_cheat_sheet_async())
+            finally:
+                loop.close()
+            if text and text.strip():
+                storage.store_content(session_id, 'executive_summary', text)
+                store_cached_ai_result(pdf_text, 'summary', text)
+                logging.info(f"Upload {task_id}: early summary ready in {time.perf_counter() - started:.1f}s")
+            else:
+                logging.warning(f"Upload {task_id}: early summary came back empty")
+    except Exception as e:
+        logging.error(f"Upload {task_id}: early summary failed (page will generate it): {e}")
+    finally:
+        try:
+            with app.app_context():
+                storage.store_content(session_id, 'summary_pending', False)
+        except Exception as e:
+            logging.error(f"Upload {task_id}: could not clear summary_pending: {e}")
+
+
 def process_upload_background(task_id, file_data, filename, session_id):
     """Background function to process uploaded file"""
     import io
@@ -1980,6 +2074,13 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 for _k in ESSAY_STATE_KEYS:
                     storage_manager.store_content(session_id, _k, None)
 
+                # Start the executive summary NOW, in parallel with everything
+                # below, so it is usually finished by the time the page asks.
+                storage_manager.store_content(session_id, 'executive_summary', None)
+                storage_manager.store_content(session_id, 'summary_pending', True)
+                threading.Thread(target=_generate_summary_early, args=(session_id, pdf_text, task_id),
+                                 daemon=True).start()
+
                 # Report the upload complete NOW so the page can start the summary;
                 # the document-type classification below runs in this thread
                 # afterwards (features that need it fall back to a keyword check
@@ -1991,6 +2092,7 @@ def process_upload_background(task_id, file_data, filename, session_id):
                     'content_length': len(pdf_text) if pdf_text else 0,
                     'document_type': None
                 })
+                _signal_upload_done(task_id)
                 logging.info(f"Upload processing completed for task {task_id}")
 
                 # Classify the document once (exam paper / exercise sheet / research
@@ -2039,11 +2141,13 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 logging.error(f"Document processing failed for task {task_id}: {error_message}")
                 record_upload(filename, session_id, False, error=error_message or 'Document processing failed')
                 update_task_failed(task_id, error_message or 'Document processing failed')
+                _signal_upload_done(task_id)
                 
         except Exception as e:
             logging.error(f"Background file processing error for task {task_id}: {e}")
             record_upload(filename, session_id, False, error=str(e))
             update_task_failed(task_id, "An internal error occurred. Please try again.")
+            _signal_upload_done(task_id)
 
 @app.route('/upload', methods=['POST'])
 @csrf.exempt
@@ -2081,19 +2185,11 @@ def upload_file():
 
         if file and secure_name and secure_name.lower().endswith(('.pdf', '.pptx')):
             
-            # Check if there's already content in storage - if so, clear the session first
+            # Reset the previous document's state here (one bulk delete) instead
+            # of the page making a separate clear-session request first.
             session_id = session.get('session_id')
-            if session_id:
-                # Check both storage systems for existing content
-                existing_content = (primary_storage.retrieve_content(session_id, 'pdf_content') or 
-                                  storage_manager.retrieve_content(session_id, 'pdf_content'))
-                if existing_content:
-                    # Clear content from both storage systems
-                    storage_manager.delete_content(session_id, 'pdf_content')
-                    primary_storage.delete_content(session_id, 'pdf_content')
-                    storage_manager.store_content(session_id, 'messages', [])
-                    primary_storage.store_content(session_id, 'messages', [])
-                    
+            clear_session_data(session_id)
+
             # Read file data into memory immediately
             file_data = file.read()
             
@@ -2104,6 +2200,7 @@ def upload_file():
             create_task(task_id, "pending")
             
             # Start background thread for file processing
+            done_event = _upload_event(task_id, create=True)
             thread = threading.Thread(
                 target=process_upload_background,
                 args=(task_id, file_data, safe_filename, session_id),
@@ -2111,26 +2208,36 @@ def upload_file():
             )
             thread.start()
 
+            # Fast path: most files are extracted and stored in well under a
+            # second, so wait briefly and, if the job has already reported,
+            # return the completed status in this response (no polling needed).
+            completed = None
+            if done_event.wait(timeout=1.5):
+                try:
+                    completed = get_task_status(task_id)
+                except Exception:
+                    completed = None
+            with _UPLOAD_DONE_LOCK:
+                _UPLOAD_DONE_EVENTS.pop(task_id, None)
+
             # Store sanitized filename in session
             session['pdf_filename'] = safe_filename
             session.pop('doc_type', None)  # new document: the type is re-classified
 
-            # Clear previous messages (if they exist)
-            try:
-                storage_manager.store_content(session_id, 'messages', [])
-            except:
-                pass  # Ignore if session doesn't exist in storage yet
-
+            # Clear previous messages (one write: DB + this worker's cache)
             try:
                 primary_storage.store_content(session_id, 'messages', [])
-            except:
+            except Exception:
                 pass  # Ignore if session doesn't exist in storage yet
 
-            # Return task_id for polling (sanitized + escaped filename only)
-            return jsonify({
-                'task_id': task_id,
-                'filename': safe_filename
-            })
+            # Return task_id for polling (sanitized + escaped filename only);
+            # includes the finished status when the job already completed.
+            payload = {'task_id': task_id, 'filename': safe_filename}
+            if completed and completed.get('status') in ('complete', 'failed'):
+                payload['status'] = completed.get('status')
+                payload['data'] = completed.get('data')
+                payload['error'] = completed.get('error')
+            return jsonify(payload)
         else:
             return jsonify({'error': 'Invalid file type. Please upload PDF or PPTX files only.'}), 400
 
@@ -2620,14 +2727,16 @@ def clear_session_data(session_id=None):
             'messages', 'quiz_questions', 'practice_equations',
             'equation_list', 'exam_questions', 'calc_doc_type', 'current_equation_index',
             'current_essay_question', 'essay_mode_active', 'used_essay_questions',
-            'infographic_email_request', 'infographic_email_result'
+            'infographic_email_request', 'infographic_email_result',
+            'executive_summary', 'summary_pending'
         ]
         
-        for content_type in content_types:
-            try:
-                storage_manager.delete_content(session_id, content_type)
-            except Exception as e:
-                logging.debug(f"Could not delete {content_type} for session {session_id}: {e}")
+        # One DELETE for all types (this used to be 17 sequential round trips,
+        # which made the pre-upload clear take over two seconds).
+        try:
+            storage_manager.delete_many(session_id, content_types)
+        except Exception as e:
+            logging.debug(f"Could not clear session content for {session_id}: {e}")
     
     # Clear the Flask session but KEEP the session id. Regenerating it here made
     # any request that raced the clear (e.g. an upload started in the same

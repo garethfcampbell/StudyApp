@@ -494,18 +494,10 @@ function addNewMessage(role, content) {
             benefitsSummary.style.display = 'none';
         }
         
-        // Clear session on backend. Returns a promise so the caller can wait
-        // for it before uploading (the clear must not race the upload).
-        return fetch('/clear_session', {
-            method: 'POST'
-        })
-        .then(response => response.json())
-        .then(data => {
-            console.log('Session cleared successfully for new upload');
-        })
-        .catch(error => {
-            console.error('Error clearing session:', error);
-        });
+        // The backend reset now happens inside the /upload request itself (one
+        // round trip fewer), so this only clears the page. Kept as a promise
+        // for the caller's existing flow.
+        return Promise.resolve();
     }
     
     // Make clearSession available globally for onclick handlers
@@ -812,17 +804,26 @@ function addNewMessage(role, content) {
         }))
         .then(response => response.json())
         .then(data => {
-            if (data.error) {
+            if (data.error && !data.task_id) {
                 throw new Error(data.error);
             }
-            
+
+            // Fast path: for small files the upload response already carries
+            // the finished status, so the first "poll" uses it without a request.
+            let prefetched = (data.status === 'complete' || data.status === 'failed')
+                ? { status: data.status, data: data.data, error: data.error } : null;
+            // Poll quickly at first (300 ms), then back off to once a second.
+            let uploadPollCount = 0;
+            const nextPollDelay = () => (uploadPollCount++ < 12 ? 300 : 1000);
+
             // Start polling for upload processing status.
             // Network errors retry, but only up to maxPollErrors before giving up.
             let pollErrorCount = 0;
             const maxPollErrors = 120;
             const pollUploadStatus = () => {
-                fetch(`/upload_status/${data.task_id}`)
-                    .then(response => response.json())
+                (prefetched
+                    ? Promise.resolve((p => { prefetched = null; return p; })(prefetched))
+                    : fetch(`/upload_status/${data.task_id}`).then(response => response.json()))
                     .then(statusData => {
                         console.log('UPLOAD POLLING:', statusData);
                         
@@ -908,14 +909,14 @@ function addNewMessage(role, content) {
                             `;
                         } else {
                             // Still processing, poll again
-                            setTimeout(pollUploadStatus, 1000);
+                            setTimeout(pollUploadStatus, nextPollDelay());
                         }
                     })
                     .catch(error => {
                         console.error('Error polling upload status:', error);
                         pollErrorCount++;
                         if (pollErrorCount < maxPollErrors) {
-                            setTimeout(pollUploadStatus, 1000); // Retry on error
+                            setTimeout(pollUploadStatus, nextPollDelay()); // Retry on error
                             return;
                         }
                         // Too many failures — stop polling and show an error

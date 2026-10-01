@@ -1819,7 +1819,7 @@ Would you like to explore any of these topics in more detail?
 {{MODE}}
             QUESTION STYLE: short qualitative exam questions of the kind set in QUB Finance examinations - answered in prose in roughly 15-25 minutes (about 300-500 words) - using command words such as "Explain", "Discuss", "Critically evaluate", "Compare and contrast", "To what extent", "Assess". They must ask for analysis, evaluation or application, not description alone, and be realistic in wording, scope and difficulty. For an exam paper or question sheet, base them on the discursive questions it contains and the topics it tests; for a research article, on its question, method, findings and implications.
 
-            ADDITIONAL LITERATURE RULE: cite only real, well-established academic works you are confident exist (seminal papers, textbooks or widely cited studies), giving author(s) and year and, where sure, the title or journal. If not certain a specific source exists, describe the body of literature instead (e.g. "the empirical literature on post-earnings-announcement drift") rather than inventing a citation.
+            ADDITIONAL LITERATURE RULE: cite the foundational, peer-reviewed academic literature on the topic - the seminal journal articles that established the theory or the key empirical findings (e.g. Markowitz (1952), Journal of Finance; Fama (1970), Journal of Finance; Black and Scholes (1973), Journal of Political Economy; Jensen and Meckling (1976), Journal of Financial Economics). Do NOT cite textbooks (Hull, Brealey and Myers, Bodie Kane and Marcus, etc.) - students already have the lecture notes for that level. Cite only real works you are confident exist, giving author(s), year, title and journal. If not certain a specific article exists, describe the body of literature instead (e.g. "the empirical literature on post-earnings-announcement drift") rather than inventing a citation.
 {{USED}}
 ---
 
@@ -1846,6 +1846,7 @@ Print the template below EXACTLY: the bold labels, the order, the blank lines an
 
 - <source 1>
 - <source 2>
+- <Google Scholar search suggestion>
 
 **Real-world examples**
 
@@ -1869,7 +1870,7 @@ Write your answer in the box below (aim for 300-500 words - bullet points are fi
 
 - <model question>: one short qualitative exam question on a major topic of the material, worded exactly as it would appear on an exam paper, ending with its marks in square brackets. In EXAM PAPER MODE, the next original question from the paper, quoted verbatim.
 - Suggested answer points: 5-8 bullets giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude). Each bullet is one or two sentences, grounded in the material, with a citation such as "(see Slide 12)" for lecture notes or "(Question 3)" for an exam paper.
-- Additional literature: 2 bullets, each a real source with one sentence on the point it supports and where in the answer to use it.
+- Additional literature: 2 bullets, each a foundational peer-reviewed journal article (not a textbook) with one sentence on the point it supports and where in the answer to use it. The third bullet encourages the student to search Google Scholar for recent academic work on the topic and gives a specific search phrase, e.g. "Search Google Scholar for recent papers on 'post-earnings-announcement drift' (2015 onwards) to add up-to-date evidence to this answer".
 - Real-world examples: 2 bullets, each a concrete example (named company, market, event, policy episode or crisis) with one sentence on how it strengthens the answer.
 - Why this answer scores highly: 1-2 sentences explaining, with reference to the QUB Conceptual Equivalents Scale, what lifts it from a Lower Second (describing the concept) to an Upper Second (evaluating strengths and limitations with evidence) to a First (weighing competing perspectives with insight, well-chosen literature and examples).
 - <student's question>: a DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper, on the SAME line as the bold label. Do not add a separate heading or repeat the words YOUR QUESTION.
@@ -1938,6 +1939,7 @@ REQUIRED OUTPUT STRUCTURE: print the template below EXACTLY (bold labels, order,
 
 - <literature 1>
 - <literature 2>
+- <Google Scholar search suggestion>
 - <example 1>
 - <example 2>
 - <the single most important improvement>
@@ -1949,7 +1951,7 @@ CONTENT RULES (never print these):
 - Strengths: 2-4 bullets, each naming a specific point or quality in the answer.
 - Gaps: 3-5 bullets, each naming the specific concept, theory or argument from the material that should have been used (with a citation), or the analytical step that was skipped.
 - Suggested answer: 6-10 bullets giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude), each grounded in the material with a citation.
-- To reach the next band: 2-3 bullets of additional literature (real sources, author and year) that would strengthen the answer, each with the point it supports; 2-3 bullets of real-world examples, each with how to use it; then 1 bullet with the single most important structural or analytical improvement.
+- To reach the next band: 2-3 bullets of additional literature - foundational peer-reviewed journal articles (author(s), year, title, journal), NOT textbooks - that would strengthen the answer, each with the point it supports; then 1 bullet encouraging the student to search Google Scholar for recent academic work on the topic, with a specific search phrase; then 2-3 bullets of real-world examples, each with how to use it; then 1 bullet with the single most important structural or analytical improvement.
 - The closing sentence ("Click **Next Question** ...") is printed word for word."""
 
     async def check_essay_answer_stream_async(self, essay_round_text, user_answer):

@@ -490,28 +490,64 @@ class AITutor {
             attempts++;
             console.log(`🧠 Quiz polling attempt ${attempts}/${maxAttempts} for task ${taskId}`);
             
+            const removeProgress = () => {
+                if (progressInterval) {
+                    clearInterval(progressInterval);
+                    progressInterval = null;
+                }
+                const messagesDiv = document.getElementById('messages');
+                if (messagesDiv && messagesDiv.contains(progressDiv)) {
+                    messagesDiv.removeChild(progressDiv);
+                }
+            };
+
             fetch(`/quiz_status/${taskId}`)
             .then(response => response.json())
             .then(data => {
                 console.log('🧠 Quiz poll response:', data);
-                
+
+                // Still generating, but some questions are already complete:
+                // start the quiz with them and keep polling for the rest.
+                if (data.status === 'pending' && Array.isArray(data.partial) && data.partial.length > 0) {
+                    if (!this.currentQuiz || this.currentQuiz.taskId !== taskId) {
+                        removeProgress();
+                        this.currentQuiz = {
+                            taskId: taskId,
+                            questions: data.partial,
+                            currentQuestionIndex: 0,
+                            totalQuestions: 15,   // expected; corrected when generation finishes
+                            score: 0,
+                            loading: true
+                        };
+                        this.setRevisionButtonState('startQuiz', 'active');
+                        this.showQuiz();
+                    } else if (data.partial.length > this.currentQuiz.questions.length) {
+                        this.mergeQuizQuestions(data.partial);
+                    }
+                }
+
                 if (data.status === 'complete' && data.success) {
                     console.log('✓ Quiz generation completed');
-                    
-                    // Stop progress bar
-                    if (progressInterval) {
-                        clearInterval(progressInterval);
+                    removeProgress();
+
+                    // Quiz already on screen from the partial questions: just
+                    // fill in the rest and the real total.
+                    if (this.currentQuiz && this.currentQuiz.taskId === taskId && data.data && data.data.length > 0) {
+                        this.mergeQuizQuestions(data.data);
+                        this.currentQuiz.totalQuestions = this.currentQuiz.questions.length;
+                        this.currentQuiz.loading = false;
+                        this.refreshQuizProgressText();
+                        if (this.currentQuiz.awaitingNext) {
+                            this.currentQuiz.awaitingNext = false;
+                            this.displayQuizQuestion();
+                        }
+                        return;
                     }
-                    
-                    // Remove progress bar
-                    const messagesDiv = document.getElementById('messages');
-                    if (messagesDiv && messagesDiv.contains(progressDiv)) {
-                        messagesDiv.removeChild(progressDiv);
-                    }
-                    
+
                     // Set up quiz with the generated questions
                     if (data.data && data.data.length > 0) {
                         this.currentQuiz = {
+                            taskId: taskId,
                             questions: data.data,
                             currentQuestionIndex: 0,
                             totalQuestions: data.data.length,
@@ -525,6 +561,9 @@ class AITutor {
                         this.addMessage('assistant', '❌ No quiz questions were generated. Please try again.');
                     }
                     
+                } else if (data.status === 'failed' && this.currentQuiz && this.currentQuiz.taskId === taskId) {
+                    console.error('✗ Quiz generation failed after partial questions:', data.error);
+                    this.finishQuizEarly();
                 } else if (data.status === 'failed' || data.status === 'error') {
                     console.error('✗ Quiz generation failed:', data.error);
                     
@@ -829,7 +868,7 @@ class AITutor {
         this.showQuizResult({
             correct: isCorrect,
             explanation: currentQuestion.explanation,
-            quiz_complete: currentQuestionIndex >= this.currentQuiz.totalQuestions - 1,
+            quiz_complete: !this.currentQuiz.loading && currentQuestionIndex >= this.currentQuiz.totalQuestions - 1,
             final_score: this.currentQuiz.score,
             total_questions: this.currentQuiz.totalQuestions
         });
@@ -944,9 +983,62 @@ class AITutor {
     
     showNextQuestion() {
         console.log('Moving to next question:', this.currentQuiz.currentQuestionIndex);
+        if (this.currentQuiz.loading && this.currentQuiz.currentQuestionIndex >= this.currentQuiz.questions.length) {
+            // The next question is still being generated: show a short wait;
+            // the poll displays it as soon as it arrives.
+            this.currentQuiz.awaitingNext = true;
+            if (this.quizContent) {
+                this.quizContent.innerHTML = '';
+                const wait = document.createElement('div');
+                wait.className = 'text-center text-muted py-4';
+                wait.innerHTML = '<div class="spinner-border spinner-border-sm me-2" role="status"></div>Preparing the next question...';
+                this.quizContent.appendChild(wait);
+            }
+            return;
+        }
         this.displayQuizQuestion();
     }
-    
+
+    mergeQuizQuestions(questions) {
+        // Append questions that arrived since the last poll (never reorder the
+        // ones already shown). If the finished set does not start with the same
+        // question (the stream was regenerated), add only the ones not yet seen.
+        if (!this.currentQuiz) return;
+        const have = this.currentQuiz.questions.length;
+        const sameStart = have > 0 && questions.length > 0 && questions[0].question === this.currentQuiz.questions[0].question;
+        if (sameStart) {
+            if (questions.length > have) {
+                this.currentQuiz.questions = this.currentQuiz.questions.concat(questions.slice(have));
+            }
+        } else {
+            const seen = new Set(this.currentQuiz.questions.map(q => q.question));
+            this.currentQuiz.questions = this.currentQuiz.questions.concat(questions.filter(q => !seen.has(q.question)));
+        }
+        if (this.currentQuiz.awaitingNext && this.currentQuiz.currentQuestionIndex < this.currentQuiz.questions.length) {
+            this.currentQuiz.awaitingNext = false;
+            this.displayQuizQuestion();
+        }
+    }
+
+    refreshQuizProgressText() {
+        const span = document.querySelector('.progress-text span:first-child');
+        if (span && this.currentQuiz) {
+            span.textContent = `Question ${this.currentQuiz.currentQuestionIndex + 1} of ${this.currentQuiz.totalQuestions}`;
+        }
+    }
+
+    finishQuizEarly() {
+        // Generation stopped: the quiz keeps the questions it already has
+        if (!this.currentQuiz) return;
+        this.currentQuiz.loading = false;
+        this.currentQuiz.totalQuestions = this.currentQuiz.questions.length;
+        if (this.currentQuiz.awaitingNext || this.currentQuiz.currentQuestionIndex >= this.currentQuiz.questions.length) {
+            this.endQuiz();
+        } else {
+            this.refreshQuizProgressText();
+        }
+    }
+
     endQuiz() {
         console.log('Quiz ending - showing Revision Techniques panel');
         

@@ -40,8 +40,25 @@ _STOPWORDS = frozenset((
 ))
 
 # Primary and fallback model names used across all features.
-MODEL_PRIMARY = "gpt-6-sol"
-MODEL_FALLBACK = "gpt-6-luna"
+MODEL_PRIMARY = "gpt-6-luna"
+MODEL_FALLBACK = "gpt-6-sol"
+MODEL_FAST = "gpt-6-luna"
+
+# First-choice model per feature. Generation / condensation features run on the
+# fast, 20x cheaper model (benchmarked as faster too); chat, answer marking and
+# the infographic formula review keep MODEL_PRIMARY. The fallback for a feature
+# is always "the other" model.
+SUMMARY_MODEL = MODEL_FAST
+ESSAY_MODEL = MODEL_FAST        # essay-round generation (marking stays on MODEL_PRIMARY)
+QUIZ_MODEL = MODEL_FAST
+CALC_MODEL = MODEL_FAST         # calculation questions / worked examples (answer checking stays on MODEL_PRIMARY)
+EXTRACTION_MODEL = MODEL_FAST   # equation list / exam question extraction
+BRIEF_MODEL = MODEL_FAST        # infographic text brief
+
+
+def _fallback_for(model):
+    """The other model: luna falls back to sol and sol to luna."""
+    return MODEL_FALLBACK if model == MODEL_PRIMARY else MODEL_PRIMARY
 
 # How many times the PRIMARY model is attempted (timeouts, connection errors,
 # rate limits, 5xx, empty responses) before a feature falls back to
@@ -50,17 +67,17 @@ PRIMARY_MAX_ATTEMPTS = 3
 
 # The executive summary is retrieval and condensation, not reasoning: low effort
 # roughly halves its latency (benchmarked 11 s -> 6.5 s on gpt-6-sol).
-SUMMARY_REASONING_EFFORT = "low"
+SUMMARY_REASONING_EFFORT = "medium"
 # Document-type classification is a short recognition task: low effort.
-CLASSIFIER_REASONING_EFFORT = "low"
+CLASSIFIER_REASONING_EFFORT = "medium"
 # Chat and the multiple-choice quiz are explanation / retrieval tasks: low effort
 # halves chat's time to first token and takes a third off quiz generation.
-CHAT_REASONING_EFFORT = "low"
-QUIZ_REASONING_EFFORT = "low"
+CHAT_REASONING_EFFORT = "medium"
+QUIZ_REASONING_EFFORT = "medium"
 # Essay-round generation and the infographic brief are content generation /
 # condensation: low effort (~40% faster). Essay MARKING keeps the medium default.
-ESSAY_REASONING_EFFORT = "low"
-INFOGRAPHIC_BRIEF_REASONING_EFFORT = "low"
+ESSAY_REASONING_EFFORT = "medium"
+INFOGRAPHIC_BRIEF_REASONING_EFFORT = "medium"
 PRIMARY_RETRY_DELAY = 2  # seconds; multiplied by the attempt number
 
 
@@ -427,8 +444,11 @@ class TutorAI:
         `guidance` overrides the material-type guidance (pass "" to omit it)."""
         truncated_context = self._get_truncated_context()
         material_guidance = self._material_guidance() if guidance is None else guidance
+        # The document goes FIRST so every feature's prompt shares the same long
+        # prefix: OpenAI prompt caching then bills those input tokens at the
+        # cached rate (about a tenth) for later features on the same document.
         return [
-            {"role": "system", "content": f"{persona}\n\n{material_guidance}{self._material_label()}:\n{truncated_context}"},
+            {"role": "system", "content": f"{self._material_label()}:\n{truncated_context}\n\n{persona}\n\n{material_guidance}".rstrip()},
             {"role": "user", "content": prompt},
         ]
 
@@ -548,7 +568,7 @@ class TutorAI:
         # - with a longer timeout each time, since reasoning responses can be slow
         # - before the caller falls back to the secondary model. Client errors
         # (4xx) and content filtering are never retried.
-        attempts = PRIMARY_MAX_ATTEMPTS if model == MODEL_PRIMARY else 1
+        attempts = PRIMARY_MAX_ATTEMPTS if model in (MODEL_PRIMARY, MODEL_FAST) else 1
         last_error = None
         for attempt in range(1, attempts + 1):
             attempt_timeout = min(timeout * (1 + 0.5 * (attempt - 1)), 300)
@@ -675,7 +695,12 @@ class TutorAI:
             if flushed:
                 yield flushed
 
-    async def _stream_with_fallback(self, stream_factory, label, failure_message):
+    def _stream_with_fallback_for(self, primary, stream_factory, label, failure_message):
+        """_stream_with_fallback with a feature-specific first-choice model."""
+        return self._stream_with_fallback(stream_factory, label, failure_message,
+                                          primary=primary, fallback=_fallback_for(primary))
+
+    async def _stream_with_fallback(self, stream_factory, label, failure_message, primary=None, fallback=None):
         """Run a primary-model stream with a fallback to the secondary model.
 
         The fallback is only attempted if the primary stream failed BEFORE any
@@ -684,18 +709,20 @@ class TutorAI:
         answer, so instead we log the error and emit a short interruption
         marker.
         """
+        primary = primary or MODEL_PRIMARY
+        fallback = fallback or _fallback_for(primary)
         emitted = False
         primary_error = None
         for attempt in range(1, PRIMARY_MAX_ATTEMPTS + 1):
             try:
-                async for chunk in stream_factory(MODEL_PRIMARY):
+                async for chunk in stream_factory(primary):
                     emitted = True
                     yield chunk
                 return
             except Exception as e:
                 primary_error = e
                 if emitted:
-                    logging.error(f"{label}: {MODEL_PRIMARY} failed mid-stream after output was emitted: {e}")
+                    logging.error(f"{label}: {primary} failed mid-stream after output was emitted: {e}")
                     yield "\n\n[Connection interrupted - please ask me to continue]"
                     return
                 # A 4xx (other than rate limiting) will not succeed on retry
@@ -703,21 +730,21 @@ class TutorAI:
                                 and not isinstance(e, openai.RateLimitError))
                 if attempt < PRIMARY_MAX_ATTEMPTS and not client_error:
                     delay = PRIMARY_RETRY_DELAY * attempt
-                    logging.warning(f"{label}: {MODEL_PRIMARY} failed before emitting output "
+                    logging.warning(f"{label}: {primary} failed before emitting output "
                                     f"(attempt {attempt}/{PRIMARY_MAX_ATTEMPTS}): {type(e).__name__}: {e}; retrying in {delay}s")
                     await asyncio.sleep(delay)
                     continue
-                logging.error(f"{label}: {MODEL_PRIMARY} failed before emitting output "
-                              f"(attempt {attempt}/{PRIMARY_MAX_ATTEMPTS}): {type(e).__name__}: {e}; falling back to {MODEL_FALLBACK}")
+                logging.error(f"{label}: {primary} failed before emitting output "
+                              f"(attempt {attempt}/{PRIMARY_MAX_ATTEMPTS}): {type(e).__name__}: {e}; falling back to {fallback}")
                 break
 
         try:
-            async for chunk in stream_factory(MODEL_FALLBACK):
+            async for chunk in stream_factory(fallback):
                 emitted = True
                 yield chunk
         except Exception as e:
             if emitted:
-                logging.error(f"{label}: {MODEL_FALLBACK} failed mid-stream after output was emitted: {e}")
+                logging.error(f"{label}: {fallback} failed mid-stream after output was emitted: {e}")
                 yield "\n\n[Connection interrupted - please ask me to continue]"
                 return
             logging.error(f"{label}: both models failed: {primary_error} | {e}")
@@ -761,15 +788,15 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
         messages = [{"role": "user", "content": summary_prompt}]
 
         try:
-            logging.info(f"INFOGRAPHIC: Summarizing lecture with {MODEL_PRIMARY} for the image prompt...")
+            logging.info(f"INFOGRAPHIC: Summarizing lecture with {BRIEF_MODEL} for the image prompt...")
             summary = await self._make_async_openai_fallback_call(
-                messages=messages, model=MODEL_PRIMARY, temperature=0.2,
+                messages=messages, model=BRIEF_MODEL, temperature=0.2,
                 max_tokens=4000, timeout=90, reasoning_effort=INFOGRAPHIC_BRIEF_REASONING_EFFORT
             )
         except Exception as primary_error:
-            logging.error(f"INFOGRAPHIC: {MODEL_PRIMARY} summarization failed: {primary_error}; trying {MODEL_FALLBACK}")
+            logging.error(f"INFOGRAPHIC: {BRIEF_MODEL} summarization failed: {primary_error}; trying {_fallback_for(BRIEF_MODEL)}")
             summary = await self._make_async_openai_fallback_call(
-                messages=messages, model=MODEL_FALLBACK, temperature=0.2,
+                messages=messages, model=_fallback_for(BRIEF_MODEL), temperature=0.2,
                 max_tokens=4000, timeout=90, reasoning_effort=INFOGRAPHIC_BRIEF_REASONING_EFFORT
             )
 
@@ -794,20 +821,24 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             )
         return ""
 
-    async def generate_infographic_async(self):
+    async def generate_infographic_async(self, notes_brief=None):
         """Generate a one-page revision-guide infographic for the current
-        document using the OpenAI images API. Returns a base64-encoded PNG."""
+        document using the OpenAI images API. Returns a base64-encoded PNG.
+        `notes_brief` may be supplied when it was pre-generated after upload."""
         if not self.context:
             raise ValueError("No document context set for infographic generation")
 
         # The images API accepts a far smaller prompt than the chat models, so
         # first condense the WHOLE lecture into that budget with a chat-model
         # summarization pass (a plain truncation would drop later sections).
-        try:
-            notes_brief = await self._summarize_for_infographic(char_limit=5000)
-        except Exception as e:
-            logging.error(f"INFOGRAPHIC: Summarization failed, falling back to head/tail truncation: {e}")
-            notes_brief = self._get_truncated_context(limit=5000)
+        if notes_brief:
+            logging.info("INFOGRAPHIC: using the pre-generated brief")
+        else:
+            try:
+                notes_brief = await self._summarize_for_infographic(char_limit=5000)
+            except Exception as e:
+                logging.error(f"INFOGRAPHIC: Summarization failed, falling back to head/tail truncation: {e}")
+                notes_brief = self._get_truncated_context(limit=5000)
 
         prompt = (
             "Design a beautiful, modern one-page revision poster for the university "
@@ -936,6 +967,15 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
         if not image_b64:
             raise ValueError("Image generation returned no image data")
         logging.info(f"INFOGRAPHIC: Image received ({len(image_b64)} base64 chars)")
+        bad = self._blackout_region(image_b64)
+        if bad:
+            logging.warning(f"INFOGRAPHIC: generated image has a blacked-out area ({bad}); regenerating once")
+            response = await client.images.generate(
+                model=self.INFOGRAPHIC_MODEL, prompt=prompt, n=1, size="1024x1536", quality="high", timeout=300,
+            )
+            retry_b64 = response.data[0].b64_json if response.data else None
+            if retry_b64 and not self._blackout_region(retry_b64):
+                image_b64 = retry_b64
 
         # ---- Check phase: inspect the image against the brief and correct it ----
         image_b64 = await self._check_and_correct_infographic(image_b64, notes_brief)
@@ -950,17 +990,21 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
         Raises on API failure (caller decides whether to proceed without a check)."""
         review_prompt = f"""You are proofreading a one-page revision infographic that was generated from the REVISION BRIEF below. Inspect the image carefully and report every problem that would mislead a student or that breaks the required style.
 
-CHECK, IN THIS ORDER OF IMPORTANCE:
-1. FORMULAS: every formula shown must be the brief's LaTeX formula rendered as properly typeset mathematics: the same symbols, subscripts and exponents, and the same bracket placement (the same terms inside and outside each bracket, and the correct scope of every exponent, fraction or root). ALSO flag: any division shown inline with a slash instead of a stacked fraction (numerator over a horizontal bar over denominator); any symbol spelled as a word (e.g. 'rbar', 'sigma', 'sqrt') instead of the proper glyph (bar over the letter, Greek letter, radical sign); any visible LaTeX source (backslashes, braces, command names); formulas set in a plain sans-serif font instead of a LaTeX-style (Computer Modern) math font. Any deviation is an issue. In 'correction', give the exact formula from the brief and say how it must be typeset.
-2. TEXT ACCURACY: misspelled, garbled, truncated or unreadable words; headings or bullets that say something the brief does not.
-3. CONTENT RULES: any numerical worked example, practice question, substituted numbers or calculated answer (none are allowed); any fact, formula or example not in the brief; any section of the brief missing entirely.
-4. STYLE: a coloured page background or colour wash (the page must be white); a section card whose fill is red, pink, saturated, dark or neon, or a gradient/texture (cards should each have a DIFFERENT soft light pastel tint - pale blue, mint, peach, lavender, yellow, aqua - and a pastel card tint is CORRECT and must not be reported; two adjacent cards sharing the same tint is a minor issue); red may appear only as headings, thin rules, arrows, outlines and small badges - never as a fill behind text or formulas; any accent colour other than red (e.g. navy or blue fills); serif, script or decorative fonts; flat icons or clip-art used as a section's main visual; a photo that dominates its card (larger than about one fifth of the card, or full card height); more than 2 photos on the page besides the small hero image, or two photos of the same kind of scene (e.g. people at trading screens twice); a photo containing screens, charts or readable text; a symbol key that omits the symbols (e.g. 'portfolio return, risk-free rate' without r_p, r_f).
+BE LENIENT. The poster is already a good draft; a correction costs time and money and can introduce new flaws, so report ONLY problems that would genuinely mislead a student or make part of the poster unusable. Report NOTHING about colours, tints, fonts, layout, spacing, photo size or style, and ignore single misspelled words in ordinary text.
+
+Report as "major" ONLY these:
+1. A FORMULA that is wrong: different symbols, subscripts or exponents from the brief, a missing or misplaced bracket, a fraction with the wrong numerator or denominator, visible LaTeX source (backslashes or braces), or a symbol so garbled it cannot be read. A formula that is correct but typeset in a slightly different style is NOT an issue.
+2. A section of the brief that is MISSING entirely, or a card/area that is blank or solid black.
+3. A numerical worked example, substituted numbers or a calculated answer (none are allowed), or a fact or formula that is not in the brief.
+4. Text that is unreadable or so garbled that its meaning is lost (a heading, bullet or symbol key that cannot be understood).
+
+Anything else you notice is "minor" and will be logged but NOT corrected. When in doubt, call it minor.
 
 OUTPUT: respond with ONLY a JSON object, no other text:
 {{"ok": true}} if there are no issues, otherwise
-{{"ok": false, "issues": [{{"location": "<section heading or area of the page>", "problem": "<what is wrong>", "correction": "<exactly what it should show instead>", "box": [x0, y0, x1, y1]}}]}}
+{{"ok": false, "issues": [{{"severity": "major" | "minor", "location": "<section heading or area of the page>", "problem": "<what is wrong>", "correction": "<exactly what it should show instead>", "box": [x0, y0, x1, y1]}}]}}
 "box" is the bounding box of the WHOLE card or panel that contains the problem, as fractions of the poster's width and height measured from the top-left corner (e.g. [0.02, 0.70, 0.66, 0.96]). Give it for every issue and be generous so the box fully contains the card; use [0, 0, 1, 1] only for a page-wide problem.
-List at most 8 issues, most important first. Be precise and literal - do not invent problems, and do not report stylistic preferences beyond rule 4.
+List at most 6 issues, most important first. Be precise and literal - do not invent problems. "ok" is true when there are no MAJOR issues.
 
 REVISION BRIEF:
 {notes_brief}"""
@@ -976,8 +1020,12 @@ REVISION BRIEF:
             issues += [t for t in spell_issues if str(t.get("problem", "")).lower() not in seen]
         except Exception as e:
             logging.error(f"INFOGRAPHIC CHECK: spell-check pass unavailable: {e}")
-        result = {"ok": not issues, "issues": issues}
-        logging.info(f"INFOGRAPHIC CHECK: ok={result['ok']}, {len(issues)} issue(s)")
+        majors = [i for i in issues if str(i.get("severity", "major")).lower() == "major"]
+        minors = [i for i in issues if i not in majors]
+        for m in minors:
+            logging.info(f"INFOGRAPHIC CHECK: minor (not corrected) - {m.get('location')}: {m.get('problem')}")
+        result = {"ok": not majors, "issues": majors, "minor": minors}
+        logging.info(f"INFOGRAPHIC CHECK: ok={result['ok']}, {len(majors)} major / {len(minors)} minor")
         return result
 
     async def _vision_json(self, prompt_text, images_b64, label):
@@ -1050,7 +1098,7 @@ The first image is the whole poster; the remaining images are enlarged tiles of 
 
 Step 1: for every short label (heading, bullet, symbol key, chart or axis label, diagram box, caption) write it out LETTER BY LETTER separated by hyphens, e.g. V-o-l-a-t-i-l-i-t-y, reading the glyphs as drawn rather than the word you expect, checking especially for doubled, dropped or swapped letters; transcribe longer text exactly as printed, spelling out letter by letter any word you are not certain of.
 
-Step 2: compare every transcribed word with the REVISION BRIEF below (the poster should print only words that appear there, plus ordinary connecting words). Report each word that is misspelled, truncated, has letters swapped or dropped, or is otherwise not a correctly spelled word, and any formula symbol that is visibly mangled (a broken glyph, a stray character, a subscript rendered as a normal letter).
+Step 2: compare every transcribed word with the REVISION BRIEF below. BE LENIENT: report ONLY words that are garbled or truncated badly enough that a reader could not tell what word was intended, and formula symbols that are visibly mangled (a broken glyph, a stray character, a subscript rendered as a normal letter). Do NOT report a word with a single wrong, dropped or doubled letter when the intended word is still obvious.
 
 Do NOT report differences of layout, hyphenation at a line break, capitalisation, curly versus straight quotes, a missing or doubled space, or a hyphen in place of a space: those are not misspellings. Report only words you are certain are wrong.
 
@@ -1071,6 +1119,7 @@ REVISION BRIEF:
                 continue
             seen.add(key)
             issues.append({
+                "severity": "major",
                 "location": t.get("where") or "poster",
                 "problem": f'"{printed}" is printed where "{expected}" is intended',
                 "correction": f'Print "{expected}" exactly, spelled correctly, in the same style and size',
@@ -1096,6 +1145,33 @@ REVISION BRIEF:
                 return None
             boxes.append([max(0.0, x0 - pad), max(0.0, y0 - pad), min(1.0, x1 + pad), min(1.0, y1 + pad)])
         return boxes or None
+
+    @staticmethod
+    def _blackout_region(image_b64, boxes=None, threshold=0.6):
+        """Detect a solid black (or near-black) area: the signature of a failed
+        image edit that repainted a card with nothing. Checks each box (fractions
+        of the poster) when given, otherwise scans the whole poster in a coarse
+        grid. Returns a description of the first offending region, or None."""
+        import base64
+        from PIL import Image
+        img = Image.open(io.BytesIO(base64.b64decode(image_b64))).convert("L")
+        w, h = img.size
+        regions = []
+        if boxes:
+            regions = [(int(x0 * w), int(y0 * h), int(x1 * w), int(y1 * h)) for x0, y0, x1, y1 in boxes]
+        else:
+            cols, rows = 8, 12  # cells of ~1/8 x 1/12 of the page: any near-black cell is a defect on a white poster
+            regions = [(c * w // cols, r * h // rows, (c + 1) * w // cols, (r + 1) * h // rows)
+                       for r in range(rows) for c in range(cols)]
+        for (x0, y0, x1, y1) in regions:
+            if x1 - x0 < 8 or y1 - y0 < 8:
+                continue
+            hist = img.crop((x0, y0, x1, y1)).histogram()
+            total = float(sum(hist)) or 1.0
+            dark = sum(hist[:32]) / total  # luminance below 32/255
+            if dark >= threshold:
+                return f"{int(dark * 100)}% near-black pixels in region x={x0}-{x1}, y={y0}-{y1}"
+        return None
 
     @staticmethod
     def _make_mask_png(image_bytes, boxes):
@@ -1192,9 +1268,15 @@ REVISION BRIEF:
                 ))
                 fixed_b64 = response.data[0].b64_json if response.data else None
                 if fixed_b64:
-                    logging.info(f"INFOGRAPHIC FIX: masked repair received ({len(fixed_b64)} base64 chars)")
-                    return fixed_b64
-                logging.warning("INFOGRAPHIC FIX: masked repair returned no image; falling back to whole-image edit")
+                    bad = self._blackout_region(fixed_b64, boxes)
+                    if bad:
+                        logging.warning(f"INFOGRAPHIC FIX: masked repair blacked out a card ({bad}); "
+                                        "discarding it and falling back to whole-image edit")
+                    else:
+                        logging.info(f"INFOGRAPHIC FIX: masked repair received ({len(fixed_b64)} base64 chars)")
+                        return fixed_b64
+                else:
+                    logging.warning("INFOGRAPHIC FIX: masked repair returned no image; falling back to whole-image edit")
             except Exception as e:
                 logging.warning(f"INFOGRAPHIC FIX: masked repair failed ({str(e)[:200]}); falling back to whole-image edit")
 
@@ -1215,6 +1297,9 @@ REVISION BRIEF:
         fixed_b64 = response.data[0].b64_json if response.data else None
         if not fixed_b64:
             raise ValueError("Image edit returned no image data")
+        bad = self._blackout_region(fixed_b64)
+        if bad:
+            raise ValueError(f"Image edit produced a blacked-out area ({bad}); keeping the previous image")
         logging.info(f"INFOGRAPHIC FIX: corrected image received ({len(fixed_b64)} base64 chars)")
         return fixed_b64
 
@@ -1507,26 +1592,26 @@ REVISION BRIEF:
 
             # Try the primary model
             try:
-                logging.info(f"ASYNC SUMMARY: Trying {MODEL_PRIMARY} for executive summary generation...")
+                logging.info(f"ASYNC SUMMARY: Trying {SUMMARY_MODEL} for executive summary generation...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=MODEL_PRIMARY, temperature=0.2, max_tokens=15000, timeout=60,
+                    messages=messages, model=SUMMARY_MODEL, temperature=0.2, max_tokens=15000, timeout=60,
                     reasoning_effort=SUMMARY_REASONING_EFFORT
                 )
                 if result and result.strip():
-                    logging.info(f"ASYNC SUMMARY: {MODEL_PRIMARY} succeeded")
+                    logging.info(f"ASYNC SUMMARY: {SUMMARY_MODEL} succeeded")
                     return _normalize_study_formatting(_strip_code_fences(result))
-                raise ValueError(f"{MODEL_PRIMARY} returned an empty response")
+                raise ValueError(f"{SUMMARY_MODEL} returned an empty response")
             except Exception as mini_error:
-                logging.error(f"ASYNC SUMMARY: {MODEL_PRIMARY} failed: {mini_error}")
+                logging.error(f"ASYNC SUMMARY: {SUMMARY_MODEL} failed: {mini_error}")
 
             # Fallback model
             try:
-                logging.info(f"ASYNC SUMMARY: Trying {MODEL_FALLBACK} fallback...")
+                logging.info(f"ASYNC SUMMARY: Trying {_fallback_for(SUMMARY_MODEL)} fallback...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=MODEL_FALLBACK, temperature=0.2, max_tokens=15000, timeout=60,
+                    messages=messages, model=_fallback_for(SUMMARY_MODEL), temperature=0.2, max_tokens=15000, timeout=60,
                     reasoning_effort=SUMMARY_REASONING_EFFORT
                 )
-                logging.info(f"ASYNC SUMMARY: {MODEL_FALLBACK} fallback succeeded")
+                logging.info(f"ASYNC SUMMARY: {_fallback_for(SUMMARY_MODEL)} fallback succeeded")
                 return _normalize_study_formatting(_strip_code_fences(result))
             except Exception as nano_error:
                 logging.error(f"ASYNC SUMMARY: All models failed: {nano_error}")
@@ -1554,7 +1639,7 @@ REVISION BRIEF:
                     reasoning_effort=SUMMARY_REASONING_EFFORT
                 )
 
-            async for chunk in _normalize_study_stream(self._stream_with_fallback(
+            async for chunk in _normalize_study_stream(self._stream_with_fallback_for(SUMMARY_MODEL, 
                 factory,
                 "STREAM SUMMARY",
                 "I'm having trouble generating a summary right now. Please try again in a moment."
@@ -1641,26 +1726,26 @@ End your response with: "Would you like to explore any of these topics in more d
 
             # Try the primary model
             try:
-                logging.info(f"ASYNC ESSAY: Trying {MODEL_PRIMARY} for essay generation...")
+                logging.info(f"ASYNC ESSAY: Trying {ESSAY_MODEL} for essay generation...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=MODEL_PRIMARY, temperature=0.4, max_tokens=15000, timeout=60,
+                    messages=messages, model=ESSAY_MODEL, temperature=0.4, max_tokens=15000, timeout=60,
                     reasoning_effort=ESSAY_REASONING_EFFORT
                 )
                 if result and result.strip():
-                    logging.info(f"ASYNC ESSAY: {MODEL_PRIMARY} succeeded")
+                    logging.info(f"ASYNC ESSAY: {ESSAY_MODEL} succeeded")
                     return _normalize_study_formatting(_strip_code_fences(result), mode='essay')
-                raise ValueError(f"{MODEL_PRIMARY} returned an empty response")
+                raise ValueError(f"{ESSAY_MODEL} returned an empty response")
             except Exception as mini_error:
-                logging.error(f"ASYNC ESSAY: {MODEL_PRIMARY} failed: {mini_error}")
+                logging.error(f"ASYNC ESSAY: {ESSAY_MODEL} failed: {mini_error}")
 
             # Fallback model
             try:
-                logging.info(f"ASYNC ESSAY: Trying {MODEL_FALLBACK} fallback...")
+                logging.info(f"ASYNC ESSAY: Trying {_fallback_for(ESSAY_MODEL)} fallback...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=MODEL_FALLBACK, temperature=0.4, max_tokens=15000, timeout=60,
+                    messages=messages, model=_fallback_for(ESSAY_MODEL), temperature=0.4, max_tokens=15000, timeout=60,
                     reasoning_effort=ESSAY_REASONING_EFFORT
                 )
-                logging.info(f"ASYNC ESSAY: {MODEL_FALLBACK} fallback succeeded")
+                logging.info(f"ASYNC ESSAY: {_fallback_for(ESSAY_MODEL)} fallback succeeded")
                 return _normalize_study_formatting(_strip_code_fences(result), mode='essay')
             except Exception as nano_error:
                 logging.error(f"ASYNC ESSAY: All models failed: {nano_error}")
@@ -1689,7 +1774,7 @@ End your response with: "Would you like to explore any of these topics in more d
                     reasoning_effort=ESSAY_REASONING_EFFORT
                 )
 
-            async for chunk in _normalize_study_stream(self._stream_with_fallback(
+            async for chunk in _normalize_study_stream(self._stream_with_fallback_for(ESSAY_MODEL, 
                 factory,
                 "STREAM ESSAY",
                 "I'm having trouble generating an essay question right now. Please try again in a moment."
@@ -2129,12 +2214,12 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
 
             # Try the primary model
             try:
-                logging.info(f"ASYNC QUIZ: Trying {MODEL_PRIMARY} for retrieval quiz generation...")
+                logging.info(f"ASYNC QUIZ: Trying {QUIZ_MODEL} for retrieval quiz generation...")
                 logging.info(f"ASYNC QUIZ: Context length: {len(context_truncated)} characters")
 
                 result = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model=MODEL_PRIMARY,
+                    model=QUIZ_MODEL,
                     response_format={"type": "json_object"},
                     temperature=0.3,
                     max_tokens=15000,
@@ -2142,19 +2227,19 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
                     reasoning_effort=QUIZ_REASONING_EFFORT
                 )
 
-                logging.info(f"ASYNC QUIZ: {MODEL_PRIMARY} succeeded")
+                logging.info(f"ASYNC QUIZ: {QUIZ_MODEL} succeeded")
                 valid_questions = self._parse_and_validate_quiz(result)
                 logging.info(f"ASYNC QUIZ: Generated {len(valid_questions)} valid questions")
                 return valid_questions
 
             except Exception as primary_error:
-                logging.error(f"ASYNC QUIZ: {MODEL_PRIMARY} failed: {primary_error}")
+                logging.error(f"ASYNC QUIZ: {QUIZ_MODEL} failed: {primary_error}")
                 # Fallback model
                 try:
-                    logging.info(f"ASYNC QUIZ: Trying {MODEL_FALLBACK} fallback...")
+                    logging.info(f"ASYNC QUIZ: Trying {_fallback_for(QUIZ_MODEL)} fallback...")
                     fallback_result = await self._make_async_openai_fallback_call(
                         messages=messages,
-                        model=MODEL_FALLBACK,
+                        model=_fallback_for(QUIZ_MODEL),
                         response_format={"type": "json_object"},
                         temperature=0.3,
                         reasoning_effort=QUIZ_REASONING_EFFORT,
@@ -2162,7 +2247,7 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
                         timeout=60
                     )
 
-                    logging.info(f"ASYNC QUIZ: {MODEL_FALLBACK} fallback succeeded")
+                    logging.info(f"ASYNC QUIZ: {_fallback_for(QUIZ_MODEL)} fallback succeeded")
                     valid_questions = self._parse_and_validate_quiz(fallback_result)
                     logging.info(f"ASYNC QUIZ: Fallback generated {len(valid_questions)} valid questions")
                     return valid_questions
@@ -2218,7 +2303,7 @@ lecture_notes"""
             messages = [{"role": "user", "content": prompt}]
             # Classification is a short, cheap call: use the faster secondary model
             # first and keep the primary only as a fallback.
-            for model in (MODEL_FALLBACK, MODEL_PRIMARY):
+            for model in (MODEL_PRIMARY, MODEL_FALLBACK):
                 try:
                     content = await self._make_async_openai_fallback_call(
                         messages, model=model, max_tokens=1000, timeout=30,
@@ -2275,7 +2360,7 @@ Example output format:
 
             messages = [{"role": "user", "content": prompt}]
 
-            for model in (MODEL_PRIMARY, MODEL_FALLBACK):
+            for model in (EXTRACTION_MODEL, _fallback_for(EXTRACTION_MODEL)):
                 try:
                     content = await self._make_async_openai_fallback_call(
                         messages, model=model, max_tokens=8000, timeout=90
@@ -2324,7 +2409,7 @@ Example output format:
 
             messages = [{"role": "user", "content": prompt}]
 
-            for model in (MODEL_PRIMARY, MODEL_FALLBACK):
+            for model in (EXTRACTION_MODEL, _fallback_for(EXTRACTION_MODEL)):
                 try:
                     content = await self._make_async_openai_fallback_call(
                         messages, model=model, max_tokens=8000, timeout=60
@@ -2471,10 +2556,10 @@ Choose ONE equation from the lecture notes that has not been used before."""
             messages = [{"role": "user", "content": prompt}]
 
             try:
-                logging.debug(f"ASYNC DEBUG: Trying async {MODEL_PRIMARY} for calculation question generation...")
+                logging.debug(f"ASYNC DEBUG: Trying async {CALC_MODEL} for calculation question generation...")
                 result = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model=MODEL_PRIMARY,
+                    model=CALC_MODEL,
                     max_tokens=8000,
                     timeout=120,
                     reasoning_effort="medium"
@@ -2484,7 +2569,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
                 logging.debug(f"RAW API RESPONSE:\n{result}")
 
                 # No LaTeX formatting - let MathJax handle delimiters directly
-                logging.info(f"Async calculation question generated successfully using {MODEL_PRIMARY}")
+                logging.info(f"Async calculation question generated successfully using {CALC_MODEL}")
                 return result
 
             except Exception as e:
@@ -2516,7 +2601,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
         # Same policy as the other features: retry the primary model, then fall
         # back to the secondary, and only then show the failure message.
-        async for chunk in self._stream_with_fallback(
+        async for chunk in self._stream_with_fallback_for(CALC_MODEL, 
             factory, "CALC_QUESTION_STREAM", "I'm sorry, the AI service is taking too long to generate a calculation question right now. Please try again in a moment."
         ):
             yield chunk
@@ -2604,7 +2689,7 @@ FORMATTING REQUIREMENTS:
             logging.info(f"Generating exam worked example for question {q_id}...")
             result = await self._make_async_openai_fallback_call(
                 messages=messages,
-                model=MODEL_PRIMARY,
+                model=CALC_MODEL,
                 max_tokens=8000,
                 timeout=120,
                 reasoning_effort="medium"
@@ -2628,7 +2713,7 @@ FORMATTING REQUIREMENTS:
 
         # Same policy as the other features: retry the primary model, then fall
         # back to the secondary, and only then show the failure message.
-        async for chunk in self._stream_with_fallback(
+        async for chunk in self._stream_with_fallback_for(CALC_MODEL, 
             factory, "EXAM_WORKED_EXAMPLE_STREAM", "I'm sorry, the AI service is taking too long to generate a worked example right now. Please try again in a moment."
         ):
             yield chunk

@@ -689,7 +689,7 @@ def _email_error_message(exc):
     return f"Sending the email failed: {detail}" if detail else "Sending the email failed."
 
 
-def run_infographic_generation_background(task_id, pdf_content, doc_type=None):
+def run_infographic_generation_background(task_id, pdf_content, doc_type=None, notes_brief=None):
     """
     Background function to generate a revision-guide infographic image.
     This runs in a separate thread to avoid blocking the web server.
@@ -703,7 +703,7 @@ def run_infographic_generation_background(task_id, pdf_content, doc_type=None):
         # Generate infographic using async method
         async def async_infographic_generation():
             try:
-                return await tutor_ai.generate_infographic_async()
+                return await tutor_ai.generate_infographic_async(notes_brief=notes_brief)
             finally:
                 await tutor_ai.close_async_clients()
 
@@ -1175,6 +1175,13 @@ def quickaction_stream():
     record_activity('essay_questions' if action == 'essay' else 'key_concepts', session_id)
     # Serve from the AI result cache when this document was already processed
     cached = get_cached_ai_result(pdf_content, action) if action != 'essay' else None
+    if action == 'essay' and not StorageManager().retrieve_content(session_id, 'used_essay_questions'):
+        # First round: use the pre-generated round if it is ready (or nearly)
+        prewarmed = get_prewarmed(session_id, 'essay', wait_seconds=20)
+        if prewarmed:
+            consume_prewarmed(session_id, 'essay')
+            _activate_essay_practice(session_id, prewarmed)
+            cached = prewarmed
     if cached:
         try:
             _storage = StorageManager()
@@ -1281,6 +1288,16 @@ def calculation_stream():
             try:
                 tutor_ai = _make_tutor(pdf_content, session_id)
                 _storage = StorageManager()
+
+                # First question: serve the pre-generated one if ready (or nearly)
+                if (current_index or 0) == 0:
+                    prewarmed = get_prewarmed(session_id, 'calculation', wait_seconds=20)
+                    if prewarmed:
+                        consume_prewarmed(session_id, 'calculation')
+                        full_response = prewarmed
+                        for i in range(0, len(prewarmed), 400):
+                            q.put(prewarmed[i:i + 400])
+                        return
 
                 # --- Detect document type on first call ---
                 if not doc_type:
@@ -1657,6 +1674,17 @@ def start_quiz_generation():
 
         # Serve from the AI result cache when a quiz was already generated for this document
         cached = get_cached_ai_result(pdf_content, 'quiz')
+        if not cached:
+            cached = get_prewarmed(session_id, 'quiz')
+            if cached:
+                consume_prewarmed(session_id, 'quiz')
+            elif StorageManager().retrieve_content(session_id, 'quiz_prewarm_pending'):
+                # Still being pre-generated: let a background thread wait for it
+                _sid, _pdf, _doc = session_id, pdf_content, _stored_doc_type()
+                threading.Thread(target=_wait_prewarm_then_complete, daemon=True, args=(
+                    task_id, _sid, 'quiz', 90,
+                    lambda: run_quiz_generation_background(task_id, _pdf, doc_type=_doc))).start()
+                return jsonify({"task_id": task_id}), 202
         if cached:
             update_task_complete(task_id, success=True, data=cached)
             return jsonify({"task_id": task_id}), 202
@@ -2056,6 +2084,92 @@ def _signal_upload_done(task_id):
 
 SUMMARY_PARTIAL_WRITE_INTERVAL = 0.5  # seconds between partial-text writes while generating
 
+# ---- Pre-generation ("prewarm") of the first result of each feature after an upload ----
+# Set PREWARM_FEATURES to a comma-separated subset to limit cost, e.g. "essay,calculation,quiz"
+# (the infographic costs an image generation per upload). Empty string disables it.
+PREWARM_FEATURES = tuple(f.strip() for f in os.environ.get(
+    'PREWARM_FEATURES', 'essay,calculation,quiz,infographic_brief').split(',') if f.strip())
+PREWARM_KEYS = tuple(f"{f}_prewarm{suffix}" for f in ('essay', 'calculation', 'quiz', 'infographic', 'infographic_brief')
+                     for suffix in ('', '_pending'))
+
+
+def get_prewarmed(session_id, feature, wait_seconds=0):
+    """Return the pre-generated result for a feature, waiting up to wait_seconds
+    (polling the shared store) while it is still being generated. None if absent."""
+    storage = StorageManager()
+    key, pending = f"{feature}_prewarm", f"{feature}_prewarm_pending"
+    deadline = time.time() + wait_seconds
+    while True:
+        value = storage.retrieve_content(session_id, key)
+        if value:
+            return value
+        if time.time() >= deadline or not storage.retrieve_content(session_id, pending):
+            return None
+        time.sleep(0.5)
+
+
+def consume_prewarmed(session_id, feature):
+    """Remove a served pre-generated result so it is used only once."""
+    try:
+        StorageManager().delete_many(session_id, [f"{feature}_prewarm"])
+    except Exception as e:
+        logging.debug(f"PREWARM: could not remove {feature}: {e}")
+
+
+def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce):
+    """Run one pre-generation in this thread: produce(tutor) is a coroutine
+    returning the value to store."""
+    started = time.perf_counter()
+    storage = StorageManager()
+    try:
+        with app.app_context():
+            tutor = TutorAI()
+            tutor.set_context(pdf_text, doc_type=doc_type)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                value = loop.run_until_complete(produce(tutor))
+            finally:
+                loop.close()
+            if value:
+                storage.store_content(session_id, f"{feature}_prewarm", value)
+                logging.info(f"PREWARM {feature}: ready in {time.perf_counter() - started:.1f}s (upload {task_id})")
+            else:
+                logging.warning(f"PREWARM {feature}: produced nothing (upload {task_id})")
+    except Exception as e:
+        logging.error(f"PREWARM {feature}: failed (feature will generate on demand): {e}")
+    finally:
+        try:
+            with app.app_context():
+                storage.store_content(session_id, f"{feature}_prewarm_pending", False)
+        except Exception as e:
+            logging.error(f"PREWARM {feature}: could not clear pending flag: {e}")
+
+
+def _start_prewarm(feature, session_id, pdf_text, doc_type, task_id, produce):
+    if feature not in PREWARM_FEATURES:
+        return
+    StorageManager().store_content(session_id, f"{feature}_prewarm_pending", True)
+    threading.Thread(target=_prewarm_one, args=(feature, session_id, pdf_text, doc_type, task_id, produce),
+                     daemon=True).start()
+
+
+def _wait_prewarm_then_complete(task_id, session_id, feature, wait_seconds, fallback):
+    """Background: wait for a pending pre-generation and complete the polling task
+    with it; if it never arrives, run the normal generation (fallback)."""
+    try:
+        with app.app_context():  # background thread: the store needs an app context
+            value = get_prewarmed(session_id, feature, wait_seconds)
+            if value:
+                consume_prewarmed(session_id, feature)
+                update_task_complete(task_id, success=True, data=value)
+                logging.info(f"PREWARM {feature}: served to task {task_id} after waiting")
+                return
+    except Exception as e:
+        logging.error(f"PREWARM {feature}: wait failed: {e}")
+    fallback()
+
+
 
 def _generate_summary_early(session_id, pdf_text, task_id):
     """Start the executive summary the moment the text is stored (before the
@@ -2125,7 +2239,8 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 # delete instead of nine sequential writes, so the completion
                 # signal reaches the waiting /upload request sooner.
                 storage_manager.delete_many(session_id, ['equation_list', 'exam_questions', 'calc_doc_type',
-                                                         'executive_summary', 'executive_summary_partial', *ESSAY_STATE_KEYS])
+                                                         'executive_summary', 'executive_summary_partial',
+                                                         *ESSAY_STATE_KEYS, *PREWARM_KEYS])
                 storage_manager.store_content(session_id, 'current_equation_index', 0)
 
                 # Start the executive summary NOW, in parallel with everything
@@ -2190,6 +2305,30 @@ def process_upload_background(task_id, file_data, filename, session_id):
                         _loop.close()
                 except Exception as e:
                     logging.error(f"Upload {task_id}: calculation pre-extraction failed (will extract on demand): {e}")
+
+                # Pre-generate the first result of each feature (in parallel) so a
+                # click on any button is served instantly from the session store.
+                try:
+                    _start_prewarm('essay', session_id, pdf_text, doc_type, task_id,
+                                   lambda t: t.generate_essay_question_async(used_questions=[]))
+                    _start_prewarm('quiz', session_id, pdf_text, doc_type, task_id,
+                                   lambda t: t.generate_retrieval_quiz_async())
+                    # The infographic's text brief is cheap; the image itself is only
+                    # pre-generated if 'infographic' is listed in PREWARM_FEATURES.
+                    _start_prewarm('infographic_brief', session_id, pdf_text, doc_type, task_id,
+                                   lambda t: t._summarize_for_infographic(char_limit=5000))
+                    _start_prewarm('infographic', session_id, pdf_text, doc_type, task_id,
+                                   lambda t: t.generate_infographic_async())
+                    exam_qs = storage_manager.retrieve_content(session_id, 'exam_questions')
+                    eq_list = storage_manager.retrieve_content(session_id, 'equation_list')
+                    if exam_qs:
+                        _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
+                                       lambda t: t._generate_exam_worked_example(t._get_truncated_context(), exam_qs[0]))
+                    elif eq_list:
+                        _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
+                                       lambda t: t.generate_calculation_question_async(specific_equation=eq_list[0]))
+                except Exception as e:
+                    logging.error(f"Upload {task_id}: could not start pre-generation: {e}")
             else:
                 logging.error(f"Document processing failed for task {task_id}: {error_message}")
                 record_upload(filename, session_id, False, error=error_message or 'Document processing failed')
@@ -2644,14 +2783,29 @@ def start_infographic_generation():
 
         # Serve from the AI result cache when this document was already processed
         cached = get_cached_ai_result(pdf_content, 'infographic')
+        if not cached:
+            session_id = session.get('session_id')
+            cached = get_prewarmed(session_id, 'infographic')
+            if cached:
+                consume_prewarmed(session_id, 'infographic')
+            elif StorageManager().retrieve_content(session_id, 'infographic_prewarm_pending'):
+                # Still being pre-generated (up to a few minutes): wait for it in the background
+                _sid, _pdf, _doc = session_id, pdf_content, _stored_doc_type()
+                threading.Thread(target=_wait_prewarm_then_complete, daemon=True, args=(
+                    task_id, _sid, 'infographic', 300,
+                    lambda: run_infographic_generation_background(task_id, _pdf, doc_type=_doc))).start()
+                return jsonify({"task_id": task_id}), 202
         if cached:
             update_task_complete(task_id, success=True, data=cached)
             return jsonify({"task_id": task_id}), 202
 
         # Start background task in separate thread
+        notes_brief = get_prewarmed(session_id, 'infographic_brief', wait_seconds=8)
+        if notes_brief:
+            consume_prewarmed(session_id, 'infographic_brief')
         thread = threading.Thread(
             target=run_infographic_generation_background,
-            args=(task_id, pdf_content, _stored_doc_type()),
+            args=(task_id, pdf_content, _stored_doc_type(), notes_brief),
             daemon=True
         )
         thread.start()
@@ -2781,7 +2935,8 @@ def clear_session_data(session_id=None):
             'equation_list', 'exam_questions', 'calc_doc_type', 'current_equation_index',
             'current_essay_question', 'essay_mode_active', 'used_essay_questions',
             'infographic_email_request', 'infographic_email_result',
-            'executive_summary', 'executive_summary_partial', 'summary_pending'
+            'executive_summary', 'executive_summary_partial', 'summary_pending',
+            *PREWARM_KEYS
         ]
         
         # One DELETE for all types (this used to be 17 sequential round trips,

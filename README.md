@@ -22,7 +22,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 | Layer | Technology |
 |---|---|
 | Backend | Python / Flask / Gunicorn |
-| AI | OpenAI (`gpt-6-sol` primary, `gpt-6-luna` fallback) |
+| AI | OpenAI (`gpt-6-luna` for every text feature, medium reasoning effort; `gpt-6-sol` as fallback; `gpt-image-2.5-sunburst` for infographics) |
 | Database | PostgreSQL (Replit managed) |
 | Frontend | Bootstrap 5 / Vanilla JS / MathJax 3 |
 | File parsing | PyPDF2, python-pptx |
@@ -48,6 +48,7 @@ Create the following secrets/environment variables before running:
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `ADMIN_PASSWORD` | No | Password for the activity log page at `/admin/activity` (every upload and feature use - executive summary, essay questions, calculation questions, quiz, infographic, chat - with date/time, document and status; `?event=upload` to filter, `?format=csv` to download). The browser prompts for it; username is `ADMIN_USER` (default `admin`). If neither this nor `ADMIN_TOKEN` is set, the page returns 404. |
 | `ADMIN_TOKEN` | No | Optional alternative for scripts: send it as an `X-Admin-Token` header. |
+| `PREWARM_FEATURES` | No | Which features are pre-generated in the background right after an upload so the first click is instant: default `essay,calculation,quiz,infographic_brief` (the infographic's text brief only; add `infographic` to pre-generate the image too, at an image-generation cost per upload). Empty disables pre-generation. |
 | `RESEND_API_KEY` | No | Enables the "Email infographic as PDF" option, sent via Resend over HTTPS (works on Replit). If neither this nor `SMTP_HOST` is set, the option is hidden. |
 | `RESEND_FROM` | No | From address, e.g. `QUB Finance AI Tutor <tutor@yourdomain.ac.uk>` (domain must be verified in Resend). Defaults to `onboarding@resend.dev`, which only delivers to the Resend account owner - for testing. |
 | `SMTP_HOST` | No | Fallback SMTP transport, used only when `RESEND_API_KEY` is unset (e.g. `smtp.office365.com`; outbound SMTP may be blocked on Replit). |
@@ -86,7 +87,7 @@ The app will be available at `http://localhost:5000`.
 
 ```
 ├── app.py                      # Main Flask application and routes
-├── tutor_ai.py                 # AI tutoring logic (OpenAI gpt-6-sol / nano)
+├── tutor_ai.py                 # AI tutoring logic (OpenAI gpt-6-luna, gpt-6-sol fallback)
 ├── pdf_processor.py            # PDF and PowerPoint text extraction
 ├── models.py                   # SQLAlchemy database models
 ├── database.py                 # Database initialisation
@@ -112,14 +113,14 @@ All AI features use OpenAI models with automatic fallback:
 
 | Feature | Primary | Fallback | Streaming | Temperature | Max Tokens |
 |---|---|---|---|---|---|
-| Chat / tutoring | `gpt-6-sol` | `gpt-6-luna` | Yes | 0.7 | 15,000 |
-| Executive summary | `gpt-6-sol` | `gpt-6-luna` | Yes | 0.2 | 15,000 |
-| Key concepts | `gpt-6-sol` | `gpt-6-luna` | Yes | 0.4 | 15,000 |
-| Essay questions | `gpt-6-sol` | `gpt-6-luna` | Yes | 0.4 | 15,000 |
-| Quiz generation | `gpt-6-sol` | `gpt-6-luna` | No | 0.3 | 15,000 |
-| Equation extraction | `gpt-6-sol` | `gpt-6-luna` | No | — | 2,000 |
-| Calculation questions | `gpt-6-sol` | `gpt-6-luna` | No | — | 5,000 |
-| Answer evaluation | `gpt-6-sol` | `gpt-6-luna` | No | — | 5,000 |
+| Chat / tutoring | `gpt-6-luna` | `gpt-6-sol` | Yes | 0.7 | 15,000 |
+| Executive summary | `gpt-6-luna` | `gpt-6-sol` | Yes | 0.2 | 15,000 |
+| Key concepts | `gpt-6-luna` | `gpt-6-sol` | Yes | 0.4 | 15,000 |
+| Essay questions | `gpt-6-luna` | `gpt-6-sol` | Yes | 0.4 | 15,000 |
+| Quiz generation | `gpt-6-luna` | `gpt-6-sol` | No | 0.3 | 15,000 |
+| Equation extraction | `gpt-6-luna` | `gpt-6-sol` | No | — | 2,000 |
+| Calculation questions | `gpt-6-luna` | `gpt-6-sol` | No | — | 5,000 |
+| Answer evaluation | `gpt-6-luna` | `gpt-6-sol` | No | — | 5,000 |
 
 Chat, summary, key concepts, and essay questions use **Server-Sent Events (SSE)** for real-time streaming. Quiz generation, equation extraction, calculation questions, and answer evaluation use **background polling**.
 

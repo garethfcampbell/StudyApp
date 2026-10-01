@@ -22,7 +22,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 | Layer | Technology |
 |---|---|
 | Backend | Python / Flask / Gunicorn |
-| AI | OpenAI (`gpt-6-luna` for every text feature, medium reasoning effort (low for essay rounds and quiz generation); `gpt-6-sol` as fallback; `gpt-image-2.5-sunburst` for infographics) |
+| AI | OpenAI (`gpt-6-luna` for every text feature, medium reasoning effort (low for the summary, chat, essay rounds and quiz generation); `gpt-6-sol` as fallback; `gpt-image-2.5-sunburst` for infographics) |
 | Database | PostgreSQL (Replit managed) |
 | Frontend | Bootstrap 5 / Vanilla JS / MathJax 3 |
 | File parsing | PyPDF2, python-pptx |
@@ -177,3 +177,23 @@ The app is session-based with no user accounts; the JSON API endpoints are exemp
 ## License
 
 This project was developed for educational use at Queen's University Belfast.
+
+## Models and reasoning effort by feature
+
+Set in `tutor_ai.py` (constants near the top). Every text call tries its first-choice model up to 3 times, then the other model once.
+
+| Stage / button | Model | Reasoning effort |
+|---|---|---|
+| Document type classification (after upload) | gpt-6-luna (sol fallback) | medium |
+| Executive summary | gpt-6-luna | low |
+| Chat | gpt-6-luna | low |
+| Essay questions - round generation | gpt-6-luna | low |
+| Essay questions - marking the student's answer | gpt-6-luna | medium |
+| Multiple choice quiz | gpt-6-luna | low |
+| Calculation questions - equation / exam question extraction | gpt-6-luna | medium |
+| Calculation questions - question or worked example | gpt-6-luna | medium |
+| Calculation questions - checking the answer | gpt-6-luna | medium |
+| Revision infographic - text brief | gpt-6-luna | medium |
+| Revision infographic - image | gpt-image-2.5-sunburst, quality high | n/a |
+| Revision infographic - review and spell check | gpt-6-luna (sol fallback), vision | medium |
+| Revision infographic - masked repair | gpt-image-2.5-sunburst edits | n/a |

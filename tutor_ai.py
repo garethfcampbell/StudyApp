@@ -67,12 +67,12 @@ PRIMARY_MAX_ATTEMPTS = 3
 
 # The executive summary is retrieval and condensation, not reasoning: low effort
 # roughly halves its latency (benchmarked 11 s -> 6.5 s on gpt-6-sol).
-SUMMARY_REASONING_EFFORT = "medium"
+SUMMARY_REASONING_EFFORT = "low"
 # Document-type classification is a short recognition task: low effort.
 CLASSIFIER_REASONING_EFFORT = "medium"
 # Chat and the multiple-choice quiz are explanation / retrieval tasks: low effort
 # halves chat's time to first token and takes a third off quiz generation.
-CHAT_REASONING_EFFORT = "medium"
+CHAT_REASONING_EFFORT = "low"
 QUIZ_REASONING_EFFORT = "low"   # quiz generation (faster first question)
 # Essay-round generation and the infographic brief are content generation /
 # condensation: low effort (~40% faster). Essay MARKING keeps the medium default.
@@ -1675,15 +1675,13 @@ Create an executive summary from the study material I provide (lecture notes, an
 
 ### REQUIRED OUTPUT STRUCTURE
 
-You MUST use the following structure and formatting precisely.
+Print the template below EXACTLY: the headings, the order, the blank lines and the closing question. Replace every placeholder in angle or square brackets with your own content. The CONTENT RULES after the template are instructions to you - they must NEVER appear in the output.
 
 ***OVERVIEW***
 
-Summarise the main subject/topic of the material (for an exam paper or question sheet, the areas its questions cover; for a research article, what it investigates and finds). Write it in a professional, academic tone suitable for quick review before an exam.
+<overview paragraph>
 
 ***KEY CONCEPTS***
-
-List the most important concepts with brief definitions, grouped into 5-6 logical categories. Each concept must be on its own line. Follow this exact template, continuing the numbering for each category (5 categories minimum, 6 maximum, each with 3-5 concepts):
 
 **1. [First Category Name]**
 
@@ -1706,7 +1704,13 @@ List the most important concepts with brief definitions, grouped into 5-6 logica
 
 (...continue with categories 4, 5 and, if needed, 6 in the same format...)
 
-End your response with: "Would you like to explore any of these topics in more detail?"
+Would you like to explore any of these topics in more detail?
+
+### CONTENT RULES (never print these)
+
+- <overview paragraph>: summarise the main subject/topic of the material (for an exam paper or question sheet, the areas its questions cover; for a research article, what it investigates and finds), in a professional, academic tone suitable for quick review before an exam.
+- KEY CONCEPTS: the most important concepts with brief definitions, grouped into 5-6 logical categories (5 minimum, 6 maximum, each with 3-5 concepts), numbering the categories in sequence. Each concept is on its own line in the form "- *Concept:* brief explanation".
+- The closing question ("Would you like to explore any of these topics in more detail?") is printed word for word as the last line.
 
             """
 
@@ -1821,29 +1825,56 @@ End your response with: "Would you like to explore any of these topics in more d
 
 ### REQUIRED OUTPUT STRUCTURE
 
-You MUST use the following structure and formatting precisely.
+Print the template below EXACTLY: the bold labels, the order, the blank lines and the closing sentence. Replace every placeholder written in angle brackets <like this> with your own content. The CONTENT RULES after the template are instructions to you - they must NEVER appear in the output, and nothing may follow a label on its line except what the template shows.
 
 ***ESSAY QUESTION PRACTICE***
 {{NOTICE}}
 **MODEL QUESTION**
 
-*[One short qualitative exam question on a major topic of the material, worded exactly as it would appear on an exam paper - in EXAM PAPER MODE, the next original question from the paper, quoted verbatim]*
+*<model question>*
 
-**Suggested answer** - 5-8 hyphen bullet points giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude). Each bullet must be one or two sentences, grounded in the material, with a citation such as "(see Slide 12)" for lecture notes or "(Question 3)" for an exam paper.
+**Suggested answer**
 
-**Additional literature** - 2 hyphen bullets, each a real source with one sentence on the point it supports and where in the answer to use it.
+- <point 1>
+- <point 2>
+- <point 3>
+- <point 4>
+- <point 5>
+- <further points if needed, 8 at most>
 
-**Real-world examples** - 2 hyphen bullets, each a concrete example (named company, market, event, policy episode or crisis) with one sentence on how it strengthens the answer.
+**Additional literature**
 
-**Why this answer scores highly** - 1-2 sentences explaining, with reference to the QUB Conceptual Equivalents Scale, what lifts it from a Lower Second (describing the concept) to an Upper Second (evaluating strengths and limitations with evidence) to a First (weighing competing perspectives with insight, well-chosen literature and examples).
+- <source 1>
+- <source 2>
 
+**Real-world examples**
 
-**YOUR QUESTION:** [A DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper. Write the question on the SAME line as the bold label, i.e. "**YOUR QUESTION:** <question>" - do not add a separate heading or repeat the words YOUR QUESTION.]
+- <example 1>
+- <example 2>
 
-**Hints** - 2 hyphen bullets naming which parts of the material (slide/page citations for lecture notes; for an exam paper, the concepts the question tests) to draw on and what kind of analysis is expected. Do NOT give the answer.
+**Why this answer scores highly**
+
+<1-2 sentences>
+
+**YOUR QUESTION:** <student's question>
+
+**Hints**
+
+- <hint 1>
+- <hint 2>
 
 Write your answer in the box below (aim for 300-500 words - bullet points are fine), then click **Check Answer**. I will mark it against the QUB Conceptual Equivalents Scale and show you a suggested answer.
 
+### CONTENT RULES (never print these)
+
+- <model question>: one short qualitative exam question on a major topic of the material, worded exactly as it would appear on an exam paper, ending with its marks in square brackets. In EXAM PAPER MODE, the next original question from the paper, quoted verbatim.
+- Suggested answer points: 5-8 bullets giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude). Each bullet is one or two sentences, grounded in the material, with a citation such as "(see Slide 12)" for lecture notes or "(Question 3)" for an exam paper.
+- Additional literature: 2 bullets, each a real source with one sentence on the point it supports and where in the answer to use it.
+- Real-world examples: 2 bullets, each a concrete example (named company, market, event, policy episode or crisis) with one sentence on how it strengthens the answer.
+- Why this answer scores highly: 1-2 sentences explaining, with reference to the QUB Conceptual Equivalents Scale, what lifts it from a Lower Second (describing the concept) to an Upper Second (evaluating strengths and limitations with evidence) to a First (weighing competing perspectives with insight, well-chosen literature and examples).
+- <student's question>: a DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper, on the SAME line as the bold label. Do not add a separate heading or repeat the words YOUR QUESTION.
+- Hints: 2 bullets naming which parts of the material (slide/page citations for lecture notes; for an exam paper, the concepts the question tests) to draw on and what kind of analysis is expected. Do NOT give the answer.
+- The closing sentence ("Write your answer in the box below ...") is printed word for word.
 
             RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks.""".replace("{{USED}}", used_block).replace("{{GROUNDING}}", self._essay_grounding_text()).replace("{{MODE}}", self._essay_mode_block()).replace("{{NOTICE}}", ("\n" + self._essay_notice_text()) if self._essay_notice_text() else "")
 
@@ -1874,27 +1905,52 @@ CRITICAL FORMATTING REQUIREMENTS:
 - ONLY USE HYPHENS FOR BULLETS (-), each bullet on its own line
 - Main heading in block capitals with bold and italic like ***THIS***; sub-headings in block capitals with bold like **THIS**
 
-REQUIRED OUTPUT STRUCTURE:
+REQUIRED OUTPUT STRUCTURE: print the template below EXACTLY (bold labels, order, blank lines, closing sentence), replacing every placeholder in angle brackets <like this> with your own content. The CONTENT RULES after the template are instructions to you and must NEVER appear in the output.
 
 ***FEEDBACK ON YOUR ANSWER***
 
-{self._essay_notice_text()}**GRADE BAND:** [First (70-100%) / Upper Second (60-69%) / Lower Second (50-59%) / Third (40-49%) / Fail (below 40%)] - one or two sentences justifying the band against the QUB Conceptual Equivalents Scale (depth of critical analysis, insight, knowledge and understanding, coverage, use of sources).
+{self._essay_notice_text()}**GRADE BAND:** <band> - <justification>
 
 **WHAT YOU DID WELL**
-- 2-4 bullets, each naming a specific point or quality in the answer.
+
+- <strength 1>
+- <strength 2>
+- <further strengths if needed, 4 at most>
 
 **WHAT WAS MISSING OR WEAK**
-- 3-5 bullets, each naming the specific concept, theory or argument from the material that should have been used (with a citation), or the analytical step that was skipped.
+
+- <gap 1>
+- <gap 2>
+- <gap 3>
+- <further gaps if needed, 5 at most>
 
 **SUGGESTED ANSWER**
-- 6-10 bullets giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude), each grounded in the material with a citation.
+
+- <point 1>
+- <point 2>
+- <point 3>
+- <point 4>
+- <point 5>
+- <point 6>
+- <further points if needed, 10 at most>
 
 **TO REACH THE NEXT BAND**
-- 2-3 bullets of additional literature (real sources, author and year) that would strengthen the answer, each with the point it supports.
-- 2-3 bullets of real-world examples that would strengthen the answer, each with how to use it.
-- 1 bullet with the single most important structural or analytical improvement.
 
-Click **Next Question** for another essay question, or **End Practice** to return to the menu."""
+- <literature 1>
+- <literature 2>
+- <example 1>
+- <example 2>
+- <the single most important improvement>
+
+Click **Next Question** for another essay question, or **End Practice** to return to the menu.
+
+CONTENT RULES (never print these):
+- <band>: one of First (70-100%), Upper Second (60-69%), Lower Second (50-59%), Third (40-49%), Fail (below 40%). <justification>: one or two sentences justifying the band against the QUB Conceptual Equivalents Scale (depth of critical analysis, insight, knowledge and understanding, coverage, use of sources).
+- Strengths: 2-4 bullets, each naming a specific point or quality in the answer.
+- Gaps: 3-5 bullets, each naming the specific concept, theory or argument from the material that should have been used (with a citation), or the analytical step that was skipped.
+- Suggested answer: 6-10 bullets giving the points a First-class answer would make, in a sensible order (define, apply, evaluate, conclude), each grounded in the material with a citation.
+- To reach the next band: 2-3 bullets of additional literature (real sources, author and year) that would strengthen the answer, each with the point it supports; 2-3 bullets of real-world examples, each with how to use it; then 1 bullet with the single most important structural or analytical improvement.
+- The closing sentence ("Click **Next Question** ...") is printed word for word."""
 
     async def check_essay_answer_stream_async(self, essay_round_text, user_answer):
         """Stream marking feedback for the student's essay answer (mirrors the calculation answer check)."""

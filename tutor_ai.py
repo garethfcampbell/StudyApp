@@ -73,10 +73,10 @@ CLASSIFIER_REASONING_EFFORT = "medium"
 # Chat and the multiple-choice quiz are explanation / retrieval tasks: low effort
 # halves chat's time to first token and takes a third off quiz generation.
 CHAT_REASONING_EFFORT = "medium"
-QUIZ_REASONING_EFFORT = "medium"
+QUIZ_REASONING_EFFORT = "low"   # quiz generation (faster first question)
 # Essay-round generation and the infographic brief are content generation /
 # condensation: low effort (~40% faster). Essay MARKING keeps the medium default.
-ESSAY_REASONING_EFFORT = "medium"
+ESSAY_REASONING_EFFORT = "low"   # essay ROUND generation (marking keeps the medium default)
 INFOGRAPHIC_BRIEF_REASONING_EFFORT = "medium"
 PRIMARY_RETRY_DELAY = 2  # seconds; multiplied by the attempt number
 
@@ -1728,7 +1728,7 @@ End your response with: "Would you like to explore any of these topics in more d
             try:
                 logging.info(f"ASYNC ESSAY: Trying {ESSAY_MODEL} for essay generation...")
                 result = await self._make_async_openai_fallback_call(
-                    messages=messages, model=ESSAY_MODEL, temperature=0.4, max_tokens=15000, timeout=60,
+                    messages=messages, model=ESSAY_MODEL, temperature=0.4, max_tokens=15000, timeout=150,
                     reasoning_effort=ESSAY_REASONING_EFFORT
                 )
                 if result and result.strip():
@@ -1770,7 +1770,7 @@ End your response with: "Would you like to explore any of these topics in more d
 
             def factory(model):
                 return self._make_async_openai_streaming_call(
-                    messages=messages, model=model, temperature=0.4, max_tokens=15000, timeout=60,
+                    messages=messages, model=model, temperature=0.4, max_tokens=15000, timeout=150,
                     reasoning_effort=ESSAY_REASONING_EFFORT
                 )
 
@@ -2089,6 +2089,54 @@ End the overall response with: "Would you like to explore any of these topics in
 
         parsed_result = json.loads(cleaned_content)
         questions = parsed_result.get("questions", [])[:15]  # Limit to 15 questions
+        return TutorAI._validate_quiz_questions(questions)
+
+    @staticmethod
+    def parse_quiz_partial(text):
+        """Return the validated questions that are already COMPLETE in a quiz JSON
+        response that is still being streamed. Scans the "questions" array for
+        balanced {...} objects (string-aware) so the page can show the first
+        question while the rest are still being generated."""
+        if not text:
+            return []
+        start = text.find('"questions"')
+        if start == -1:
+            return []
+        start = text.find('[', start)
+        if start == -1:
+            return []
+        objects, depth, in_str, esc, obj_start = [], 0, False, False, None
+        for i in range(start + 1, len(text)):
+            c = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == '\\':
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                continue
+            if c == '"':
+                in_str = True
+            elif c == '{':
+                if depth == 0:
+                    obj_start = i
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0 and obj_start is not None:
+                    try:
+                        objects.append(json.loads(text[obj_start:i + 1]))
+                    except Exception:
+                        pass
+                    obj_start = None
+            elif c == ']' and depth == 0:
+                break
+        return TutorAI._validate_quiz_questions(objects[:15])
+
+    @staticmethod
+    def _validate_quiz_questions(questions):
+        """Validate/repair parsed quiz question dicts; malformed ones are skipped."""
 
         def _strip_option_prefixes(text):
             for prefix in ('Option A:', 'Option B:', 'Option C:', 'Option D:'):
@@ -2144,10 +2192,12 @@ End the overall response with: "Would you like to explore any of these topics in
                     continue
 
                 # Shuffle the (stripped) options so the model's position bias
-                # (correct answer listed first) never reaches students
+                # (correct answer listed first) never reaches students. The
+                # shuffle is seeded by the question text so the same question
+                # parsed again later (from a growing stream) keeps its order.
                 if correct_answer in options:
                     q["correct_answer"] = correct_answer
-                random.shuffle(options)
+                random.Random(q["question"]).shuffle(options)
                 q["options"] = options
 
                 valid_questions.append(q)
@@ -2164,52 +2214,7 @@ End the overall response with: "Would you like to explore any of these topics in
 
         try:
             context_truncated = self._get_truncated_context()
-
-            prompt = rf"""Based on this study material, create exactly 15 simple multiple choice questions about the key concepts. Do NOT include any mathematical equations or formulas.
-
-{self._material_guidance()}{context_truncated}
-
-CRITICAL INSTRUCTIONS:
-1. Your response must start immediately with {{ and end with }} - NO other characters
-2. Do NOT include any text, explanations, or formatting before or after the JSON
-3. Do NOT include markdown code blocks, backticks, or any other formatting
-4. Do NOT include any HTML tags or special characters outside the JSON
-5. Use this EXACT JSON structure and format:
-
-{{
-    "questions": [
-        {{
-            "question": "What is the main topic of this material?",
-            "options": ["First answer choice", "Second answer choice", "Third answer choice", "Fourth answer choice"],
-            "correct_answer": "Second answer choice",
-            "explanation": "Brief explanation without saying 'Correct!' at the beginning"
-        }}
-    ]
-}}
-
-ANSWER FORMAT REQUIREMENTS:
-- The "correct_answer" field must EXACTLY match one of the options in the "options" array
-- Options should contain the actual answer text without any prefixes like "Option A:" or "Option B:"
-- The correct_answer must be the EXACT text from the options array
-- Example: If options are ["Risk increases", "Risk decreases", "No change", "Unknown"], then correct_answer must be one of these exact strings like "Risk increases"
-- All four options MUST be of similar length and detail (within a few words of each other). Do NOT make the correct answer longer, more precise, or more carefully worded than the other options - students spot this pattern. Write every incorrect option with the same level of detail and plausibility as the correct one
-- Vary the position of the correct answer across questions - it must NOT usually be the first option
-
-Make questions simple and focused on basic concepts. Keep explanations short and informative.
-
-CRITICAL FORMATTING RULES:
-- Do NOT start explanations with ANY confirmation words like 'Correct!', 'Right!', 'Yes!', 'That's correct!', 'Exactly!', or any similar phrases. Start explanations directly with the educational content.
-- **ABSOLUTELY NO MATHEMATICAL NOTATION:** Do NOT use LaTeX formatting, mathematical symbols, or any notation in questions, options, or explanations:
-  * NO dollar signs: $x$, $\delta$, $P_t$, etc.
-  * NO backslash notation: \(x\), \[equation\], etc.
-  * NO mathematical symbols: √, ∑, ∫, ≤, ≥, ≠, π, etc.
-  * If the material contains LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
-  * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
-- Use ONLY plain English words to describe all mathematical concepts
-- Use only plain text - no mathematical notation or formulas
-
-RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no text, no code blocks."""
-
+            prompt = self._get_quiz_prompt(context_truncated)
             messages = [{"role": "user", "content": prompt}]
 
             # Try the primary model
@@ -2259,6 +2264,77 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
         except Exception as e:
             logging.error(f"ASYNC QUIZ: Critical error in async quiz generation: {e}")
             return []
+
+    def _get_quiz_prompt(self, context_truncated=None):
+        """The multiple-choice quiz prompt (shared by the whole and streaming generators)."""
+        if context_truncated is None:
+            context_truncated = self._get_truncated_context()
+        return rf"""Based on this study material, create exactly 15 simple multiple choice questions about the key concepts. Do NOT include any mathematical equations or formulas.
+
+{self._material_guidance()}{context_truncated}
+
+CRITICAL INSTRUCTIONS:
+1. Your response must start immediately with {{ and end with }} - NO other characters
+2. Do NOT include any text, explanations, or formatting before or after the JSON
+3. Do NOT include markdown code blocks, backticks, or any other formatting
+4. Do NOT include any HTML tags or special characters outside the JSON
+5. Use this EXACT JSON structure and format:
+
+{{
+    "questions": [
+        {{
+            "question": "What is the main topic of this material?",
+            "options": ["First answer choice", "Second answer choice", "Third answer choice", "Fourth answer choice"],
+            "correct_answer": "Second answer choice",
+            "explanation": "Brief explanation without saying 'Correct!' at the beginning"
+        }}
+    ]
+}}
+
+ANSWER FORMAT REQUIREMENTS:
+- The "correct_answer" field must EXACTLY match one of the options in the "options" array
+- Options should contain the actual answer text without any prefixes like "Option A:" or "Option B:"
+- The correct_answer must be the EXACT text from the options array
+- Example: If options are ["Risk increases", "Risk decreases", "No change", "Unknown"], then correct_answer must be one of these exact strings like "Risk increases"
+- All four options MUST be of similar length and detail (within a few words of each other). Do NOT make the correct answer longer, more precise, or more carefully worded than the other options - students spot this pattern. Write every incorrect option with the same level of detail and plausibility as the correct one
+- Vary the position of the correct answer across questions - it must NOT usually be the first option
+
+Make questions simple and focused on basic concepts. Keep explanations short and informative.
+
+CRITICAL FORMATTING RULES:
+- Do NOT start explanations with ANY confirmation words like 'Correct!', 'Right!', 'Yes!', 'That's correct!', 'Exactly!', or any similar phrases. Start explanations directly with the educational content.
+- **ABSOLUTELY NO MATHEMATICAL NOTATION:** Do NOT use LaTeX formatting, mathematical symbols, or any notation in questions, options, or explanations:
+  * NO dollar signs: $x$, $\delta$, $P_t$, etc.
+  * NO backslash notation: \(x\), \[equation\], etc.
+  * NO mathematical symbols: √, ∑, ∫, ≤, ≥, ≠, π, etc.
+  * If the material contains LaTeX variables like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove dollar signs)
+  * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
+- Use ONLY plain English words to describe all mathematical concepts
+- Use only plain text - no mathematical notation or formulas
+
+RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no text, no code blocks."""
+
+    async def generate_retrieval_quiz_stream_async(self):
+        """Streaming version of generate_retrieval_quiz_async: yields the raw JSON
+        text as it is generated. Consumers parse complete questions out of the
+        growing text with parse_quiz_partial() and the finished text with
+        _parse_and_validate_quiz(), so the first question can be shown long
+        before the whole quiz is done."""
+        if not self.context:
+            return
+        try:
+            messages = [{"role": "user", "content": self._get_quiz_prompt()}]
+
+            def factory(model):
+                return self._make_async_openai_streaming_call(
+                    messages=messages, model=model, temperature=0.3, max_tokens=15000, timeout=90,
+                    reasoning_effort=QUIZ_REASONING_EFFORT, response_format={"type": "json_object"}
+                )
+
+            async for chunk in self._stream_with_fallback_for(QUIZ_MODEL, factory, "STREAM QUIZ", ""):
+                yield chunk
+        except Exception as e:
+            logging.error(f"STREAM QUIZ: Critical error: {e}")
 
     # Legacy sync method removed - all quiz operations now use async polling
 

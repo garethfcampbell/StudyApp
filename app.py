@@ -9,6 +9,7 @@ import os
 import json
 import time
 import hashlib
+import inspect
 import hmac
 import logging
 import asyncio
@@ -689,13 +690,23 @@ def _email_error_message(exc):
     return f"Sending the email failed: {detail}" if detail else "Sending the email failed."
 
 
-def run_infographic_generation_background(task_id, pdf_content, doc_type=None, notes_brief=None):
+def run_infographic_generation_background(task_id, pdf_content, doc_type=None, notes_brief=None, session_id=None):
     """
     Background function to generate a revision-guide infographic image.
     This runs in a separate thread to avoid blocking the web server.
     """
     try:
         logging.info(f"INFOGRAPHIC BACKGROUND: Starting infographic generation for task {task_id}")
+
+        # Use the brief pre-generated after upload (wait for it if still in progress)
+        if not notes_brief and session_id:
+            try:
+                with app.app_context():
+                    notes_brief = get_prewarmed(session_id, 'infographic_brief', wait_seconds=60)
+                    if notes_brief:
+                        consume_prewarmed(session_id, 'infographic_brief')
+            except Exception as e:
+                logging.error(f"INFOGRAPHIC BACKGROUND: could not read pre-generated brief: {e}")
 
         # Initialize TutorAI and set context
         tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
@@ -1176,9 +1187,51 @@ def quickaction_stream():
     # Serve from the AI result cache when this document was already processed
     cached = get_cached_ai_result(pdf_content, action) if action != 'essay' else None
     if action == 'essay' and not StorageManager().retrieve_content(session_id, 'used_essay_questions'):
-        # First round: use the pre-generated round if it is ready (or nearly)
-        # Wait for a pending pre-generation rather than starting a competing one
-        prewarmed = get_prewarmed(session_id, 'essay', wait_seconds=PREWARM_WAIT_SECONDS)
+        # First round: use the pre-generated round. If it is still being made,
+        # answer with a stream that sends keep-alive comments while waiting (a
+        # request that stays silent for long can be cut by the proxy), then the
+        # round. Only when the pre-generation has failed do we generate live.
+        _st = StorageManager()
+        prewarmed = _st.retrieve_content(session_id, 'essay_prewarm')
+        if not prewarmed and _st.retrieve_content(session_id, 'essay_prewarm_pending'):
+            def _wait_and_stream_prewarmed_essay():
+                with app.app_context():
+                    deadline = time.time() + PREWARM_WAIT_SECONDS
+                    text = None
+                    sent = ""
+                    while time.time() < deadline:
+                        text = _st.retrieve_content(session_id, 'essay_prewarm')
+                        if text or not _st.retrieve_content(session_id, 'essay_prewarm_pending'):
+                            break
+                        # relay the growing partial text (streams like the summary)
+                        partial = _st.retrieve_content(session_id, 'essay_prewarm_partial') or ""
+                        if len(partial) > len(sent) and partial.startswith(sent):
+                            yield f"data: {json.dumps(partial[len(sent):])}\n\n"
+                            sent = partial
+                        else:
+                            yield ": waiting\n\n"   # SSE comment: ignored by the page, keeps the connection open
+                        time.sleep(0.5)
+                    if not text:
+                        # Pre-generation failed or timed out: tell the student to click again
+                        # (the next click generates live).
+                        yield f"data: {json.dumps('The essay questions are taking longer than expected. Please click Essay questions again.')}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    consume_prewarmed(session_id, 'essay')
+                    _activate_essay_practice(session_id, text)
+                    try:
+                        msgs = _st.retrieve_content(session_id, 'messages') or []
+                        msgs.append({'role': 'user', 'content': 'Essay question'})
+                        msgs.append({'role': 'assistant', 'content': text})
+                        _st.store_content(session_id, 'messages', msgs)
+                    except Exception as e:
+                        logging.error(f"QUICKACTION STREAM: Error storing pre-generated essay: {e}")
+                    remainder = text[len(sent):] if text.startswith(sent) else text
+                    for i in range(0, len(remainder), 800):
+                        yield f"data: {json.dumps(remainder[i:i + 800])}\n\n"
+                    yield "data: [DONE]\n\n"
+            return Response(_wait_and_stream_prewarmed_essay(), mimetype='text/event-stream',
+                            headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
         if prewarmed:
             consume_prewarmed(session_id, 'essay')
             _activate_essay_practice(session_id, prewarmed)
@@ -1290,14 +1343,31 @@ def calculation_stream():
                 tutor_ai = _make_tutor(pdf_content, session_id)
                 _storage = StorageManager()
 
-                # First question: serve the pre-generated one if ready (or nearly)
+                # First question: serve the pre-generated one. While it is still
+                # being made, push keep-alive comments so the connection is not
+                # cut; a live generation only runs if the pre-generation failed.
                 if (current_index or 0) == 0:
-                    prewarmed = get_prewarmed(session_id, 'calculation', wait_seconds=PREWARM_WAIT_SECONDS)
+                    prewarmed = _storage.retrieve_content(session_id, 'calculation_prewarm')
+                    sent = ""
+                    if not prewarmed and _storage.retrieve_content(session_id, 'calculation_prewarm_pending'):
+                        deadline = time.time() + PREWARM_WAIT_SECONDS
+                        while time.time() < deadline:
+                            prewarmed = _storage.retrieve_content(session_id, 'calculation_prewarm')
+                            if prewarmed or not _storage.retrieve_content(session_id, 'calculation_prewarm_pending'):
+                                break
+                            partial = _storage.retrieve_content(session_id, 'calculation_prewarm_partial') or ""
+                            if len(partial) > len(sent) and partial.startswith(sent):
+                                q.put(partial[len(sent):])   # relay the growing text
+                                sent = partial
+                            else:
+                                q.put(KEEPALIVE)
+                            await asyncio.sleep(0.5)
                     if prewarmed:
                         consume_prewarmed(session_id, 'calculation')
                         full_response = prewarmed
-                        for i in range(0, len(prewarmed), 400):
-                            q.put(prewarmed[i:i + 400])
+                        remainder = prewarmed[len(sent):] if prewarmed.startswith(sent) else prewarmed
+                        for i in range(0, len(remainder), 400):
+                            q.put(remainder[i:i + 400])
                         return
 
                 # --- Detect document type on first call ---
@@ -1388,6 +1458,9 @@ def calculation_stream():
             if chunk is None:
                 yield f"data: [DONE]\n\n"
                 break
+            if chunk is KEEPALIVE:
+                yield ": waiting\n\n"   # SSE comment: ignored by the page, keeps the connection open
+                continue
             escaped = json.dumps(chunk)
             yield f"data: {escaped}\n\n"
 
@@ -1679,27 +1752,23 @@ def start_quiz_generation():
             cached = get_prewarmed(session_id, 'quiz')
             if cached:
                 consume_prewarmed(session_id, 'quiz')
-            elif StorageManager().retrieve_content(session_id, 'quiz_prewarm_pending'):
-                # Still being pre-generated: let a background thread wait for it
+            else:
                 _sid, _pdf, _doc = session_id, pdf_content, _stored_doc_type()
+                if not StorageManager().retrieve_content(session_id, 'quiz_prewarm_pending'):
+                    # Nothing pre-generated: generate now, streaming into the
+                    # session store so the first question can be shown early.
+                    _start_prewarm('quiz', _sid, _pdf, _doc, task_id,
+                                   lambda t: t.generate_retrieval_quiz_stream_async(),
+                                   finalize=TutorAI._parse_and_validate_quiz, force=True)
+                    logging.info(f"QUIZ POLLING: streaming generation started for task {task_id}")
+                # A background thread completes the task when the questions arrive;
+                # meanwhile /quiz_status hands out the questions that are already
+                # complete in the growing stream.
                 threading.Thread(target=_wait_prewarm_then_complete, daemon=True, args=(
-                    task_id, _sid, 'quiz', 90,
+                    task_id, _sid, 'quiz', 120,
                     lambda: run_quiz_generation_background(task_id, _pdf, doc_type=_doc))).start()
                 return jsonify({"task_id": task_id}), 202
-        if cached:
-            update_task_complete(task_id, success=True, data=cached)
-            return jsonify({"task_id": task_id}), 202
-
-        # Start background task in separate thread
-        thread = threading.Thread(
-            target=run_quiz_generation_background,
-            args=(task_id, pdf_content, _stored_doc_type()),
-            daemon=True
-        )
-        thread.start()
-
-        logging.info(f"QUIZ POLLING: Background task started with ID: {task_id}")
-
+        update_task_complete(task_id, success=True, data=cached)
         return jsonify({"task_id": task_id}), 202
 
     except Exception:
@@ -1717,6 +1786,18 @@ def get_quiz_status(task_id):
             return jsonify({"status": "not_found"}), 404
 
         result_dict = task_result
+
+        # Still generating: hand out the questions that are already complete in
+        # the streamed JSON so the page can show the first one straight away.
+        if result_dict.get("status") == "pending":
+            session_id = session.get('session_id')
+            if session_id:
+                try:
+                    _st = StorageManager()
+                    partial = _st.retrieve_content(session_id, 'quiz_prewarm_partial') if _st.retrieve_content(session_id, 'quiz_prewarm_pending') else ""
+                    result_dict["partial"] = TutorAI.parse_quiz_partial(partial or "")
+                except Exception as e:
+                    logging.debug(f"QUIZ POLLING: partial parse skipped: {e}")
 
         # If task is complete, also update session storage
         if result_dict.get("status") == "complete" and result_dict.get("success"):
@@ -2091,8 +2172,9 @@ SUMMARY_PARTIAL_WRITE_INTERVAL = 0.5  # seconds between partial-text writes whil
 PREWARM_FEATURES = tuple(f.strip() for f in os.environ.get(
     'PREWARM_FEATURES', 'essay,calculation,quiz,infographic_brief').split(',') if f.strip())
 PREWARM_WAIT_SECONDS = 120  # how long a click waits for a pending pre-generation before generating itself
+KEEPALIVE = object()        # queue sentinel: emit an SSE comment to keep a waiting connection open
 PREWARM_KEYS = tuple(f"{f}_prewarm{suffix}" for f in ('essay', 'calculation', 'quiz', 'infographic', 'infographic_brief')
-                     for suffix in ('', '_pending'))
+                     for suffix in ('', '_pending', '_partial'))
 
 
 def get_prewarmed(session_id, feature, wait_seconds=0):
@@ -2113,12 +2195,12 @@ def get_prewarmed(session_id, feature, wait_seconds=0):
 def consume_prewarmed(session_id, feature):
     """Remove a served pre-generated result so it is used only once."""
     try:
-        StorageManager().delete_many(session_id, [f"{feature}_prewarm"])
+        StorageManager().delete_many(session_id, [f"{feature}_prewarm", f"{feature}_prewarm_partial"])
     except Exception as e:
         logging.debug(f"PREWARM: could not remove {feature}: {e}")
 
 
-def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, delay=0.0):
+def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, delay=0.0, finalize=None):
     """Run one pre-generation in this thread: produce(tutor) is a coroutine
     returning the value to store. `delay` staggers the starts so the parallel
     pre-generations do not all hit the API in the same second (rate limits) and
@@ -2133,8 +2215,24 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, dela
             tutor.set_context(pdf_text, doc_type=doc_type)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+
+            async def _run():
+                result = produce(tutor)
+                if inspect.isasyncgen(result):
+                    # Streaming producer: publish the growing text so a waiting
+                    # request can relay it (same hybrid as the executive summary).
+                    buf, last_write = "", 0.0
+                    async for chunk in result:
+                        buf += chunk
+                        now = time.perf_counter()
+                        if now - last_write >= SUMMARY_PARTIAL_WRITE_INTERVAL:
+                            storage.store_content(session_id, f"{feature}_prewarm_partial", buf)
+                            last_write = now
+                    return finalize(buf) if finalize else buf
+                return await result
+
             try:
-                value = loop.run_until_complete(produce(tutor))
+                value = loop.run_until_complete(_run())
             finally:
                 loop.close()
             if value:
@@ -2144,6 +2242,11 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, dela
                 logging.warning(f"PREWARM {feature}: produced nothing (upload {task_id})")
     except Exception as e:
         logging.error(f"PREWARM {feature}: failed (feature will generate on demand): {e}")
+        try:
+            with app.app_context():   # a failed stream's partial text must not be served
+                storage.delete_many(session_id, [f"{feature}_prewarm_partial"])
+        except Exception:
+            pass
     finally:
         try:
             with app.app_context():
@@ -2152,11 +2255,11 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, dela
             logging.error(f"PREWARM {feature}: could not clear pending flag: {e}")
 
 
-def _start_prewarm(feature, session_id, pdf_text, doc_type, task_id, produce, delay=0.0):
-    if feature not in PREWARM_FEATURES:
+def _start_prewarm(feature, session_id, pdf_text, doc_type, task_id, produce, delay=0.0, finalize=None, force=False):
+    if feature not in PREWARM_FEATURES and not force:
         return
     StorageManager().store_content(session_id, f"{feature}_prewarm_pending", True)
-    threading.Thread(target=_prewarm_one, args=(feature, session_id, pdf_text, doc_type, task_id, produce, delay),
+    threading.Thread(target=_prewarm_one, args=(feature, session_id, pdf_text, doc_type, task_id, produce, delay, finalize),
                      daemon=True).start()
 
 
@@ -2316,9 +2419,10 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 # click on any button is served instantly from the session store.
                 try:
                     _start_prewarm('essay', session_id, pdf_text, doc_type, task_id,
-                                   lambda t: t.generate_essay_question_async(used_questions=[]))
+                                   lambda t: t.generate_essay_question_stream_async(used_questions=[]))
                     _start_prewarm('quiz', session_id, pdf_text, doc_type, task_id,
-                                   lambda t: t.generate_retrieval_quiz_async(), delay=2.0)
+                                   lambda t: t.generate_retrieval_quiz_stream_async(), delay=2.0,
+                                   finalize=TutorAI._parse_and_validate_quiz)
                     # The infographic's text brief is cheap; the image itself is only
                     # pre-generated if 'infographic' is listed in PREWARM_FEATURES.
                     _start_prewarm('infographic_brief', session_id, pdf_text, doc_type, task_id,
@@ -2329,10 +2433,10 @@ def process_upload_background(task_id, file_data, filename, session_id):
                     eq_list = storage_manager.retrieve_content(session_id, 'equation_list')
                     if exam_qs:
                         _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
-                                       lambda t: t._generate_exam_worked_example(t._get_truncated_context(), exam_qs[0]))
+                                       lambda t: t._generate_exam_worked_example_stream(t._get_truncated_context(), exam_qs[0]))
                     elif eq_list:
                         _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
-                                       lambda t: t.generate_calculation_question_async(specific_equation=eq_list[0]))
+                                       lambda t: t.generate_calculation_question_stream_async(specific_equation=eq_list[0]))
                 except Exception as e:
                     logging.error(f"Upload {task_id}: could not start pre-generation: {e}")
             else:
@@ -2806,12 +2910,11 @@ def start_infographic_generation():
             return jsonify({"task_id": task_id}), 202
 
         # Start background task in separate thread
-        notes_brief = get_prewarmed(session_id, 'infographic_brief', wait_seconds=30)
-        if notes_brief:
-            consume_prewarmed(session_id, 'infographic_brief')
+        # The background job picks up the pre-generated brief itself (waiting
+        # for it if it is still being made) so this request returns at once.
         thread = threading.Thread(
             target=run_infographic_generation_background,
-            args=(task_id, pdf_content, _stored_doc_type(), notes_brief),
+            args=(task_id, pdf_content, _stored_doc_type(), None, session_id),
             daemon=True
         )
         thread.start()

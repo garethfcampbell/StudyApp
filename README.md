@@ -22,7 +22,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 | Layer | Technology |
 |---|---|
 | Backend | Python / Flask / Gunicorn |
-| AI | OpenAI (`gpt-6-luna` for every text feature, medium reasoning effort; `gpt-6-sol` as fallback; `gpt-image-2.5-sunburst` for infographics) |
+| AI | OpenAI (`gpt-6-luna` for every text feature, medium reasoning effort (low for essay rounds and quiz generation); `gpt-6-sol` as fallback; `gpt-image-2.5-sunburst` for infographics) |
 | Database | PostgreSQL (Replit managed) |
 | Frontend | Bootstrap 5 / Vanilla JS / MathJax 3 |
 | File parsing | PyPDF2, python-pptx |

@@ -1177,7 +1177,8 @@ def quickaction_stream():
     cached = get_cached_ai_result(pdf_content, action) if action != 'essay' else None
     if action == 'essay' and not StorageManager().retrieve_content(session_id, 'used_essay_questions'):
         # First round: use the pre-generated round if it is ready (or nearly)
-        prewarmed = get_prewarmed(session_id, 'essay', wait_seconds=20)
+        # Wait for a pending pre-generation rather than starting a competing one
+        prewarmed = get_prewarmed(session_id, 'essay', wait_seconds=PREWARM_WAIT_SECONDS)
         if prewarmed:
             consume_prewarmed(session_id, 'essay')
             _activate_essay_practice(session_id, prewarmed)
@@ -1291,7 +1292,7 @@ def calculation_stream():
 
                 # First question: serve the pre-generated one if ready (or nearly)
                 if (current_index or 0) == 0:
-                    prewarmed = get_prewarmed(session_id, 'calculation', wait_seconds=20)
+                    prewarmed = get_prewarmed(session_id, 'calculation', wait_seconds=PREWARM_WAIT_SECONDS)
                     if prewarmed:
                         consume_prewarmed(session_id, 'calculation')
                         full_response = prewarmed
@@ -2089,6 +2090,7 @@ SUMMARY_PARTIAL_WRITE_INTERVAL = 0.5  # seconds between partial-text writes whil
 # (the infographic costs an image generation per upload). Empty string disables it.
 PREWARM_FEATURES = tuple(f.strip() for f in os.environ.get(
     'PREWARM_FEATURES', 'essay,calculation,quiz,infographic_brief').split(',') if f.strip())
+PREWARM_WAIT_SECONDS = 120  # how long a click waits for a pending pre-generation before generating itself
 PREWARM_KEYS = tuple(f"{f}_prewarm{suffix}" for f in ('essay', 'calculation', 'quiz', 'infographic', 'infographic_brief')
                      for suffix in ('', '_pending'))
 
@@ -2116,12 +2118,16 @@ def consume_prewarmed(session_id, feature):
         logging.debug(f"PREWARM: could not remove {feature}: {e}")
 
 
-def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce):
+def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, delay=0.0):
     """Run one pre-generation in this thread: produce(tutor) is a coroutine
-    returning the value to store."""
+    returning the value to store. `delay` staggers the starts so the parallel
+    pre-generations do not all hit the API in the same second (rate limits) and
+    the first call can warm the prompt cache for the others."""
     started = time.perf_counter()
     storage = StorageManager()
     try:
+        if delay:
+            time.sleep(delay)
         with app.app_context():
             tutor = TutorAI()
             tutor.set_context(pdf_text, doc_type=doc_type)
@@ -2146,11 +2152,11 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce):
             logging.error(f"PREWARM {feature}: could not clear pending flag: {e}")
 
 
-def _start_prewarm(feature, session_id, pdf_text, doc_type, task_id, produce):
+def _start_prewarm(feature, session_id, pdf_text, doc_type, task_id, produce, delay=0.0):
     if feature not in PREWARM_FEATURES:
         return
     StorageManager().store_content(session_id, f"{feature}_prewarm_pending", True)
-    threading.Thread(target=_prewarm_one, args=(feature, session_id, pdf_text, doc_type, task_id, produce),
+    threading.Thread(target=_prewarm_one, args=(feature, session_id, pdf_text, doc_type, task_id, produce, delay),
                      daemon=True).start()
 
 
@@ -2312,13 +2318,13 @@ def process_upload_background(task_id, file_data, filename, session_id):
                     _start_prewarm('essay', session_id, pdf_text, doc_type, task_id,
                                    lambda t: t.generate_essay_question_async(used_questions=[]))
                     _start_prewarm('quiz', session_id, pdf_text, doc_type, task_id,
-                                   lambda t: t.generate_retrieval_quiz_async())
+                                   lambda t: t.generate_retrieval_quiz_async(), delay=2.0)
                     # The infographic's text brief is cheap; the image itself is only
                     # pre-generated if 'infographic' is listed in PREWARM_FEATURES.
                     _start_prewarm('infographic_brief', session_id, pdf_text, doc_type, task_id,
-                                   lambda t: t._summarize_for_infographic(char_limit=5000))
+                                   lambda t: t._summarize_for_infographic(char_limit=5000), delay=4.0)
                     _start_prewarm('infographic', session_id, pdf_text, doc_type, task_id,
-                                   lambda t: t.generate_infographic_async())
+                                   lambda t: t.generate_infographic_async(), delay=6.0)
                     exam_qs = storage_manager.retrieve_content(session_id, 'exam_questions')
                     eq_list = storage_manager.retrieve_content(session_id, 'equation_list')
                     if exam_qs:
@@ -2800,7 +2806,7 @@ def start_infographic_generation():
             return jsonify({"task_id": task_id}), 202
 
         # Start background task in separate thread
-        notes_brief = get_prewarmed(session_id, 'infographic_brief', wait_seconds=8)
+        notes_brief = get_prewarmed(session_id, 'infographic_brief', wait_seconds=30)
         if notes_brief:
             consume_prewarmed(session_id, 'infographic_brief')
         thread = threading.Thread(

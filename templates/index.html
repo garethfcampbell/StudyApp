@@ -1364,6 +1364,31 @@ function addNewMessage(role, content) {
 
     
 // NEW SIMPLIFIED LATEX FUNCTION - bypasses complex placeholder system
+    function convertMarkdownTables(text) {
+        const lines = text.split('\n');
+        const out = [];
+        const isRow = l => /^\s*\|.*\|\s*$/.test(l);
+        const isSep = l => /^\s*\|(\s*:?-{2,}:?\s*\|)+\s*$/.test(l);
+        const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+        for (let i = 0; i < lines.length; i++) {
+            if (isRow(lines[i]) && i + 1 < lines.length && isSep(lines[i + 1])) {
+                const header = cells(lines[i]);
+                let j = i + 2;
+                const body = [];
+                while (j < lines.length && isRow(lines[j])) { body.push(cells(lines[j])); j++; }
+                let html = '<table class="table table-sm table-bordered w-auto my-2"><thead><tr>'
+                    + header.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>'
+                    + body.map(r => '<tr>' + r.map(c => '<td>' + c + '</td>').join('') + '</tr>').join('')
+                    + '</tbody></table>';
+                out.push(html);
+                i = j - 1;
+            } else {
+                out.push(lines[i]);
+            }
+        }
+        return out.join('\n');
+    }
+
     function formatMessageSimplified(content) {
         if (!content) {
             return '';
@@ -1431,6 +1456,16 @@ function addNewMessage(role, content) {
         result = result.replace(/(^|[^\\])(\\\([\s\S]*?\\\))/g, function(m, pre, latex) {
             return pre + protectLatex(latex);
         });
+        // Outside math, a TeX-escaped percent ("10\%", seen in chat replies) is
+        // just a percent sign. Math blocks are already protected above, where \% is
+        // required, so this only touches ordinary text.
+        result = result.replace(/\\%/g, '%');
+
+        // Markdown tables ("| Year | MS Office |" rows with a |---| separator), which
+        // the models use for exam questions that include a data table, become
+        // HTML tables instead of raw pipe characters. Built without newlines so the
+        // later newline-to-<br> step leaves the table alone.
+        result = convertMarkdownTables(result);
 
         // Markdown headings (# Heading) → bold+italic line, matching the
         // ***HEADING*** house style. The models occasionally emit hash

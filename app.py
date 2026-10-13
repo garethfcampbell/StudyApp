@@ -3098,7 +3098,7 @@ def _admin_challenge():
     if not os.environ.get('ADMIN_PASSWORD', '') and not os.environ.get('ADMIN_TOKEN', '').strip():
         return jsonify({'error': 'Not found'}), 404
     return Response('Authentication required', 401,
-                    {'WWW-Authenticate': 'Basic realm="QUB Finance AI Tutor admin", charset="UTF-8"'})
+                    {'WWW-Authenticate': 'Basic realm="QUB Finance: Revision App admin", charset="UTF-8"'})
 
 
 @app.route('/admin/activity')

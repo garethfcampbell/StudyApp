@@ -25,7 +25,7 @@
             
             <!-- Current File Info -->
             {% if pdf_filename %}
-            <div class="alert alert-info" style="background-color: #28a745; color: white; border-color: #28a745;">
+            <div id="previousFileInfo" class="alert alert-info" style="background-color: #28a745; color: white; border-color: #28a745;">
                 <i class="fas fa-check-circle me-2"></i>
                 <strong>Successfully loaded:</strong> {{ pdf_filename }}
             </div>
@@ -833,6 +833,10 @@ function addNewMessage(role, content) {
                             clearInterval(progressTimer);
                             uploadProgressBar.style.width = '100%';
                             
+                            // The server-rendered box names the document from the previous page load;
+                            // a new upload replaces it, so remove it rather than show two files.
+                            const previousFileInfo = document.getElementById('previousFileInfo');
+                            if (previousFileInfo) previousFileInfo.remove();
                             statusDiv.innerHTML = `
                                 <div class="alert alert-success upload-completed">
                                     <div class="d-flex align-items-center">

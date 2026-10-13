@@ -73,11 +73,11 @@ SUMMARY_REASONING_EFFORT = "low"
 CLASSIFIER_REASONING_EFFORT = "medium"
 # Chat and the multiple-choice quiz are explanation / retrieval tasks: low effort
 # halves chat's time to first token and takes a third off quiz generation.
-CHAT_REASONING_EFFORT = "low"
-QUIZ_REASONING_EFFORT = "low"   # quiz generation (faster first question)
+CHAT_REASONING_EFFORT = "medium"
+QUIZ_REASONING_EFFORT = "medium"
 # Essay-round generation and the infographic brief are content generation /
 # condensation: low effort (~40% faster). Essay MARKING keeps the medium default.
-ESSAY_REASONING_EFFORT = "low"   # essay ROUND generation (marking keeps the medium default)
+ESSAY_REASONING_EFFORT = "medium"   # essay ROUND generation (low produced a contradictory model answer on an exam paper)
 INFOGRAPHIC_BRIEF_REASONING_EFFORT = "medium"
 PRIMARY_RETRY_DELAY = 2  # seconds; multiplied by the attempt number
 
@@ -1850,6 +1850,38 @@ Would you like to explore any of these topics in more detail?
             logging.error(f"STREAM ESSAY: Critical error: {e}")
             yield f"Critical error in essay generation: {str(e)}"
 
+    @staticmethod
+    def essay_round_is_complete(text):
+        return bool(text) and "YOUR QUESTION" in text and "Hints" in text
+
+    async def ensure_essay_round_complete(self, round_text):
+        """A low-effort model occasionally stops after the model answer and never
+        prints the student's question and hints (seen live on a 49-slide deck).
+        If so, ask once for just the missing tail and append it, so the page can
+        open the answer box; otherwise return the text unchanged."""
+        if self.essay_round_is_complete(round_text):
+            return round_text
+        try:
+            messages = self._build_feature_messages(
+                "You are an experienced QUB Finance examiner.",
+                "An essay-practice round was generated from the study material but stopped early. Here is the round so far:\n\n"
+                + (round_text or "") + "\n\n"
+                "Print ONLY the missing ending, starting with the line \"**YOUR QUESTION:** <question>\" - a DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material, worded as on an exam paper, ending with its marks in square brackets (for an exam paper, a NEW question similar to the model question) - then a blank line, the bold label **Hints**, a blank line, two hyphen bullets naming which parts of the material to draw on and what analysis is expected (never the answer), a blank line, and finally this sentence word for word: Write your answer in the box below (aim for 300-500 words - bullet points are fine), then click **Check Answer**. I will mark it against the QUB Conceptual Equivalents Scale and show you a suggested answer.\n"
+                "Use plain text with markdown only, no mathematical notation, digits for numbers.",
+                guidance=self._essay_material_guidance()
+            )
+            tail = await self._make_async_openai_fallback_call(
+                messages=messages, model=ESSAY_MODEL, temperature=0.4, max_tokens=2000, timeout=60,
+                reasoning_effort=ESSAY_REASONING_EFFORT
+            )
+            tail = _strip_code_fences(tail or "").strip()
+            if "YOUR QUESTION" in tail:
+                logging.warning("ESSAY ROUND: tail (YOUR QUESTION / Hints) was missing and has been generated")
+                return (round_text or "").rstrip() + "\n\n" + tail + "\n"
+        except Exception as e:
+            logging.error(f"ESSAY ROUND: could not complete a truncated round: {e}")
+        return round_text
+
     def _get_essay_prompt(self, used_questions=None):
         """Return the essay-practice prompt for ONE round: a model question with a
         suggested answer, then a new question for the student to attempt."""
@@ -1938,6 +1970,7 @@ Write your answer in the box below (aim for 300-500 words - bullet points are fi
 - <student's question>: a DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper, on the SAME line as the bold label. Do not add a separate heading or repeat the words YOUR QUESTION.
 - Hints: 2 bullets naming which parts of the material (slide/page citations for lecture notes; for an exam paper, the concepts the question tests) to draw on and what kind of analysis is expected. Do NOT give the answer.
 - The closing sentence ("Write your answer in the box below ...") is printed word for word.
+- The round is NOT complete until the "**YOUR QUESTION:**" line, the two Hints and the closing sentence have been printed. Never stop after "Why this answer scores highly".
 
             RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks.""".replace("{{USED}}", used_block).replace("{{GROUNDING}}", self._essay_grounding_text()).replace("{{MODE}}", self._essay_mode_block()).replace("{{NOTICE}}", ("\n" + self._essay_notice_text()) if self._essay_notice_text() else "")
 

@@ -1101,7 +1101,14 @@ def simple_chat_stream():
 
         def generate_calc():
             while True:
-                chunk = calc_q.get()
+                try:
+                    chunk = calc_q.get(timeout=SSE_KEEPALIVE_SECONDS)
+                except _queue.Empty:
+                    # Marking an essay / checking a calculation answer runs at
+                    # medium effort and can think for 10 s+ before the first
+                    # token: keep the connection alive meanwhile.
+                    yield ": waiting\n\n"
+                    continue
                 if chunk is None:
                     yield f"data: [DONE]\n\n"
                     break
@@ -1291,6 +1298,11 @@ def quickaction_stream():
                 async for chunk in gen:
                     full_response += chunk
                     q.put(chunk)
+                if action == 'essay' and full_response and not TutorAI.essay_round_is_complete(full_response):
+                    repaired = await tutor_ai.ensure_essay_round_complete(full_response)
+                    if len(repaired) > len(full_response):
+                        q.put(repaired[len(full_response):])
+                        full_response = repaired
                 stream_ok = True
             except Exception as e:
                 logging.error(f"QUICKACTION STREAM: Error during streaming ({action}): {e}")
@@ -2282,7 +2294,12 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, dela
                         if now - last_write >= SUMMARY_PARTIAL_WRITE_INTERVAL:
                             storage.store_content(session_id, f"{feature}_prewarm_partial", buf)
                             last_write = now
-                    return finalize(buf) if finalize else buf
+                    if finalize:
+                        # finalize(text) or finalize(text, tutor); may be a coroutine
+                        n_params = len(inspect.signature(finalize).parameters)
+                        out = finalize(buf, tutor) if n_params >= 2 else finalize(buf)
+                        return (await out) if inspect.isawaitable(out) else out
+                    return buf
                 return await result
 
             try:
@@ -2473,7 +2490,8 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 # click on any button is served instantly from the session store.
                 try:
                     _start_prewarm('essay', session_id, pdf_text, doc_type, task_id,
-                                   lambda t: t.generate_essay_question_stream_async(used_questions=[]))
+                                   lambda t: t.generate_essay_question_stream_async(used_questions=[]),
+                                   finalize=lambda text, tutor: tutor.ensure_essay_round_complete(text))
                     _start_prewarm('quiz', session_id, pdf_text, doc_type, task_id,
                                    lambda t: t.generate_retrieval_quiz_stream_async(), delay=2.0,
                                    finalize=TutorAI._parse_and_validate_quiz)

@@ -74,7 +74,7 @@ CLASSIFIER_REASONING_EFFORT = "medium"
 # Chat and the multiple-choice quiz are explanation / retrieval tasks: low effort
 # halves chat's time to first token and takes a third off quiz generation.
 CHAT_REASONING_EFFORT = "medium"
-QUIZ_REASONING_EFFORT = "low"   # quiz generation (faster first question)
+QUIZ_REASONING_EFFORT = "medium"
 # Essay-round generation and the infographic brief are content generation /
 # condensation: low effort (~40% faster). Essay MARKING keeps the medium default.
 ESSAY_REASONING_EFFORT = "medium"   # essay ROUND generation (low produced a contradictory model answer on an exam paper)

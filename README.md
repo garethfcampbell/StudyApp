@@ -22,7 +22,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 | Layer | Technology |
 |---|---|
 | Backend | Python / Flask / Gunicorn |
-| AI | OpenAI (`gpt-6-luna` for every text feature, medium reasoning effort (low for the summary and quiz generation); `gpt-6-sol` as fallback; `gpt-image-2.5-sunburst` for infographics) |
+| AI | OpenAI (`gpt-6-luna` for every text feature, medium reasoning effort (low for the summary only); `gpt-6-sol` as fallback; `gpt-image-2.5-sunburst` for infographics) |
 | Database | PostgreSQL (Replit managed) |
 | Frontend | Bootstrap 5 / Vanilla JS / MathJax 3 |
 | File parsing | PyPDF2, python-pptx |
@@ -189,7 +189,7 @@ Set in `tutor_ai.py` (constants near the top). Every text call tries its first-c
 | Chat | gpt-6-luna | medium |
 | Essay questions - round generation | gpt-6-luna | medium |
 | Essay questions - marking the student's answer | gpt-6-luna | medium |
-| Multiple choice quiz | gpt-6-luna | low |
+| Multiple choice quiz | gpt-6-luna | medium |
 | Calculation questions - equation / exam question extraction | gpt-6-luna | medium |
 | Calculation questions - question or worked example | gpt-6-luna | medium |
 | Calculation questions - checking the answer | gpt-6-luna | medium |

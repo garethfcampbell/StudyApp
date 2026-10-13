@@ -135,23 +135,19 @@ class OptimizedStorageManager:
 
         def _do_store():
             with current_app.app_context():
-                existing = SessionData.query.filter_by(
-                    session_id=session_id, 
-                    content_type=content_type
-                ).first()
-                
-                if existing:
-                    existing.set_content(content)
-                    existing.timestamp = datetime.utcnow()
-                    existing.expires_at = datetime.utcnow() + timedelta(hours=24)
-                else:
-                    session_data = SessionData(
-                        session_id=session_id,
-                        content_type=content_type,
-                        content=content
-                    )
-                    self.db.session.add(session_data)
-                
+                # One UPDATE for an existing key; an INSERT only for a new key
+                # (was SELECT + UPDATE/INSERT on every write).
+                now = datetime.utcnow()
+                updated = SessionData.query.filter_by(
+                    session_id=session_id, content_type=content_type
+                ).update({
+                    SessionData.content: json.dumps(content, ensure_ascii=False),
+                    SessionData.timestamp: now,
+                    SessionData.expires_at: now + timedelta(hours=24),
+                }, synchronize_session=False)
+                if not updated:
+                    self.db.session.add(SessionData(
+                        session_id=session_id, content_type=content_type, content=content))
                 self.db.session.commit()
                 # Update cache only after successful DB commit
                 self.cache.set(cache_key, content)
@@ -204,14 +200,10 @@ class OptimizedStorageManager:
 
         def _do_delete():
             with current_app.app_context():
-                session_data = SessionData.query.filter_by(
-                    session_id=session_id, 
-                    content_type=content_type
-                ).first()
-                
-                if session_data:
-                    self.db.session.delete(session_data)
-                    self.db.session.commit()
+                SessionData.query.filter_by(
+                    session_id=session_id, content_type=content_type
+                ).delete(synchronize_session=False)
+                self.db.session.commit()
 
         try:
             self._retry_db_operation(_do_delete, operation_name="optimized_delete")
@@ -219,11 +211,39 @@ class OptimizedStorageManager:
             logging.error(f"Error in optimized delete after retries: {e}")
     
     def batch_store(self, operations: list) -> None:
-        """Batch multiple store operations for efficiency"""
+        """Store several items with ONE SELECT of the existing rows, in-place
+        updates / inserts and ONE commit (was one store per item)."""
+        ops = list(operations)
+        if not ops:
+            return
+
+        def _do_batch_store():
+            with current_app.app_context():
+                now = datetime.utcnow()
+                rows = SessionData.query.filter(
+                    SessionData.session_id.in_(list({sid for sid, _, _ in ops})),
+                    SessionData.content_type.in_(list({ct for _, ct, _ in ops}))
+                ).all()
+                existing = {(r.session_id, r.content_type): r for r in rows}
+                for sid, ct, content in ops:
+                    row = existing.get((sid, ct))
+                    if row:
+                        row.set_content(content)
+                        row.timestamp = now
+                        row.expires_at = now + timedelta(hours=24)
+                    else:
+                        row = SessionData(session_id=sid, content_type=ct, content=content)
+                        self.db.session.add(row)
+                        existing[(sid, ct)] = row
+                self.db.session.commit()
+                for sid, ct, content in ops:
+                    self.cache.set(self._get_cache_key(sid, ct), content)
+
         try:
-            for session_id, content_type, content in operations:
-                self.store_content(session_id, content_type, content)
+            self._retry_db_operation(_do_batch_store, operation_name="optimized_batch_store")
         except Exception as e:
+            for sid, ct, _ in ops:
+                self.cache.delete(self._get_cache_key(sid, ct))
             logging.error(f"Error in batch store: {e}")
     
     def batch_retrieve(self, session_id: str, content_types: list) -> Dict[str, Any]:

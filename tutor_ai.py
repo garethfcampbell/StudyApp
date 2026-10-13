@@ -140,7 +140,30 @@ def _get_async_openai_client():
         # connection/rate-limit/5xx errors.
         client = AsyncOpenAI(api_key=api_key, max_retries=2)
         _async_clients[key] = (loop, client)
+        _close_client_when_loop_closes(loop, client)
         return client
+
+
+def _close_client_when_loop_closes(loop, client):
+    """Wrap loop.close() so the loop's AsyncOpenAI client is closed (while the
+    loop can still run) just before the loop goes away. Without this an
+    unclosed httpx client is garbage-collected after its loop is gone and logs
+    "Task was destroyed but it is pending" / "AsyncClient.aclose(): Event loop
+    is closed". Every per-thread loop in app.py (new_event_loop + close, or
+    asyncio.run) is covered without touching each call site."""
+    original_close = loop.close
+
+    def _close():
+        with _async_clients_lock:
+            entry = _async_clients.pop(id(loop), None)
+        if entry is not None and entry[1] is client and not loop.is_closed() and not loop.is_running():
+            try:
+                loop.run_until_complete(client.close())
+            except Exception as e:
+                logging.debug(f"closing AsyncOpenAI client with its loop: {e}")
+        original_close()
+
+    loop.close = _close
 
 
 # --- Deterministic formatting normalizer for summary / key concepts output ---
@@ -777,13 +800,25 @@ class TutorAI:
             yield failure_message
 
     async def close_async_clients(self):
-        """Compatibility no-op retained for app.py finally blocks.
+        """Close the AsyncOpenAI client of the CURRENT event loop, if any.
 
-        AsyncOpenAI clients are cached per event loop (see
-        _get_async_openai_client) and dropped when their loop closes, so there
-        is nothing to close per request.
+        Called from the finally blocks in app.py just before each per-request
+        loop is closed. Closing here (while the loop is still running) avoids
+        the "Task was destroyed but it is pending" / "AsyncClient.aclose():
+        Event loop is closed" noise that garbage collection of an unclosed
+        httpx client produces after its loop has gone.
         """
-        logging.debug("close_async_clients() called - shared client left open (no-op)")
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        with _async_clients_lock:
+            entry = _async_clients.pop(id(loop), None)
+        if entry is not None and entry[0] is loop:
+            try:
+                await entry[1].close()
+            except Exception as e:
+                logging.debug(f"close_async_clients: {e}")
 
     async def _summarize_for_infographic(self, char_limit=8000):
         """Condense the ENTIRE lecture into a revision brief that fits the

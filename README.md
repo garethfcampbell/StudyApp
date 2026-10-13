@@ -1,4 +1,4 @@
-# QUB Finance AI Tutor
+# QUB Finance: Revision App
 
 An interactive self-study web application for Queen's University Belfast Finance students. Upload your lecture notes (PDF or PowerPoint) and get AI-powered tutoring, quizzes, and practice calculations — all tailored to your own material.
 
@@ -50,12 +50,12 @@ Create the following secrets/environment variables before running:
 | `ADMIN_TOKEN` | No | Optional alternative for scripts: send it as an `X-Admin-Token` header. |
 | `PREWARM_FEATURES` | No | Which features are pre-generated in the background right after an upload so the first click is instant: default `essay,calculation,quiz,infographic_brief` (the infographic's text brief only; add `infographic` to pre-generate the image too, at an image-generation cost per upload). Empty disables pre-generation. |
 | `RESEND_API_KEY` | No | Enables the "Email infographic as PDF" option, sent via Resend over HTTPS (works on Replit). If neither this nor `SMTP_HOST` is set, the option is hidden. |
-| `RESEND_FROM` | No | From address, e.g. `QUB Finance AI Tutor <tutor@yourdomain.ac.uk>` (domain must be verified in Resend). Defaults to `onboarding@resend.dev`, which only delivers to the Resend account owner - for testing. |
+| `RESEND_FROM` | No | From address, e.g. `QUB Finance: Revision App <tutor@yourdomain.ac.uk>` (domain must be verified in Resend). Defaults to `onboarding@resend.dev`, which only delivers to the Resend account owner - for testing. |
 | `SMTP_HOST` | No | Fallback SMTP transport, used only when `RESEND_API_KEY` is unset (e.g. `smtp.office365.com`; outbound SMTP may be blocked on Replit). |
 | `SMTP_PORT` | No | `587` (STARTTLS, default) or `465` (SSL) |
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | No | SMTP login / password or API key |
 | `SMTP_FROM` | No | From address (defaults to `SMTP_USERNAME`) |
-| `SMTP_FROM_NAME` | No | Display name (default `QUB Finance AI Tutor`) |
+| `SMTP_FROM_NAME` | No | Display name (default `QUB Finance: Revision App`) |
 
 ### Installation
 

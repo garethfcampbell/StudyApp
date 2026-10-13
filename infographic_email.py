@@ -6,9 +6,9 @@ hosts. Configuration is read from environment variables so no credentials live
 in code:
 
     RESEND_API_KEY   Resend API key (enables the feature)
-    RESEND_FROM      From address, e.g. "QUB Finance AI Tutor <tutor@yourdomain.ac.uk>".
+    RESEND_FROM      From address, e.g. "QUB Finance: Revision App <tutor@yourdomain.ac.uk>".
                      The domain must be verified in Resend. Defaults to
-                     "QUB Finance AI Tutor <onboarding@resend.dev>", which Resend only
+                     "QUB Finance: Revision App <onboarding@resend.dev>", which Resend only
                      delivers to the account owner's own address (fine for testing).
 
     SMTP_HOST / SMTP_PORT / SMTP_USERNAME / SMTP_PASSWORD / SMTP_FROM / SMTP_FROM_NAME
@@ -33,7 +33,7 @@ from email.utils import formataddr
 
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
-FROM_NAME_DEFAULT = "QUB Finance AI Tutor"
+FROM_NAME_DEFAULT = "QUB Finance: Revision App"
 RESEND_API_URL = "https://api.resend.com/emails"
 RESEND_FROM_DEFAULT = f"{FROM_NAME_DEFAULT} <onboarding@resend.dev>"
 EMAIL_SUBJECT = "Your revision infographic (PDF)"
@@ -99,7 +99,7 @@ def _email_body(document_name=None, from_name=FROM_NAME_DEFAULT):
     return (
         "Hello,\n\n"
         f"Attached is the one-page revision infographic{doc_line} you requested from the "
-        "QUB Finance AI Tutor.\n\n"
+        "QUB Finance: Revision App.\n\n"
         "It summarises the key concepts and general formulas from your uploaded material. "
         "It is a revision aid generated with AI - always check it against your lecture "
         "material, and never present AI output as your own work.\n\n"

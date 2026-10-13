@@ -2,6 +2,7 @@
 import io
 import os
 import asyncio
+import threading
 import json
 import logging
 import random
@@ -104,17 +105,42 @@ DEFAULT_REASONING_EFFORT = "medium"
 _async_openai_client = None
 
 
+_async_clients = {}            # id(event loop) -> (loop, AsyncOpenAI)
+_async_clients_lock = threading.Lock()
+
+
 def _get_async_openai_client():
-    """Return the shared AsyncOpenAI client, creating it on first use."""
-    global _async_openai_client
-    if _async_openai_client is None:
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if not api_key:
-            raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
+    """Return the AsyncOpenAI client for the CURRENT event loop, creating it on
+    first use.
+
+    Every request / pre-generation thread runs its own short-lived event loop.
+    An AsyncOpenAI client (httpx connection pool underneath) binds its pooled
+    connections to the loop that first used them, so one process-wide client
+    shared across loops raised "RuntimeError: Event loop is closed" on the first
+    attempt of many calls once an earlier loop had been closed - each such
+    failure cost a 2 s retry (seen as "STREAM ESSAY: failed before emitting
+    output (attempt 1/3)" in production). One client per loop avoids that;
+    clients of closed loops are dropped and garbage-collected."""
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    key = id(loop)
+    with _async_clients_lock:
+        entry = _async_clients.get(key)
+        if entry is not None and entry[0] is loop and not loop.is_closed():
+            return entry[1]
+        # prune clients whose loops have been closed (ids can be reused)
+        for k in [k for k, (l, _) in _async_clients.items() if l.is_closed()]:
+            del _async_clients[k]
         # max_retries=2: the SDK performs its own backoff for transient
         # connection/rate-limit/5xx errors.
-        _async_openai_client = AsyncOpenAI(api_key=api_key, max_retries=2)
-    return _async_openai_client
+        client = AsyncOpenAI(api_key=api_key, max_retries=2)
+        _async_clients[key] = (loop, client)
+        return client
 
 
 # --- Deterministic formatting normalizer for summary / key concepts output ---
@@ -753,8 +779,9 @@ class TutorAI:
     async def close_async_clients(self):
         """Compatibility no-op retained for app.py finally blocks.
 
-        The AsyncOpenAI client is a module-level singleton shared across
-        requests and TutorAI instances, so it must NOT be closed per-request.
+        AsyncOpenAI clients are cached per event loop (see
+        _get_async_openai_client) and dropped when their loop closes, so there
+        is nothing to close per request.
         """
         logging.debug("close_async_clients() called - shared client left open (no-op)")
 

@@ -161,10 +161,16 @@ def init_session():
     
     # Use optimized storage for better performance
     session_id = session['session_id']
-    
+
+    # The default rows only need creating once per session: remember that in
+    # the signed cookie so every later request skips this read and the writes
+    # entirely (clear_session_data resets the cookie, so a new document re-inits).
+    if session.get('_defaults_ok') == session_id:
+        return
+
     # OPTIMIZED: Use batch_retrieve to fetch all session data in a SINGLE database query
     # This replaces 7 sequential database calls with 1 batched query
-    session_data_types = ['messages', 'quiz_questions', 'current_question_index', 
+    session_data_types = ['messages', 'quiz_questions', 'current_question_index',
                          'quiz_score', 'practice_equations', 'current_equation_index', 'equation_score']
     
     # Single batch query instead of 7 sequential queries
@@ -191,6 +197,7 @@ def init_session():
         if existing_data.get('current_equation_index') is None:
             batch_operations.append((session_id, 'current_equation_index', 0))
         primary_storage.batch_store(batch_operations)
+    session['_defaults_ok'] = session_id
 
 def get_pdf_content():
     """Get PDF content from optimized storage"""
@@ -248,9 +255,6 @@ def _activate_essay_practice(session_id, round_text):
     message is marked as an answer, and record the question so it is not repeated."""
     try:
         storage = StorageManager()
-        storage.store_content(session_id, 'current_essay_question', round_text)
-        storage.store_content(session_id, 'essay_mode_active', True)
-        storage.store_content(session_id, 'calculation_mode_active', False)
         used = storage.retrieve_content(session_id, 'used_essay_questions') or []
         m = _re.search(r"YOUR QUESTION:\s*(.+)", round_text)
         question = m.group(1).strip().strip('*_ ') if m else None
@@ -263,7 +267,12 @@ def _activate_essay_practice(session_id, round_text):
         m3 = _re.search(r"\*\*MODEL QUESTION\*\*\s*\n+\s*\*(.+?)\*", round_text)
         if m3:
             used.append(m3.group(1).strip()[:300])
-        storage.store_content(session_id, 'used_essay_questions', used[-40:])
+        storage.batch_store([  # one write for the whole practice state
+            (session_id, 'current_essay_question', round_text),
+            (session_id, 'essay_mode_active', True),
+            (session_id, 'calculation_mode_active', False),
+            (session_id, 'used_essay_questions', used[-40:]),
+        ])
     except Exception as e:
         logging.error(f"ESSAY PRACTICE: could not store round state: {e}")
 
@@ -342,10 +351,15 @@ def update_task_complete(task_id, success=True, data=None, error=None):
     with app.app_context():
         try:
             from models import TaskStatus
-            task = TaskStatus.query.filter_by(task_id=task_id).first()
-            if task:
-                task.set_complete(success=success, data=data, error=error)
-                postgres_db.session.commit()
+            values = {TaskStatus.status: 'complete', TaskStatus.success: success,
+                      TaskStatus.updated_at: datetime.utcnow()}
+            if data is not None:
+                values[TaskStatus.data] = json.dumps(data, ensure_ascii=False)
+            if error:
+                values[TaskStatus.error] = error
+            n = TaskStatus.query.filter_by(task_id=task_id).update(values, synchronize_session=False)
+            postgres_db.session.commit()
+            if n:
                 logging.debug(f"Updated task {task_id} as complete: success={success}")
             else:
                 logging.error(f"Task {task_id} not found for completion update")
@@ -359,10 +373,12 @@ def update_task_failed(task_id, error):
     with app.app_context():
         try:
             from models import TaskStatus
-            task = TaskStatus.query.filter_by(task_id=task_id).first()
-            if task:
-                task.set_failed(error)
-                postgres_db.session.commit()
+            n = TaskStatus.query.filter_by(task_id=task_id).update({
+                TaskStatus.status: 'failed', TaskStatus.success: False,
+                TaskStatus.error: error, TaskStatus.updated_at: datetime.utcnow()
+            }, synchronize_session=False)
+            postgres_db.session.commit()
+            if n:
                 logging.debug(f"Updated task {task_id} as failed: {error}")
             else:
                 logging.error(f"Task {task_id} not found for failure update")
@@ -389,11 +405,9 @@ def cleanup_task(task_id):
     with app.app_context():
         try:
             from models import TaskStatus
-            task = TaskStatus.query.filter_by(task_id=task_id).first()
-            if task:
-                postgres_db.session.delete(task)
-                postgres_db.session.commit()
-                logging.debug(f"Cleaned up task {task_id}")
+            TaskStatus.query.filter_by(task_id=task_id).delete(synchronize_session=False)
+            postgres_db.session.commit()
+            logging.debug(f"Cleaned up task {task_id}")
         except Exception as e:
             postgres_db.session.rollback()
             logging.error(f"Error cleaning up task {task_id}: {e}")
@@ -1186,25 +1200,27 @@ def quickaction_stream():
     record_activity('essay_questions' if action == 'essay' else 'key_concepts', session_id)
     # Serve from the AI result cache when this document was already processed
     cached = get_cached_ai_result(pdf_content, action) if action != 'essay' else None
-    if action == 'essay' and not StorageManager().retrieve_content(session_id, 'used_essay_questions'):
+    _st = StorageManager()
+    _essay_rows = _st.batch_retrieve(session_id, ['used_essay_questions', 'essay_prewarm', 'essay_prewarm_pending']) if action == 'essay' else {}
+    if action == 'essay' and not _essay_rows.get('used_essay_questions'):
         # First round: use the pre-generated round. If it is still being made,
         # answer with a stream that sends keep-alive comments while waiting (a
         # request that stays silent for long can be cut by the proxy), then the
         # round. Only when the pre-generation has failed do we generate live.
-        _st = StorageManager()
-        prewarmed = _st.retrieve_content(session_id, 'essay_prewarm')
-        if not prewarmed and _st.retrieve_content(session_id, 'essay_prewarm_pending'):
+        prewarmed = _essay_rows.get('essay_prewarm')
+        if not prewarmed and _essay_rows.get('essay_prewarm_pending'):
             def _wait_and_stream_prewarmed_essay():
                 with app.app_context():
                     deadline = time.time() + PREWARM_WAIT_SECONDS
                     text = None
                     sent = ""
                     while time.time() < deadline:
-                        text = _st.retrieve_content(session_id, 'essay_prewarm')
-                        if text or not _st.retrieve_content(session_id, 'essay_prewarm_pending'):
+                        rows = _st.batch_retrieve(session_id, ['essay_prewarm', 'essay_prewarm_pending', 'essay_prewarm_partial'])
+                        text = rows.get('essay_prewarm')
+                        if text or not rows.get('essay_prewarm_pending'):
                             break
                         # relay the growing partial text (streams like the summary)
-                        partial = _st.retrieve_content(session_id, 'essay_prewarm_partial') or ""
+                        partial = rows.get('essay_prewarm_partial') or ""
                         if len(partial) > len(sent) and partial.startswith(sent):
                             yield f"data: {json.dumps(partial[len(sent):])}\n\n"
                             sent = partial
@@ -1327,10 +1343,12 @@ def calculation_stream():
     record_activity('calculation_question', session_id)
     # Read session data before entering the background thread
     storage_manager = StorageManager()
-    doc_type = storage_manager.retrieve_content(session_id, 'calc_doc_type')
-    exam_questions = storage_manager.retrieve_content(session_id, 'exam_questions')
-    equation_list = storage_manager.retrieve_content(session_id, 'equation_list')
-    current_index = storage_manager.retrieve_content(session_id, 'current_equation_index') or 0
+    _rows = storage_manager.batch_retrieve(  # one query instead of four
+        session_id, ['calc_doc_type', 'exam_questions', 'equation_list', 'current_equation_index'])
+    doc_type = _rows.get('calc_doc_type')
+    exam_questions = _rows.get('exam_questions')
+    equation_list = _rows.get('equation_list')
+    current_index = _rows.get('current_equation_index') or 0
 
     q = queue_mod.Queue()
 
@@ -1347,15 +1365,17 @@ def calculation_stream():
                 # being made, push keep-alive comments so the connection is not
                 # cut; a live generation only runs if the pre-generation failed.
                 if (current_index or 0) == 0:
-                    prewarmed = _storage.retrieve_content(session_id, 'calculation_prewarm')
+                    _pw = _storage.batch_retrieve(session_id, ['calculation_prewarm', 'calculation_prewarm_pending'])
+                    prewarmed = _pw.get('calculation_prewarm')
                     sent = ""
-                    if not prewarmed and _storage.retrieve_content(session_id, 'calculation_prewarm_pending'):
+                    if not prewarmed and _pw.get('calculation_prewarm_pending'):
                         deadline = time.time() + PREWARM_WAIT_SECONDS
                         while time.time() < deadline:
-                            prewarmed = _storage.retrieve_content(session_id, 'calculation_prewarm')
-                            if prewarmed or not _storage.retrieve_content(session_id, 'calculation_prewarm_pending'):
+                            _pw = _storage.batch_retrieve(session_id, ['calculation_prewarm', 'calculation_prewarm_pending', 'calculation_prewarm_partial'])
+                            prewarmed = _pw.get('calculation_prewarm')
+                            if prewarmed or not _pw.get('calculation_prewarm_pending'):
                                 break
-                            partial = _storage.retrieve_content(session_id, 'calculation_prewarm_partial') or ""
+                            partial = _pw.get('calculation_prewarm_partial') or ""
                             if len(partial) > len(sent) and partial.startswith(sent):
                                 q.put(partial[len(sent):])   # relay the growing text
                                 sent = partial
@@ -1432,13 +1452,14 @@ def calculation_stream():
                 # Store the response for calculation answer checking
                 try:
                     _storage = StorageManager()
-                    if full_response:
-                        _storage.store_content(session_id, 'current_calculation_question', full_response)
-                        _storage.store_content(session_id, 'calculation_mode_active', True)
-                        _storage.store_content(session_id, 'essay_mode_active', False)
                     msgs = _storage.retrieve_content(session_id, 'messages') or []
                     msgs.append({'role': 'assistant', 'content': full_response})
-                    _storage.store_content(session_id, 'messages', msgs)
+                    writes = [(session_id, 'messages', msgs)]
+                    if full_response:
+                        writes += [(session_id, 'current_calculation_question', full_response),
+                                   (session_id, 'calculation_mode_active', True),
+                                   (session_id, 'essay_mode_active', False)]
+                    _storage.batch_store(writes)  # one write instead of four
                 except Exception as e:
                     logging.error(f"CALCULATION STREAM: Error storing messages: {e}")
                 try:
@@ -1806,10 +1827,12 @@ def get_quiz_status(task_id):
                 storage_manager = StorageManager()
                 quiz_questions = result_dict.get("data", [])
                 
-                # Store quiz questions in file storage
-                storage_manager.store_content(session_id, 'quiz_questions', quiz_questions)
-                storage_manager.store_content(session_id, 'current_question_index', 0)
-                storage_manager.store_content(session_id, 'quiz_score', 0)
+                # Store quiz questions in file storage (one batch write)
+                storage_manager.batch_store([
+                    (session_id, 'quiz_questions', quiz_questions),
+                    (session_id, 'current_question_index', 0),
+                    (session_id, 'quiz_score', 0),
+                ])
                 
                 # Quiz questions stored successfully
                 
@@ -2184,10 +2207,11 @@ def get_prewarmed(session_id, feature, wait_seconds=0):
     key, pending = f"{feature}_prewarm", f"{feature}_prewarm_pending"
     deadline = time.time() + wait_seconds
     while True:
-        value = storage.retrieve_content(session_id, key)
+        rows = storage.batch_retrieve(session_id, [key, pending])  # one query per poll
+        value = rows.get(key)
         if value:
             return value
-        if time.time() >= deadline or not storage.retrieve_content(session_id, pending):
+        if time.time() >= deadline or not rows.get(pending):
             return None
         time.sleep(0.5)
 

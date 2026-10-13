@@ -69,26 +69,24 @@ class DatabaseStorageManager:
             logging.debug(f"Optimized cache invalidation skipped: {e}")
 
     def store_content(self, session_id, content_type, content):
-        """Store content for a session in database with retry"""
+        """Store content for a session in database with retry.
+
+        One UPDATE statement when the key already exists (the common case);
+        only a brand-new key costs a second statement (INSERT). This used to be
+        a SELECT followed by an UPDATE or INSERT on every write."""
         def _do_store():
             with current_app.app_context():
-                existing = SessionData.query.filter_by(
-                    session_id=session_id, 
-                    content_type=content_type
-                ).first()
-                
-                if existing:
-                    existing.set_content(content)
-                    existing.timestamp = datetime.utcnow()
-                    existing.expires_at = datetime.utcnow() + timedelta(hours=24)
-                else:
-                    session_data = SessionData(
-                        session_id=session_id,
-                        content_type=content_type,
-                        content=content
-                    )
-                    self.db.session.add(session_data)
-                
+                now = datetime.utcnow()
+                updated = SessionData.query.filter_by(
+                    session_id=session_id, content_type=content_type
+                ).update({
+                    SessionData.content: json.dumps(content, ensure_ascii=False),
+                    SessionData.timestamp: now,
+                    SessionData.expires_at: now + timedelta(hours=24),
+                }, synchronize_session=False)
+                if not updated:
+                    self.db.session.add(SessionData(
+                        session_id=session_id, content_type=content_type, content=content))
                 self.db.session.commit()
                 logging.debug(f"Stored content in DB for session {session_id}, type {content_type}")
 
@@ -148,18 +146,52 @@ class DatabaseStorageManager:
             logging.error(f"Error batch-retrieving content from DB after retries: {e}")
             return {}
 
+    def batch_store(self, operations):
+        """Store several (session_id, content_type, content) triples with ONE
+        SELECT of the existing rows, in-place updates / inserts, and ONE commit."""
+        ops = list(operations)
+        if not ops:
+            return
+
+        def _do_batch_store():
+            with current_app.app_context():
+                now = datetime.utcnow()
+                sids = {sid for sid, _, _ in ops}
+                types = {ct for _, ct, _ in ops}
+                rows = SessionData.query.filter(
+                    SessionData.session_id.in_(list(sids)),
+                    SessionData.content_type.in_(list(types))
+                ).all()
+                existing = {(r.session_id, r.content_type): r for r in rows}
+                for sid, ct, content in ops:
+                    row = existing.get((sid, ct))
+                    if row:
+                        row.set_content(content)
+                        row.timestamp = now
+                        row.expires_at = now + timedelta(hours=24)
+                    else:
+                        row = SessionData(session_id=sid, content_type=ct, content=content)
+                        self.db.session.add(row)
+                        existing[(sid, ct)] = row
+                self.db.session.commit()
+
+        try:
+            self._retry_db_operation(_do_batch_store, operation_name="db_batch_store")
+            for sid, ct, _ in ops:
+                self._invalidate_optimized_cache(sid, ct)
+        except Exception as e:
+            logging.error(f"Error batch-storing content in DB after retries: {e}")
+            raise Exception(f"Failed to store content: {str(e)}")
+
     def delete_content(self, session_id, content_type):
-        """Delete content for a session from database with retry"""
+        """Delete content for a session from database with retry (one statement)"""
         def _do_delete():
             with current_app.app_context():
-                session_data = SessionData.query.filter_by(
-                    session_id=session_id, 
-                    content_type=content_type
-                ).first()
-                
-                if session_data:
-                    self.db.session.delete(session_data)
-                    self.db.session.commit()
+                n = SessionData.query.filter_by(
+                    session_id=session_id, content_type=content_type
+                ).delete(synchronize_session=False)
+                self.db.session.commit()
+                if n:
                     logging.debug(f"Deleted content from DB for session {session_id}, type {content_type}")
 
         try:

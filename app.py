@@ -257,7 +257,10 @@ def _activate_essay_practice(session_id, round_text):
     try:
         storage = StorageManager()
         used = storage.retrieve_content(session_id, 'used_essay_questions') or []
-        m = _re.search(r"YOUR QUESTION:\s*(.+)", round_text)
+        # The question follows the YOUR QUESTION label, either on the same line
+        # ("**YOUR QUESTION:** ...", older rounds) or in italics on the next
+        # non-empty line (current template).
+        m = _re.search(r"YOUR QUESTION:?\**\s*\n*\s*(.+)", round_text)
         question = m.group(1).strip().strip('*_ ') if m else None
         if not question:
             m2 = _re.search(r"\*\*MODEL QUESTION\*\*\s*\n+\s*\*(.+?)\*", round_text)
@@ -2557,7 +2560,7 @@ def upload_file():
         # HTML-escape the sanitized name server-side before it appears in any response
         safe_filename = str(escape(secure_name))
 
-        if file and secure_name and secure_name.lower().endswith(('.pdf', '.pptx')):
+        if file and secure_name and secure_name.lower().endswith(('.pdf', '.pptx', '.docx')):
             
             # Reset the previous document's state here (one bulk delete) instead
             # of the page making a separate clear-session request first.
@@ -2613,7 +2616,7 @@ def upload_file():
                 payload['error'] = completed.get('error')
             return jsonify(payload)
         else:
-            return jsonify({'error': 'Invalid file type. Please upload PDF or PPTX files only.'}), 400
+            return jsonify({'error': 'Invalid file type. Please upload a PDF, PowerPoint (.pptx) or Word (.docx) file.'}), 400
 
     except Exception:
         logging.exception("Critical error in file upload")

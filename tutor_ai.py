@@ -1866,7 +1866,7 @@ Would you like to explore any of these topics in more detail?
                 "You are an experienced QUB Finance examiner.",
                 "An essay-practice round was generated from the study material but stopped early. Here is the round so far:\n\n"
                 + (round_text or "") + "\n\n"
-                "Print ONLY the missing ending, starting with the line \"**YOUR QUESTION:** <question>\" - a DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material, worded as on an exam paper, ending with its marks in square brackets (for an exam paper, a NEW question similar to the model question) - then a blank line, the bold label **Hints**, a blank line, two hyphen bullets naming which parts of the material to draw on and what analysis is expected (never the answer), a blank line, and finally this sentence word for word: Write your answer in the box below (aim for 300-500 words - bullet points are fine), then click **Check Answer**. I will mark it against the QUB Conceptual Equivalents Scale and show you a suggested answer.\n"
+                "Print ONLY the missing ending: the bold label **YOUR QUESTION** on its own line, a blank line, then the question in italics on its own line (*<question>*) - a DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material, worded as on an exam paper, ending with its marks in square brackets (for an exam paper, a NEW question similar to the model question) - then a blank line, the bold label **Hints**, a blank line, two hyphen bullets naming which parts of the material to draw on and what analysis is expected (never the answer), a blank line, and finally this sentence word for word: Write your answer in the box below (aim for 300-500 words - bullet points are fine), then click **Check Answer**. I will mark it against the QUB Conceptual Equivalents Scale and show you a suggested answer.\n"
                 "Use plain text with markdown only, no mathematical notation, digits for numbers.",
                 guidance=self._essay_material_guidance()
             )
@@ -1951,7 +1951,9 @@ Print the template below EXACTLY: the bold labels, the order, the blank lines an
 
 <1-2 sentences>
 
-**YOUR QUESTION:** <student's question>
+**YOUR QUESTION**
+
+*<student's question>*
 
 **Hints**
 
@@ -1967,10 +1969,10 @@ Write your answer in the box below (aim for 300-500 words - bullet points are fi
 - Additional literature: 2 bullets, each a foundational peer-reviewed journal article (not a textbook) with one sentence on the point it supports and where in the answer to use it. The third bullet encourages the student to search Google Scholar for recent academic work on the topic and gives a specific search phrase, e.g. "Search Google Scholar for recent papers on 'post-earnings-announcement drift' (2015 onwards) to add up-to-date evidence to this answer".
 - Real-world examples: 2 bullets, each a concrete example (named company, market, event, policy episode or crisis) that is NOT already used in the study material - choose additional examples the lecturer did not cover, so the student can show wider reading - with one sentence on how it strengthens the answer.
 - Why this answer scores highly: 1-2 sentences explaining, with reference to the QUB Conceptual Equivalents Scale, what lifts it from a Lower Second (describing the concept) to an Upper Second (evaluating strengths and limitations with evidence) to a First (weighing competing perspectives with insight, well-chosen literature and examples).
-- <student's question>: a DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper, on the SAME line as the bold label. Do not add a separate heading or repeat the words YOUR QUESTION.
+- <student's question>: a DIFFERENT short qualitative exam question on a DIFFERENT major topic of the material - in EXAM PAPER MODE, a NEW question similar in topic, style, marks and difficulty to the model question - worded exactly as it would appear on an exam paper, ending with its marks in square brackets. Print it in italics on its own line under the **YOUR QUESTION** label, exactly like the model question, and do not repeat the words YOUR QUESTION.
 - Hints: 2 bullets naming which parts of the material (slide/page citations for lecture notes; for an exam paper, the concepts the question tests) to draw on and what kind of analysis is expected. Do NOT give the answer.
 - The closing sentence ("Write your answer in the box below ...") is printed word for word.
-- The round is NOT complete until the "**YOUR QUESTION:**" line, the two Hints and the closing sentence have been printed. Never stop after "Why this answer scores highly".
+- The round is NOT complete until the **YOUR QUESTION** label with its italic question, the two Hints and the closing sentence have been printed. Never stop after "Why this answer scores highly".
 
             RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks.""".replace("{{USED}}", used_block).replace("{{GROUNDING}}", self._essay_grounding_text()).replace("{{MODE}}", self._essay_mode_block()).replace("{{NOTICE}}", ("\n" + self._essay_notice_text()) if self._essay_notice_text() else "")
 
@@ -1981,13 +1983,13 @@ Write your answer in the box below (aim for 300-500 words - bullet points are fi
 STUDY MATERIAL (the module content the question is based on):
 {context_truncated}
 
-THE PRACTICE ROUND SHOWN TO THE STUDENT (the question they were asked is the line containing "YOUR QUESTION:"):
+THE PRACTICE ROUND SHOWN TO THE STUDENT (the question they were asked is the italic line under the "YOUR QUESTION" label):
 {essay_round_text}
 
 STUDENT'S ANSWER:
 {user_answer}
 
-MARK ONLY the question after "YOUR QUESTION:". Ignore the model question. If a PLEASE NOTE paragraph appears in the output structure below, reproduce it word for word directly under the main heading.
+MARK ONLY the question under the "YOUR QUESTION" label. Ignore the model question. If a PLEASE NOTE paragraph appears in the output structure below, reproduce it word for word directly under the main heading.
 
 {self._essay_grounding_text()} When you say what should have been included, cite the relevant slide/page marker (lecture notes) or question number (exam paper). Cite only real, well-established sources; if unsure a source exists, describe the body of literature instead.
 

@@ -2,11 +2,12 @@ import PyPDF2
 import io
 import re
 from pptx import Presentation
+from docx import Document as DocxDocument
 import logging
 
 def extract_text_from_file(uploaded_file):
     """
-    Extract text from an uploaded file (PDF or PowerPoint).
+    Extract text from an uploaded file (PDF, PowerPoint or Word).
 
     Args:
         uploaded_file: Flask FileStorage object or an in-memory file object
@@ -40,6 +41,9 @@ def extract_text_from_file(uploaded_file):
         elif file_extension == 'pptx':
             logging.info("PDF DEBUG: Processing PPTX file")
             return extract_text_from_pptx(uploaded_file)
+        elif file_extension == 'docx':
+            logging.info("PDF DEBUG: Processing DOCX file")
+            return extract_text_from_docx(uploaded_file)
         else:
             logging.error(f"PDF DEBUG: Unsupported file type: {file_extension}")
             raise Exception(f"Unsupported file type: {file_extension}")
@@ -136,6 +140,59 @@ def extract_text_from_pdf(uploaded_file):
         import traceback
         logging.error(f"PDF DEBUG: Traceback: {traceback.format_exc()}")
         raise Exception(f"Failed to extract text from PDF: {str(e)}")
+
+def _docx_table_lines(table, depth=0):
+    """One line per row, cells joined by " | ". Exam papers often nest a data
+    table (e.g. project cash flows) inside a question cell, so nested tables
+    are rendered after the row that contains them."""
+    lines = []
+    for row in table.rows:
+        cells, nested = [], []
+        seen = set()
+        for cell in row.cells:
+            if id(cell._tc) in seen:   # merged cells repeat the same element
+                continue
+            seen.add(id(cell._tc))
+            cells.append(' '.join(p.text.strip() for p in cell.paragraphs if p.text.strip()))
+            for inner in cell.tables:
+                nested.extend(_docx_table_lines(inner, depth + 1))
+        if any(cells):
+            lines.append(' | '.join(cells))
+        lines.extend(nested)
+    return lines
+
+def extract_text_from_docx(uploaded_file):
+    """
+    Extract text from an uploaded Word document (.docx) using python-docx.
+    Paragraphs are kept in order; tables are rendered one row per line with
+    cells separated by " | " so question papers with data tables stay readable.
+    Page numbers are not available in .docx, so citations fall back to section
+    headings / question numbers (the prompts already handle that for exam papers).
+    """
+    try:
+        doc = DocxDocument(_read_file_bytes(uploaded_file))
+        parts = []
+        # Walk body elements in document order so tables appear where they sit
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+        body = doc.element.body
+        for child in body.iterchildren():
+            tag = child.tag.rsplit('}', 1)[-1]
+            if tag == 'p':
+                text = Paragraph(child, doc).text
+                if text.strip():
+                    parts.append(text)
+            elif tag == 'tbl':
+                parts.extend(_docx_table_lines(Table(child, doc)))
+                parts.append('')
+        extracted_text = '\n'.join(parts)
+        logging.info(f"PDF DEBUG: DOCX extraction complete, {len(extracted_text)} characters")
+        if not extracted_text.strip():
+            raise Exception("No text could be extracted from the Word document")
+        return extracted_text
+    except Exception as e:
+        logging.error(f"PDF DEBUG: Error extracting DOCX text: {e}")
+        raise Exception(f"Failed to extract text from Word document: {str(e)}")
 
 def extract_text_from_pptx(uploaded_file):
     """

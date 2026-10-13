@@ -1,12 +1,12 @@
 # QUB Finance: Revision App
 
-An interactive self-study web application for Queen's University Belfast Finance students. Upload your lecture notes (PDF or PowerPoint) and get AI-powered tutoring, quizzes, and practice calculations — all tailored to your own material.
+An interactive self-study web application for Queen's University Belfast Finance students. Upload your lecture notes (PDF, PowerPoint or Word) and get AI-powered tutoring, quizzes, and practice calculations — all tailored to your own material.
 
 ---
 
 ## Features
 
-- **Document Upload** — Drag and drop PDF or PowerPoint files; text is extracted automatically
+- **Document Upload** — Drag and drop PDF, PowerPoint or Word files; text is extracted automatically
 - **AI Chat Tutor** — Ask questions about your notes and get clear, context-aware explanations
 - **Key Concepts** — Generate a structured summary of the main ideas in your document
 - **Executive Summary** — Get a concise revision sheet of the lecture content

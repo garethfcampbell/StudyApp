@@ -9,6 +9,7 @@ import os
 import json
 import time
 import hashlib
+import queue as _queue
 import inspect
 import hmac
 import logging
@@ -1166,7 +1167,14 @@ def simple_chat_stream():
 
     def generate():
         while True:
-            chunk = q.get()
+            try:
+                chunk = q.get(timeout=SSE_KEEPALIVE_SECONDS)
+            except _queue.Empty:
+                # Nothing from the model yet (it can think for 10-30 s on a long
+                # document before the first token): send an SSE comment so the
+                # proxy does not give up on a response that has sent no bytes.
+                yield ": waiting\n\n"
+                continue
             if chunk is None:
                 # Send final event so the client knows we're done
                 yield f"data: [DONE]\n\n"
@@ -1316,7 +1324,14 @@ def quickaction_stream():
 
     def generate():
         while True:
-            chunk = q.get()
+            try:
+                chunk = q.get(timeout=SSE_KEEPALIVE_SECONDS)
+            except _queue.Empty:
+                # Nothing from the model yet (it can think for 10-30 s on a long
+                # document before the first token): send an SSE comment so the
+                # proxy does not give up on a response that has sent no bytes.
+                yield ": waiting\n\n"
+                continue
             if chunk is None:
                 yield f"data: [DONE]\n\n"
                 break
@@ -1475,7 +1490,14 @@ def calculation_stream():
 
     def generate():
         while True:
-            chunk = q.get()
+            try:
+                chunk = q.get(timeout=SSE_KEEPALIVE_SECONDS)
+            except _queue.Empty:
+                # Nothing from the model yet (it can think for 10-30 s on a long
+                # document before the first token): send an SSE comment so the
+                # proxy does not give up on a response that has sent no bytes.
+                yield ": waiting\n\n"
+                continue
             if chunk is None:
                 yield f"data: [DONE]\n\n"
                 break
@@ -1607,7 +1629,14 @@ def summary_stream():
 
     def generate():
         while True:
-            chunk = q.get()
+            try:
+                chunk = q.get(timeout=SSE_KEEPALIVE_SECONDS)
+            except _queue.Empty:
+                # Nothing from the model yet (it can think for 10-30 s on a long
+                # document before the first token): send an SSE comment so the
+                # proxy does not give up on a response that has sent no bytes.
+                yield ": waiting\n\n"
+                continue
             if chunk is None:
                 yield f"data: [DONE]\n\n"
                 break
@@ -2196,6 +2225,7 @@ PREWARM_FEATURES = tuple(f.strip() for f in os.environ.get(
     'PREWARM_FEATURES', 'essay,calculation,quiz,infographic_brief').split(',') if f.strip())
 PREWARM_WAIT_SECONDS = 120  # how long a click waits for a pending pre-generation before generating itself
 KEEPALIVE = object()        # queue sentinel: emit an SSE comment to keep a waiting connection open
+SSE_KEEPALIVE_SECONDS = 1.0  # live streams: comment line sent whenever the model has been silent this long
 PREWARM_KEYS = tuple(f"{f}_prewarm{suffix}" for f in ('essay', 'calculation', 'quiz', 'infographic', 'infographic_brief')
                      for suffix in ('', '_pending', '_partial'))
 

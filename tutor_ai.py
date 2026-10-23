@@ -1727,16 +1727,19 @@ REVISION BRIEF:
                               f"on the {noun} (e.g. 4 questions give 4 categories, 8 questions give 8). "
                               "Sub-parts (a, b, c) belong inside their main question's category, not in categories of their "
                               "own. Title each category \"Question N: <topic the question tests>\". In each category give "
-                              "first 2-3 \"- *Concept:* ...\" bullets for the concepts, definitions and techniques the question "
-                              "tests, then 3-5 \"- *Step 1:* ...\", \"- *Step 2:* ...\" bullets explaining the KEY STEPS of "
-                              "answering the question in order: what to identify from the question, which method, formula "
-                              "(named in words, no notation) or argument to apply, how to work it through, and what the final "
-                              "answer or conclusion should state. Cover each sub-part (a, b, c) within the steps. Describe the "
-                              "method, not a full worked solution: no computed numbers beyond what the question gives.")
+                              "exactly ONE \"- *Concept:* ...\" bullet of SEVERAL sentences (3-5) that together explain the "
+                              "concepts, definitions and techniques the question tests, then a sequence of \"- *Step 1:* ...\", "
+                              "\"- *Step 2:* ...\" bullets explaining the KEY STEPS of answering the question in order: what to "
+                              "identify from the question, which method, formula (named in words, no notation) or argument to "
+                              "apply, how to work it through, and what the final answer or conclusion should state. Use as "
+                              "many steps as the question needs - at least 3, and more (6, 8 or beyond) for a long or "
+                              "multi-part problem; never compress a long problem to fit a fixed count. Cover each sub-part "
+                              "(a, b, c) within the steps. Describe the method, not a full worked solution: no computed "
+                              "numbers beyond what the question gives.")
             continue_rule = f"(...continue in the same format with one category per main question until EVERY question on the {noun} has its own category...)"
             grouping_rule = (f"grouped into ONE category per main question on the {noun}, in document order (as many categories as there "
-                             "are main questions, each with 2-3 concepts followed by 3-5 answer steps), numbering the "
-                             "categories in sequence")
+                             "are main questions, each with ONE multi-sentence Concept bullet followed by as many Step "
+                             "bullets as the question needs, at least 3), numbering the categories in sequence")
         else:
             selective_rule = ("Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must "
                               "know for an exam - leave out restatements and minor variations of the same idea, but make sure "
@@ -1749,7 +1752,7 @@ Create an executive summary from the study material I provide (lecture notes, an
 
 ### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
 - **BE SELECTIVE BUT THOROUGH:** {selective_rule}
-- **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence (an answer step may run to two short sentences).
+- **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence. EXCEPTION for an exam paper or exercise sheet: each question's single Concept bullet is several sentences (3-5), and an answer step may run to two short sentences.
 - **SHORT OVERVIEW:** The overview must be no more than 3 sentences, written as ONE continuous paragraph on a single line. Do NOT put each sentence on its own line and do NOT insert line breaks anywhere inside the overview.
 - **ONLY USE HYPHENS FOR BULLETS:** You MUST use only hyphens (`-`) for ALL bullet points. Do NOT use asterisks (*), bullet symbols (•), or any other characters. EVERY bullet point must start with a hyphen.
 - **Bullet Point Format:** Each bullet point must follow this exact format: `- *Concept:* Brief explanation` (for the answer steps of an exam paper or exercise sheet, `- *Step 1:* What to do`, `- *Step 2:* ...`)

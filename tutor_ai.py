@@ -52,13 +52,14 @@ MODEL_FAST = "gpt-6-luna"
 SUMMARY_MODEL = MODEL_FAST
 ESSAY_MODEL = MODEL_FAST        # essay-round generation (marking stays on MODEL_PRIMARY)
 QUIZ_MODEL = MODEL_FAST
-CALC_MODEL = MODEL_FAST         # calculation questions / worked examples (answer checking stays on MODEL_PRIMARY)
+CALC_MODEL = "gpt-6.1-sol"      # calculation questions / worked examples
+CALC_CHECK_MODEL = "gpt-6.1-sol"  # calculation answer checking
 EXTRACTION_MODEL = MODEL_FAST   # equation list / exam question extraction
 BRIEF_MODEL = MODEL_FAST        # infographic text brief
 
 
 def _fallback_for(model):
-    """The other model: luna falls back to sol and sol to luna."""
+    """The other model: luna falls back to sol; anything else falls back to luna."""
     return MODEL_FALLBACK if model == MODEL_PRIMARY else MODEL_PRIMARY
 
 # How many times the PRIMARY model is attempted (timeouts, connection errors,
@@ -93,7 +94,7 @@ class _RetryableEmptyResponse(ValueError):
 # Models in this family do not support system messages (all messages must be
 # combined into a single user message), use max_completion_tokens instead of
 # max_tokens, and reject non-default temperature values.
-NO_SYSTEM_MESSAGE_MODELS = ("gpt-6-sol", "gpt-5", "gpt-5-mini", "gpt-6-luna", "gpt-5.4")
+NO_SYSTEM_MESSAGE_MODELS = ("gpt-6-sol", "gpt-6.1-sol", "gpt-5", "gpt-5-mini", "gpt-6-luna", "gpt-5.4")
 
 # Reasoning effort applied to every reasoning-model call unless a feature passes
 # its own value explicitly (the calculation features pass "medium" themselves).
@@ -1712,13 +1713,34 @@ REVISION BRIEF:
             yield f"Critical error in summary generation: {str(e)}"
 
     def _get_summary_prompt(self):
-        """Return the summary/cheat sheet prompt text (single source for streaming and non-streaming)."""
+        """Return the summary/cheat sheet prompt text (single source for streaming and non-streaming).
+
+        For an exam paper the number of KEY CONCEPTS categories follows the
+        number of questions on the paper (one category per main question, in
+        paper order); for everything else it is the usual 5-6 topic categories."""
+        if self.is_exam_paper():
+            selective_rule = ("Use ONE category per main question on the exam paper (Question 1, Question 2, ...), in the "
+                              "order the questions appear, so the NUMBER of categories EQUALS the number of main questions "
+                              "on the paper (e.g. a 4-question paper gives 4 categories, an 8-question paper gives 8). "
+                              "Sub-parts (a, b, c) belong inside their main question's category, not in categories of their "
+                              "own. Title each category \"Question N: <topic the question tests>\". Give UP TO 5 concepts per "
+                              "category: the concepts, definitions and techniques a student must know to answer that question "
+                              "- never the answers themselves.")
+            continue_rule = "(...continue in the same format with one category per main question until EVERY question on the paper has its own category...)"
+            grouping_rule = ("grouped into ONE category per main exam question, in paper order (as many categories as there "
+                             "are main questions, each with 3-5 concepts), numbering the categories in sequence")
+        else:
+            selective_rule = ("Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must "
+                              "know for an exam - leave out restatements and minor variations of the same idea, but make sure "
+                              "every major topic of the material is represented.")
+            continue_rule = "(...continue with categories 4, 5 and, if needed, 6 in the same format...)"
+            grouping_rule = "grouped into 5-6 logical categories (5 minimum, 6 maximum, each with 3-5 concepts), numbering the categories in sequence"
         return r"""
 
 Create an executive summary from the study material I provide (lecture notes, an exam/test paper, a tutorial/exercise/homework question sheet, or a research article - for any set of questions, summarise the topics and concepts the questions test, never the answers; for a research article, summarise its question, method, findings and contribution). Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering the most important ideas - this is a quick-reference revision aid, not exhaustive notes.
 
 ### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
-- **BE SELECTIVE BUT THOROUGH:** Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must know for an exam - leave out restatements and minor variations of the same idea, but make sure every major topic of the material is represented.
+- **BE SELECTIVE BUT THOROUGH:** {selective_rule}
 - **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence.
 - **SHORT OVERVIEW:** The overview must be no more than 3 sentences, written as ONE continuous paragraph on a single line. Do NOT put each sentence on its own line and do NOT insert line breaks anywhere inside the overview.
 - **ONLY USE HYPHENS FOR BULLETS:** You MUST use only hyphens (`-`) for ALL bullet points. Do NOT use asterisks (*), bullet symbols (•), or any other characters. EVERY bullet point must start with a hyphen.
@@ -1764,17 +1786,17 @@ Print the template below EXACTLY: the headings, the order, the blank lines and t
 - *[Concept]:* Brief explanation of the concept.
 - *[Concept]:* Brief explanation of the concept.
 
-(...continue with categories 4, 5 and, if needed, 6 in the same format...)
+{continue_rule}
 
 Would you like to explore any of these topics in more detail?
 
 ### CONTENT RULES (never print these)
 
 - <overview paragraph>: summarise the main subject/topic of the material (for an exam paper or question sheet, the areas its questions cover; for a research article, what it investigates and finds), in a professional, academic tone suitable for quick review before an exam.
-- KEY CONCEPTS: the most important concepts with brief definitions, grouped into 5-6 logical categories (5 minimum, 6 maximum, each with 3-5 concepts), numbering the categories in sequence. Each concept is on its own line in the form "- *Concept:* brief explanation".
+- KEY CONCEPTS: the most important concepts with brief definitions, {grouping_rule}. Each concept is on its own line in the form "- *Concept:* brief explanation".
 - The closing question ("Would you like to explore any of these topics in more detail?") is printed word for word as the last line.
 
-            """
+            """.format(selective_rule=selective_rule, continue_rule=continue_rule, grouping_rule=grouping_rule)
 
     async def generate_essay_question_async(self, used_questions=None):
 
@@ -2611,7 +2633,8 @@ Example output format:
             return []
 
     async def extract_equation_list_async(self):
-        """Extract all calculable equations from the lecture notes in order, returning a list of LaTeX strings."""
+        """Extract the MAIN calculable equations from the lecture notes in order (a selective list,
+        not every equation), returning a list of LaTeX strings."""
         if not self.context:
             return []
 
@@ -2623,11 +2646,14 @@ Example output format:
 LECTURE NOTES:
 {context_truncated}
 
-TASK: List the MAIN equations and formulas from the notes above, in the EXACT ORDER they appear from top to bottom.
+TASK: List ONLY the MAIN equations and formulas from the notes above, in the EXACT ORDER they appear from top to bottom.
+
+This is a SELECTIVE list, not an inventory: you do NOT have to extract every equation. Pick the handful of principal formulas a student must be able to apply in an exam and leave the rest out.
 
 Rules:
-- Focus on the principal, named equations that are central to the topic — the ones a student would be expected to know and apply in an exam.
-- Omit minor rearrangements, trivial sub-steps, or worked-example intermediate lines that are just applications of a main equation already listed.
+- Focus on the principal, named equations that are central to the topic — the ones a student would be expected to know and apply in an exam. Aim for roughly 4-8 equations; never more than 10, however many the notes contain.
+- Omit minor rearrangements, trivial sub-steps, intermediate algebra, special cases, and worked-example lines that are just applications of a main equation already listed.
+- Omit supporting or auxiliary formulas (notation definitions, identities, helper expressions) unless a student would be asked to use them directly.
 - Only include equations that contain computable quantities (i.e. a student could substitute in numbers and calculate an answer).
 - Exclude purely conceptual definitions that have no numerical calculation involved.
 - If the same equation appears in multiple forms, include only the most general or most useful form once.
@@ -3037,10 +3063,10 @@ CORRECT:
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            logging.info(f"CHECK_CALC_ANSWER: Trying async {MODEL_PRIMARY} for calculation answer evaluation...")
+            logging.info(f"CHECK_CALC_ANSWER: Trying async {CALC_CHECK_MODEL} for calculation answer evaluation...")
             response = await self._make_async_openai_fallback_call(
                 messages=messages,
-                model=MODEL_PRIMARY,
+                model=CALC_CHECK_MODEL,
                 max_tokens=8000,
                 timeout=120,
                 reasoning_effort="medium"
@@ -3050,27 +3076,27 @@ CORRECT:
             logging.debug(response)
 
             # No LaTeX formatting - let MathJax handle delimiters directly
-            logging.info(f"CHECK_CALC_ANSWER: {MODEL_PRIMARY} success - returning raw response")
+            logging.info(f"CHECK_CALC_ANSWER: {CALC_CHECK_MODEL} success - returning raw response")
             return response
 
         except Exception as primary_error:
-            logging.error(f"{MODEL_PRIMARY} failed for calculation answer check: {primary_error}")
+            logging.error(f"{CALC_CHECK_MODEL} failed for calculation answer check: {primary_error}")
             # Fallback model
             try:
-                logging.info(f"CHECK_CALC_ANSWER: Falling back to {MODEL_FALLBACK}...")
+                logging.info(f"CHECK_CALC_ANSWER: Falling back to {_fallback_for(CALC_CHECK_MODEL)}...")
                 fallback_response = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model=MODEL_FALLBACK,
+                    model=_fallback_for(CALC_CHECK_MODEL),
                     max_tokens=8000,
                     timeout=120,
                     reasoning_effort="medium"
                 )
 
-                logging.debug(f"CHECK_CALC_ANSWER: {MODEL_FALLBACK} fallback success")
+                logging.debug(f"CHECK_CALC_ANSWER: {_fallback_for(CALC_CHECK_MODEL)} fallback success")
                 return fallback_response
 
             except Exception as fallback_error:
-                logging.error(f"Both {MODEL_PRIMARY} and {MODEL_FALLBACK} failed for calculation answer check: {primary_error} | {fallback_error}")
+                logging.error(f"Both {CALC_CHECK_MODEL} and {_fallback_for(CALC_CHECK_MODEL)} failed for calculation answer check: {primary_error} | {fallback_error}")
                 return f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing calculation evaluations right now. Please try again in a moment, or click the Calculation questions button to get a new question."
 
     async def check_calculation_answer_stream_async(self, challenge_question, user_answer):
@@ -3090,7 +3116,7 @@ CORRECT:
 
         # Same policy as the other features: retry the primary model, then fall
         # back to the secondary, and only then show the failure message.
-        async for chunk in self._stream_with_fallback(
-            factory, "CHECK_CALC_ANSWER_STREAM", f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing the evaluation right now. Please try again in a moment."
+        async for chunk in self._stream_with_fallback_for(
+            CALC_CHECK_MODEL, factory, "CHECK_CALC_ANSWER_STREAM", f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing the evaluation right now. Please try again in a moment."
         ):
             yield chunk

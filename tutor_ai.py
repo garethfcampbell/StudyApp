@@ -1715,20 +1715,28 @@ REVISION BRIEF:
     def _get_summary_prompt(self):
         """Return the summary/cheat sheet prompt text (single source for streaming and non-streaming).
 
-        For an exam paper the number of KEY CONCEPTS categories follows the
-        number of questions on the paper (one category per main question, in
-        paper order); for everything else it is the usual 5-6 topic categories."""
-        if self.is_exam_paper():
-            selective_rule = ("Use ONE category per main question on the exam paper (Question 1, Question 2, ...), in the "
+        For a question set (exam paper OR tutorial/exercise sheet) the number of
+        KEY CONCEPTS categories follows the number of questions (one category
+        per main question, in document order) and each category pairs the key
+        concepts with the key STEPS of answering that question; for everything
+        else it is the usual 5-6 topic categories of concepts."""
+        if self.is_question_set():
+            noun = self._material_noun()
+            selective_rule = (f"Use ONE category per main question on the {noun} (Question 1, Question 2, ...), in the "
                               "order the questions appear, so the NUMBER of categories EQUALS the number of main questions "
-                              "on the paper (e.g. a 4-question paper gives 4 categories, an 8-question paper gives 8). "
+                              f"on the {noun} (e.g. 4 questions give 4 categories, 8 questions give 8). "
                               "Sub-parts (a, b, c) belong inside their main question's category, not in categories of their "
-                              "own. Title each category \"Question N: <topic the question tests>\". Give UP TO 5 concepts per "
-                              "category: the concepts, definitions and techniques a student must know to answer that question "
-                              "- never the answers themselves.")
-            continue_rule = "(...continue in the same format with one category per main question until EVERY question on the paper has its own category...)"
-            grouping_rule = ("grouped into ONE category per main exam question, in paper order (as many categories as there "
-                             "are main questions, each with 3-5 concepts), numbering the categories in sequence")
+                              "own. Title each category \"Question N: <topic the question tests>\". In each category give "
+                              "first 2-3 \"- *Concept:* ...\" bullets for the concepts, definitions and techniques the question "
+                              "tests, then 3-5 \"- *Step 1:* ...\", \"- *Step 2:* ...\" bullets explaining the KEY STEPS of "
+                              "answering the question in order: what to identify from the question, which method, formula "
+                              "(named in words, no notation) or argument to apply, how to work it through, and what the final "
+                              "answer or conclusion should state. Cover each sub-part (a, b, c) within the steps. Describe the "
+                              "method, not a full worked solution: no computed numbers beyond what the question gives.")
+            continue_rule = f"(...continue in the same format with one category per main question until EVERY question on the {noun} has its own category...)"
+            grouping_rule = (f"grouped into ONE category per main question on the {noun}, in document order (as many categories as there "
+                             "are main questions, each with 2-3 concepts followed by 3-5 answer steps), numbering the "
+                             "categories in sequence")
         else:
             selective_rule = ("Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must "
                               "know for an exam - leave out restatements and minor variations of the same idea, but make sure "
@@ -1737,14 +1745,14 @@ REVISION BRIEF:
             grouping_rule = "grouped into 5-6 logical categories (5 minimum, 6 maximum, each with 3-5 concepts), numbering the categories in sequence"
         return r"""
 
-Create an executive summary from the study material I provide (lecture notes, an exam/test paper, a tutorial/exercise/homework question sheet, or a research article - for any set of questions, summarise the topics and concepts the questions test, never the answers; for a research article, summarise its question, method, findings and contribution). Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering the most important ideas - this is a quick-reference revision aid, not exhaustive notes.
+Create an executive summary from the study material I provide (lecture notes, an exam/test paper, a tutorial/exercise/homework question sheet, or a research article - for an exam paper or a tutorial/exercise sheet, summarise for each question the concepts it tests AND the key steps of answering it; for a research article, summarise its question, method, findings and contribution). Your output should begin with a short overview, followed by a selective bullet-point revision sheet covering the most important ideas - this is a quick-reference revision aid, not exhaustive notes.
 
 ### CRITICAL FORMATTING REQUIREMENTS - FOLLOW EXACTLY
 - **BE SELECTIVE BUT THOROUGH:** {selective_rule}
-- **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence.
+- **ONE SENTENCE PER CONCEPT:** Each concept explanation must be a single short sentence (an answer step may run to two short sentences).
 - **SHORT OVERVIEW:** The overview must be no more than 3 sentences, written as ONE continuous paragraph on a single line. Do NOT put each sentence on its own line and do NOT insert line breaks anywhere inside the overview.
 - **ONLY USE HYPHENS FOR BULLETS:** You MUST use only hyphens (`-`) for ALL bullet points. Do NOT use asterisks (*), bullet symbols (•), or any other characters. EVERY bullet point must start with a hyphen.
-- **Bullet Point Format:** Each bullet point must follow this exact format: `- *Concept:* Brief explanation`
+- **Bullet Point Format:** Each bullet point must follow this exact format: `- *Concept:* Brief explanation` (for the answer steps of an exam paper or exercise sheet, `- *Step 1:* What to do`, `- *Step 2:* ...`)
 - **New Lines:** Ensure every bullet point is on a new line with proper spacing.
 - **Readability:** The final output must be scan-friendly and easy to reference quickly.
 - **ABSOLUTELY NO MATHEMATICAL NOTATION:** You MUST NOT include ANY mathematical equations, formulas, symbols, or LaTeX notation of any kind. This is CRITICAL - do NOT use:

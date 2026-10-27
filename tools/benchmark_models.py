@@ -6,8 +6,8 @@ interleaving the models so a slow spell on the API does not bias one side.
 Retries are disabled so a slow call is measured, not hidden.
 
 Usage (from StudyApp, key in .env or the environment):
-    uv run python tools/benchmark_models.py                  # gpt-6-sol vs gpt-6.1-sol, 2 rounds
-    uv run python tools/benchmark_models.py gpt-6-sol gpt-6-luna --rounds 3
+    uv run python tools/benchmark_models.py                  # gpt-6-luna vs gpt-6.1-terra, 2 rounds
+    uv run python tools/benchmark_models.py gpt-6-luna gpt-6.1-terra --rounds 3
     uv run python tools/benchmark_models.py --effort low    # also compare reasoning effort
 """
 import argparse
@@ -52,7 +52,7 @@ TASKS = [("executive summary", time_summary), ("chat (stream)", time_chat), ("qu
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("models", nargs="*", default=["gpt-6-sol", "gpt-6.1-sol"])
+    ap.add_argument("models", nargs="*", default=["gpt-6-luna", "gpt-6.1-terra"])
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--effort", default=None, help="reasoning effort to use for all calls (default: app setting)")
     args = ap.parse_args()

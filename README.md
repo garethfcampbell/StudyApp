@@ -13,7 +13,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 - **Retrieval Quiz** — Auto-generated multiple-choice questions to test your recall
 - **Essay Questions** — Practice longer-form answers with model responses
 - **Calculation Practice** — Step-by-step worked examples with interactive answer checking
-- **Session Persistence** — Your progress is saved across browser sessions
+- **Session Persistence** — Your document, conversation and practice state are kept for 24 hours after your last activity, including if you close the browser; reloading the page restores the conversation
 
 ---
 
@@ -22,7 +22,7 @@ An interactive self-study web application for Queen's University Belfast Finance
 | Layer | Technology |
 |---|---|
 | Backend | Python / Flask / Gunicorn |
-| AI | OpenAI (`gpt-6-luna` for every text feature, medium reasoning effort (low for the summary only); `gpt-6-sol` as fallback; `gpt-image-2.5-sunburst` for infographics) |
+| AI | OpenAI (`gpt-6-luna` in Fast mode (`service_tier="fast"`) for every text feature, medium reasoning effort (low for the summary and equation extraction); `gpt-6.1-terra` as fallback and for calculation verification and answer checking; `gpt-image-2.5-sunburst` for infographics) |
 | Database | PostgreSQL (Replit managed) |
 | Frontend | Bootstrap 5 / Vanilla JS / MathJax 3 |
 | File parsing | PyPDF2, python-pptx |
@@ -87,7 +87,7 @@ The app will be available at `http://localhost:5000`.
 
 ```
 ├── app.py                      # Main Flask application and routes
-├── tutor_ai.py                 # AI tutoring logic (OpenAI gpt-6-luna, gpt-6-sol fallback)
+├── tutor_ai.py                 # AI tutoring logic (OpenAI gpt-6-luna, gpt-6.1-terra fallback)
 ├── pdf_processor.py            # PDF and PowerPoint text extraction
 ├── models.py                   # SQLAlchemy database models
 ├── database.py                 # Database initialisation
@@ -111,18 +111,29 @@ The application uses a **session-based architecture** — no user accounts requi
 
 All AI features use OpenAI models with automatic fallback:
 
-| Feature | Primary | Fallback | Streaming | Temperature | Max Tokens |
-|---|---|---|---|---|---|
-| Chat / tutoring | `gpt-6-luna` | `gpt-6-sol` | Yes | 0.7 | 15,000 |
-| Executive summary | `gpt-6-luna` | `gpt-6-sol` | Yes | 0.2 | 15,000 |
-| Key concepts | `gpt-6-luna` | `gpt-6-sol` | Yes | 0.4 | 15,000 |
-| Essay questions | `gpt-6-luna` | `gpt-6-sol` | Yes | 0.4 | 15,000 |
-| Quiz generation | `gpt-6-luna` | `gpt-6-sol` | No | 0.3 | 15,000 |
-| Equation extraction | `gpt-6-luna` | `gpt-6-sol` | No | — | 2,000 |
-| Calculation questions | `gpt-6-luna` | `gpt-6-sol` | No | — | 5,000 |
-| Answer evaluation | `gpt-6-luna` | `gpt-6-sol` | No | — | 5,000 |
+| Feature | Primary | Fallback | Streaming | Max Tokens |
+| --- | --- | --- | --- | --- |
+| Chat / tutoring | `gpt-6-luna` | `gpt-6.1-terra` | Yes | 15,000 |
+| Executive summary | `gpt-6-luna` | `gpt-6.1-terra` | Yes | 15,000 |
+| Key concepts | `gpt-6-luna` | `gpt-6.1-terra` | Yes | 15,000 |
+| Essay questions | `gpt-6-luna` | `gpt-6.1-terra` | Yes | 15,000 |
+| Quiz generation | `gpt-6-luna` | `gpt-6.1-terra` | No | 15,000 |
+| Equation extraction | `gpt-6-luna` | `gpt-6.1-terra` | No | 2,000 |
+| Calculation questions | `gpt-6-luna` | `gpt-6.1-terra` | No | 5,000 |
+| Answer evaluation | `gpt-6-luna` | `gpt-6.1-terra` | No | 5,000 |
+
+Temperature is not sent to the gpt-6 models (they reject non-default values); every call runs at the model default, and output length is governed by the reasoning effort and the token budget. A call cut off by its token budget is retried once with a doubled budget; a streamed answer that is cut off ends with a visible "[Response cut short ...]" note instead of reading as complete.
 
 Chat, summary, key concepts, and essay questions use **Server-Sent Events (SSE)** for real-time streaming. Quiz generation, equation extraction, calculation questions, and answer evaluation use **background polling**.
+
+### Document text and context
+
+- PDF pages and slides with no extractable text are kept in sequence with a note saying the page is an image, so the model knows material is missing there (the server log reports how many pages had no text). PowerPoint text inside grouped shapes is extracted. Word files get `--- Page N ---` markers from the page breaks Word recorded, so citations and page selection work for them too.
+- Essay marking reads the whole document up to the chat budget (120k characters) or the pages most relevant to the question and the answer, not a head-and-tail slice.
+- Document-type classification samples the head, middle and tail of the document.
+- Each upload is fenced: background jobs (early summary, pre-generations, classification, equation list) of a previous upload discard their results once a newer upload has started, and the document text served to a request is checked against a fingerprint in the session cookie so a worker's cached copy of a previous document is never used.
+- Every document prompt is sent document-first: the material (as `Lecture Notes:` / `Exam Paper:` ...) opens the message, and the feature's persona and task follow it. All luna features (summary, key concepts, essay rounds and marking, quiz, equation and exam-question extraction, calculation drafts and worked examples, infographic brief) therefore share one prompt-cache prefix per document, and the calculation verification and answer check share one on gpt-6.1-terra, so after the first call the document tokens are billed at the cached rate (a tenth on luna, a twentieth on terra) for about 30 minutes.
+- Failure notices and interrupted streams are never cached, pre-generated, stored as the current question or fed back into the chat history.
 
 ### Storage
 
@@ -180,20 +191,28 @@ This project was developed for educational use at Queen's University Belfast.
 
 ## Models and reasoning effort by feature
 
-Set in `tutor_ai.py` (constants near the top). Every text call tries its first-choice model up to 3 times, then the other model once.
+Set in `tutor_ai.py` (constants near the top). Every text call tries its first-choice model up to 3 times, then the other model once. Every gpt-6-luna call, including the vision review of the infographic, is sent with `service_tier="fast"` (OpenAI Fast mode); gpt-6.1-terra calls use the default tier.
 
 | Stage / button | Model | Reasoning effort |
 |---|---|---|
-| Document type classification (after upload) | gpt-6-luna (sol fallback) | medium |
+| Document type classification (after upload) | gpt-6-luna (terra fallback) | medium |
 | Executive summary | gpt-6-luna | low |
 | Chat | gpt-6-luna | medium |
 | Essay questions - round generation | gpt-6-luna | medium |
 | Essay questions - marking the student's answer | gpt-6-luna | medium |
 | Multiple choice quiz | gpt-6-luna | medium |
-| Calculation questions - equation / exam question extraction | gpt-6-luna | medium |
-| Calculation questions - question or worked example | gpt-6-luna | medium |
-| Calculation questions - checking the answer | gpt-6-luna | medium |
+| Calculation questions - equation extraction (two stages: first equation, then full list) | gpt-6-luna | low |
+| Calculation questions - exam question extraction | gpt-6-luna | medium |
+| Calculation questions - first question (pre-generated at upload) | drafted by gpt-6-luna, then verified by gpt-6.1-terra when shown | medium |
+| Calculation questions - every later question or worked example (generated on the click) | drafted by gpt-6.1-terra, then verified by gpt-6.1-terra | medium |
+| Calculation questions - checking the answer | gpt-6.1-terra (luna fallback) | medium |
 | Revision infographic - text brief | gpt-6-luna | medium |
 | Revision infographic - image | gpt-image-2.5-sunburst, quality high | n/a |
-| Revision infographic - review and spell check | gpt-6-luna (sol fallback), vision | medium |
+| Revision infographic - review and spell check | gpt-6-luna (terra fallback), vision | medium |
 | Revision infographic - masked repair | gpt-image-2.5-sunburst edits | n/a |
+
+The calculation model is the expensive one and never shares a prompt cache with the other features, so it is not sent the whole document. Equation extraction (on luna) returns each equation with its name, variable definitions and the pages/slides where it is introduced, explained or applied; a calculation question is then generated from that equation plus those pages, their neighbouring pages and any other page that mentions the equation (up to `CALC_CONTEXT_CHARS`, 40k characters; documents that fit that budget are sent whole). A cited page is used only if it mentions the equation, and exam-paper pages that are mostly numbers or headed as tables, formula sheets or appendices are always kept so present-value tables reach the model. Answer checking and exam worked examples likewise receive only the pages relevant to the question.
+
+After an upload the equation extraction runs in **two stages at low reasoning effort**: a first-equation-only call (about 5 s) lets the calculation pre-generation start at once, while the full list is extracted in a background thread and reconciled so that index 0 is the equation already pre-generated. A "next question" click that arrives before the full list is stored waits for it (up to 30 s) rather than reporting the notes as exhausted.
+
+The first calculation question is **drafted on luna** (pre-generated after upload, so it costs little when nobody clicks) and every later one, including exam worked examples, is **drafted on gpt-6.1-terra** on the click; every draft is then **verified on gpt-6.1-terra**: the draft is shown immediately; the strong model then checks it against the same pages and replies `OK` or a corrected question. Minor rounding differences, style and equivalent forms are explicitly not grounds for a rewrite. The student is not told about the check: the answer box is available at once, and if a correction comes back (typically within 3-5 s) the question is silently re-rendered, the view returns to the top of it, and the stored question used for answer marking is replaced. If the verification call fails the draft stands. The verifier also computes the challenge's answer; it is stored as a reference for marking, and an answer submitted while the check is still running waits for the verdict (up to 15 s) so it is marked against the question the student sees. A verdict that arrives after the student has moved on is discarded. Marking accepts answers within 1% of the correct figure or differing only by rounding, and uses the same equation and conventions as the question's worked example. A chat message typed during practice that reads as a question to the tutor (no number, no formula) is answered in chat rather than graded. Measured on two sample decks, 9 of 10 drafts passed; this cuts a clicked question to roughly 60% of a sol-generated one and an unclicked pre-warm to about 5%.

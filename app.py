@@ -1299,10 +1299,12 @@ def quickaction_stream():
                             yield ": waiting\n\n"   # SSE comment: ignored by the page, keeps the connection open
                         time.sleep(0.5)
                     if not text:
-                        # Pre-generation failed or timed out: tell the student to click again
-                        # (the next click generates live).
-                        yield f"data: {json.dumps('The essay questions are taking longer than expected. Please click Essay questions again.')}\n\n"
-                        yield "data: [DONE]\n\n"
+                        # Pre-generation failed or timed out: generate the round
+                        # now, in this response, rather than asking for another click.
+                        logging.info("QUICKACTION STREAM: pre-generated essay round unavailable; generating it live")
+                        if sent:
+                            yield f"data: {json.dumps({'reset': True})}\n\n"
+                        yield from _quickaction_live_stream(action, session_id, pdf_content)
                         return
                     consume_prewarmed(session_id, 'essay')
                     _activate_essay_practice(session_id, text)
@@ -1313,7 +1315,12 @@ def quickaction_stream():
                         _st.store_content(session_id, 'messages', msgs)
                     except Exception as e:
                         logging.error(f"QUICKACTION STREAM: Error storing pre-generated essay: {e}")
-                    remainder = text[len(sent):] if text.startswith(sent) else text
+                    if text.startswith(sent):
+                        remainder = text[len(sent):]
+                    else:
+                        # The relayed draft was changed when it was finished: replace it.
+                        yield f"data: {json.dumps({'reset': True})}\n\n"
+                        remainder = text
                     for i in range(0, len(remainder), 800):
                         yield f"data: {json.dumps(remainder[i:i + 800])}\n\n"
                     yield "data: [DONE]\n\n"
@@ -1334,6 +1341,13 @@ def quickaction_stream():
             logging.error(f"QUICKACTION STREAM: Error storing cached messages: {e}")
         return stream_cached_sse(cached)
 
+    return Response(_quickaction_live_stream(action, session_id, pdf_content), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+def _quickaction_live_stream(action, session_id, pdf_content):
+    """SSE lines of a live Key Concepts / Essay generation (see quickaction_stream)."""
+    import queue as queue_mod
     q = queue_mod.Queue()
 
     def _run_stream():
@@ -1411,8 +1425,7 @@ def quickaction_stream():
             escaped = json.dumps(chunk)
             yield f"data: {escaped}\n\n"
 
-    return Response(generate(), mimetype='text/event-stream',
-                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+    return generate()
 
 @app.route('/calculation_stream', methods=['POST'])
 @csrf.exempt
@@ -2397,11 +2410,36 @@ def _wait_for_equation_list(storage, session_id, equation_list, current_index,
 
 
 def _start_prewarm(feature, session_id, pdf_text, doc_type, task_id, produce, delay=0.0, finalize=None, force=False):
+    """Start one pre-generation in a thread; True when it was started."""
     if feature not in PREWARM_FEATURES and not force:
-        return
+        return False
     StorageManager().store_content(session_id, f"{feature}_prewarm_pending", True)
     threading.Thread(target=_prewarm_one, args=(feature, session_id, pdf_text, doc_type, task_id, produce, delay, finalize),
                      daemon=True).start()
+    return True
+
+
+# Pre-generations marked pending as soon as an upload completes, although they
+# start only after classification and the calculation preparation (10-20 s
+# later): a click in between waits for them instead of starting a second,
+# concurrent generation of the same thing.
+EARLY_PENDING_PREWARMS = ('essay', 'quiz')
+
+
+def _early_pending_writes(session_id):
+    return [(session_id, f"{f}_prewarm_pending", True) for f in EARLY_PENDING_PREWARMS if f in PREWARM_FEATURES]
+
+
+def _clear_unstarted_pending(session_id, started):
+    """Clear the early pending flag of any pre-generation the upload job did
+    not start (an error before it), so a waiting click does not wait for it."""
+    stale = [(session_id, f"{f}_prewarm_pending", False)
+             for f in EARLY_PENDING_PREWARMS if f in PREWARM_FEATURES and f not in started]
+    if stale:
+        try:
+            StorageManager().batch_store(stale)
+        except Exception as e:
+            logging.debug(f"Could not clear early pending flags: {e}")
 
 
 def _wait_prewarm_then_complete(task_id, session_id, feature, wait_seconds, fallback):
@@ -2537,7 +2575,13 @@ def process_upload_background(task_id, file_data, filename, session_id, display_
 
             success, pdf_text, error_message = process_document_with_fallback(file_obj)
 
-            if success:
+            if success and not _upload_is_current(session_id, task_id):
+                # The student chose another file while this one was being read:
+                # the newer upload's document must not be overwritten.
+                record_upload(filename, session_id, False, error='Replaced by a newer upload')
+                update_task_failed(task_id, 'Replaced by a newer upload.')
+                _signal_upload_done(task_id)
+            elif success:
                 # Reset the previous document's state (one bulk delete) so a
                 # fresh document starts from question 1 with an empty
                 # conversation and no document type from the previous upload.
@@ -2549,7 +2593,9 @@ def process_upload_background(task_id, file_data, filename, session_id, display_
                 # Fingerprint for the request handlers to put in the cookie, so
                 # another worker's cached copy of a previous document is rejected.
                 storage_manager.batch_store([(session_id, 'pdf_content_hash', _pdf_hash(pdf_text)),
-                                             (session_id, 'current_equation_index', 0)])
+                                             (session_id, 'current_equation_index', 0),
+                                             *_early_pending_writes(session_id)])
+                prewarms_started = set()
 
                 # Start the executive summary NOW, in parallel with everything
                 # below, so it is usually finished by the time the page asks.
@@ -2678,12 +2724,14 @@ def process_upload_background(task_id, file_data, filename, session_id, display_
                 # Pre-generate the first result of each feature (in parallel) so a
                 # click on any button is served instantly from the session store.
                 try:
-                    _start_prewarm('essay', session_id, pdf_text, doc_type, task_id,
-                                   lambda t: t.generate_essay_question_stream_async(used_questions=[]),
-                                   finalize=lambda text, tutor: tutor.ensure_essay_round_complete(text))
-                    _start_prewarm('quiz', session_id, pdf_text, doc_type, task_id,
-                                   lambda t: t.generate_retrieval_quiz_stream_async(), delay=2.0,
-                                   finalize=TutorAI._parse_and_validate_quiz)
+                    if _start_prewarm('essay', session_id, pdf_text, doc_type, task_id,
+                                      lambda t: t.generate_essay_question_stream_async(used_questions=[]),
+                                      finalize=lambda text, tutor: tutor.ensure_essay_round_complete(text)):
+                        prewarms_started.add('essay')
+                    if _start_prewarm('quiz', session_id, pdf_text, doc_type, task_id,
+                                      lambda t: t.generate_retrieval_quiz_stream_async(), delay=2.0,
+                                      finalize=TutorAI._parse_and_validate_quiz):
+                        prewarms_started.add('quiz')
                     # The infographic's text brief is cheap; the image itself is only
                     # pre-generated if 'infographic' is listed in PREWARM_FEATURES.
                     _start_prewarm('infographic_brief', session_id, pdf_text, doc_type, task_id,
@@ -2702,6 +2750,7 @@ def process_upload_background(task_id, file_data, filename, session_id, display_
                                        finalize=_checked_calc_prewarm(session_id, equation=eq_list[0]))
                 except Exception as e:
                     logging.error(f"Upload {task_id}: could not start pre-generation: {e}")
+                _clear_unstarted_pending(session_id, prewarms_started)
             else:
                 logging.error(f"Document processing failed for task {task_id}: {error_message}")
                 record_upload(filename, session_id, False, error=error_message or 'Document processing failed')
@@ -2714,6 +2763,8 @@ def process_upload_background(task_id, file_data, filename, session_id, display_
             record_upload(filename, session_id, False, error=str(e))
             if not (get_task_status(task_id) or {}).get('status') == 'complete':
                 _restore_previous_upload(session_id, task_id, previous_upload)
+            if 'prewarms_started' in locals() and _upload_is_current(session_id, task_id):
+                _clear_unstarted_pending(session_id, prewarms_started)
             update_task_failed(task_id, "An internal error occurred. Please try again.")
             _signal_upload_done(task_id)
 

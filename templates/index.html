@@ -646,13 +646,22 @@ function addNewMessage(role, content) {
 
             const fullText = await streamSSE(response, {
                 onFirstChunk: () => {
-                    // Swap the progress bar for the message bubble on first chunk
+                    // Swap the progress bar for the message bubble on first chunk,
+                    // in the bar's place: a feature clicked while the summary was
+                    // being written must stay below it, not be overtaken by it
+                    if (existingProgressBar && existingProgressBar.parentNode === messagesDiv) {
+                        messagesDiv.insertBefore(messageDiv, existingProgressBar);
+                    } else {
+                        messagesDiv.appendChild(messageDiv);
+                    }
                     removeProgressBar();
-                    messagesDiv.appendChild(messageDiv);
                 },
                 render: (text) => {
                     messageContent.innerHTML = formatMessageSimplified(text);
-                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    // Only follow the summary while it is the newest message
+                    if (messageDiv === messagesDiv.lastElementChild) {
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    }
                 }
             });
 
@@ -741,6 +750,11 @@ function addNewMessage(role, content) {
             showUploadProblem(`That file is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is ${UPLOAD_MAX_MB} MB. Please upload a smaller file.`);
             return;
         }
+
+        // A file chosen while an earlier one is still processing replaces it:
+        // the earlier upload's status must then no longer touch the page.
+        const uploadSeq = (window.__uploadSeq = (window.__uploadSeq || 0) + 1);
+        const isStale = () => uploadSeq !== window.__uploadSeq;
 
         // The server keeps the current document if this file cannot be read;
         // the page then rebuilds its conversation (restorePreviousDocument).
@@ -936,6 +950,7 @@ function addNewMessage(role, content) {
         }))
         .then(response => response.json().catch(() => ({ error: 'The server did not accept the file. Please try again.' })))
         .then(data => {
+            if (isStale()) { clearInterval(progressTimer); return; }
             if (data.error && !data.task_id) {
                 // The server's reason (file type, size, too many uploads) is
                 // written for students: show it as is.
@@ -961,6 +976,7 @@ function addNewMessage(role, content) {
                     ? Promise.resolve((p => { prefetched = null; return p; })(prefetched))
                     : fetch(`/upload_status/${data.task_id}`).then(response => response.json()))
                     .then(statusData => {
+                        if (isStale()) { clearInterval(progressTimer); return; }
                         console.log('UPLOAD POLLING:', statusData);
                         
                         if (statusData.status === 'complete' && statusData.data && statusData.data.success) {
@@ -1050,6 +1066,7 @@ function addNewMessage(role, content) {
                         }
                     })
                     .catch(error => {
+                        if (isStale()) { clearInterval(progressTimer); return; }
                         console.error('Error polling upload status:', error);
                         pollErrorCount++;
                         if (pollErrorCount < maxPollErrors) {
@@ -1084,6 +1101,7 @@ function addNewMessage(role, content) {
         .catch(error => {
             // Stop progress bar animation
             clearInterval(progressTimer);
+            if (isStale()) return;
             uploadProgressBar.style.width = '100%';
             
             // Change alert box to completed state

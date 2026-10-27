@@ -109,6 +109,35 @@ class UploadKeepsPreviousDocumentTests(unittest.TestCase):
             self.assertIn(key, module.DOCUMENT_STATE_KEYS)
 
 
+class SupersededUploadTests(unittest.TestCase):
+    def test_older_upload_finishing_late_does_not_replace_the_newer_document(self):
+        storage = MagicMock()
+        storage.retrieve_content.return_value = "newer-task"
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(module, "process_document_with_fallback",
+                                             return_value=(True, "older notes", None)))
+            stack.enter_context(patch.object(module, "StorageManager", return_value=storage))
+            clear = stack.enter_context(patch.object(module, "clear_document_rows"))
+            primary = stack.enter_context(patch.object(module, "primary_storage"))
+            failed = stack.enter_context(patch.object(module, "update_task_failed"))
+            complete = stack.enter_context(patch.object(module, "update_task_complete"))
+            done = stack.enter_context(patch.object(module, "_signal_upload_done"))
+            stack.enter_context(patch.object(module, "record_upload"))
+            module.process_upload_background("older-task", b"x", "a.pdf", "s", "a.pdf", None)
+        clear.assert_not_called()
+        primary.batch_store.assert_not_called()
+        complete.assert_not_called()
+        failed.assert_called_once()
+        done.assert_called_once_with("older-task")
+
+    def test_page_ignores_status_of_a_replaced_upload_and_keeps_summary_in_place(self):
+        page = open(os.path.join(os.path.dirname(__file__), "..", "templates", "index.html"),
+                    encoding="utf-8").read()
+        self.assertIn("const isStale = () => uploadSeq !== window.__uploadSeq;", page)
+        self.assertEqual(page.count("if (isStale())"), 4)
+        self.assertIn("messagesDiv.insertBefore(messageDiv, existingProgressBar);", page)
+
+
 class PrewarmDraftTests(unittest.TestCase):
     def run_stream(self, responses):
         storage = MagicMock()
@@ -228,6 +257,55 @@ class TwoStageExamQuestionTests(unittest.TestCase):
                                                  "exam_questions", "exam_questions_pending")
         self.assertEqual(len(got), 3)
         storage.batch_retrieve.assert_called_with("s", ["exam_questions", "exam_questions_pending"])
+
+
+class EarlyEssayClickTests(unittest.TestCase):
+    def test_failed_preparation_is_generated_live_in_the_same_response(self):
+        storage = MagicMock()
+        rows = iter([
+            {"essay_prewarm_pending": True},                                   # route: still preparing
+            {"essay_prewarm_pending": True, "essay_prewarm_partial": "Draft"},  # relayed
+            {"essay_prewarm_pending": False},                                  # preparation failed
+        ])
+        storage.batch_retrieve.side_effect = lambda *args: next(rows)
+        live = MagicMock(return_value=iter(['data: "Live round"\n\n', "data: [DONE]\n\n"]))
+        with ExitStack() as stack:
+            for name, value in {
+                "init_session": lambda: None,
+                "get_pdf_content_with_fallback": lambda: "article text",
+                "record_activity": MagicMock(),
+                "StorageManager": lambda: storage,
+                "_quickaction_live_stream": live,
+            }.items():
+                stack.enter_context(patch.object(module, name, value))
+            stack.enter_context(patch.object(module.time, "sleep"))
+            stack.enter_context(module.app.test_request_context(
+                "/quickaction_stream", method="POST", json={"action": "essay"}))
+            module.session["session_id"] = "essay-session"
+            response = module.quickaction_stream.__wrapped__()
+            body = b"".join(response.iter_encoded()).decode()
+        self.assertNotIn("click Essay questions again", body)
+        self.assertLess(body.index('data: "Draft"'), body.index('"reset": true'))
+        self.assertLess(body.index('"reset": true'), body.index('data: "Live round"'))
+        live.assert_called_once_with("essay", "essay-session", "article text")
+
+    def test_upload_marks_essay_and_quiz_pending_and_clears_unstarted_ones(self):
+        writes = module._early_pending_writes("s")
+        for feature in ("essay", "quiz"):
+            if feature in module.PREWARM_FEATURES:
+                self.assertIn(("s", f"{feature}_prewarm_pending", True), writes)
+        storage = MagicMock()
+        with patch.object(module, "StorageManager", return_value=storage):
+            module._clear_unstarted_pending("s", {"essay"})
+        cleared = storage.batch_store.call_args.args[0] if storage.batch_store.called else []
+        self.assertNotIn(("s", "essay_prewarm_pending", False), cleared)
+        if "quiz" in module.PREWARM_FEATURES:
+            self.assertIn(("s", "quiz_prewarm_pending", False), cleared)
+
+    def test_start_prewarm_reports_whether_it_started(self):
+        with patch.object(module, "StorageManager"), patch.object(module.threading, "Thread"):
+            self.assertFalse(module._start_prewarm("not-a-feature", "s", "t", None, "task", lambda t: None))
+            self.assertTrue(module._start_prewarm("not-a-feature", "s", "t", None, "task", lambda t: None, force=True))
 
 
 class MarkedChallengeTests(unittest.TestCase):

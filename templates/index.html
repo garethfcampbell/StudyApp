@@ -1654,7 +1654,11 @@ function addNewMessage(role, content) {
             // mathjax-full 3.2.1) — the browser renders that crash as the yellow
             // "Math input error" box. \unicode{} is autoloaded by tex-svg. £ and
             // common unicode math symbols (≈ × ≤ …) are safe and left alone.
-            fixed = fixed.replace(/€/g, '\\unicode{x20AC}');
+            // Inside \text{...} it is the other way round: \unicode{} is shown
+            // literally there ("\unicode{x20AC}500"), while a raw € renders.
+            fixed = fixed.replace(/(\\(?:text|textbf|textit|textrm|textsf|texttt|mbox)\{(?:[^{}]|\{[^{}]*\})*\})|€/g, function(m, textCmd) {
+                return textCmd ? textCmd.replace(/\\unicode\{x20AC\}/gi, '€') : '\\unicode{x20AC}';
+            });
             // Without MathJax's text-macros extension (MathJax 3) the inside of
             // \text{...} is rendered literally, so "\text{10-day 99\% VaR}"
             // showed a backslash. MathJax 4 loads text-macros, but moving each

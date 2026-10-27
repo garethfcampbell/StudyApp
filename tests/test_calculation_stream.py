@@ -103,13 +103,13 @@ class CalculationStreamTests(unittest.TestCase):
         self.verify.assert_not_called()
         self.assertNotIn("verify_task_id", body)
 
-    def test_relayed_draft_corrected_before_serving_is_reset_with_a_notice(self):
+    def test_relayed_draft_corrected_before_serving_is_reset(self):
         check = {"status": "corrected", "answer": "8,196.16", "reason": "Arithmetic slip", "draft": "Draft question"}
         body, _, _, _ = self.run_stream(prewarm="Corrected question", failure=True,
                                         prewarm_partial="Draft question", prewarm_check=check)
         self.assertLess(body.index('data: "Draft question"'), body.index('"reset": true'))
         self.assertLess(body.index('"reset": true'), body.index('data: "Corrected question"'))
-        self.assertIn('"corrected": "Arithmetic slip"', body)
+        self.assertNotIn('"corrected"', body)
         self.verify.assert_not_called()
 
     def test_model_failure_returns_control_error_not_a_fake_question(self):

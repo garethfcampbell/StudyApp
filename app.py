@@ -1067,11 +1067,8 @@ def simple_chat_stream():
     essay_mode = _flags.get('essay_mode_active')
     current_essay = _flags.get('current_essay_question')
     _ph.mark('mode_flags')
-    # 'question': sent by the page's "Ask the tutor instead" link, so the
-    # message is never marked as an answer.
-    asked_as_question = data.get('intent') == 'question'
     if (calculation_mode and current_calculation and not (essay_mode and current_essay)
-            and (asked_as_question or _calc_message_is_a_question(user_message))):
+            and _calc_message_is_a_question(user_message)):
         # A question to the tutor, not an answer: answer it in normal chat
         # (the practice stays active for the next message).
         logging.info("CALC_ANSWER_STREAM: message reads as a question; answering it in chat instead of marking it")
@@ -1492,11 +1489,9 @@ def calculation_stream():
                             remainder = prewarmed[len(sent):]
                         else:
                             # The draft relayed while it was being made was
-                            # corrected by the check: replace it, with a notice.
+                            # corrected by the check: replace it.
                             q.put({'reset': True})
                             remainder = prewarmed
-                            if already_checked and already_checked.get('status') == 'corrected':
-                                q.put({'corrected': already_checked.get('reason') or ''})
                         for i in range(0, len(remainder), 400):
                             q.put(remainder[i:i + 400])
                         return

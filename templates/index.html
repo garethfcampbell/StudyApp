@@ -165,9 +165,6 @@
                     <i class="fas fa-check"></i> Check Answer
                 </button>
             </div>
-            <button type="button" class="btn btn-link btn-sm p-0 mt-1 calc-ask-link" onclick="submitCalculationAnswer('question')">
-                <i class="fas fa-comment-dots me-1"></i>Not an answer? Ask the tutor instead
-            </button>
             <div class="mt-2" style="margin-bottom: 1rem !important;">
                 <button class="btn btn-outline-secondary btn-sm me-2" onclick="nextCalculationQuestion()">
                     <i class="fas fa-forward"></i> Next Question
@@ -348,9 +345,7 @@ async function streamSSE(response, options) {
 // NEW SIMPLE CHAT SYSTEM - Streaming via Server-Sent Events
 let chatStreamActive = false;
 
-// intent 'question': the student asked the tutor something from the
-// calculation answer box, so the server must not mark it as an answer.
-async function newSendMessage(intent) {
+async function newSendMessage() {
     if (chatStreamActive) return; // ignore re-entrant sends while streaming
 
     const input = document.getElementById('newChatInput');
@@ -378,7 +373,7 @@ async function newSendMessage(intent) {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify(intent ? { message: userMessage, intent: intent } : { message: userMessage })
+            body: JSON.stringify({ message: userMessage })
         });
 
         // If the server returned JSON (error or calc-mode fallback), handle it
@@ -1144,32 +1139,7 @@ function addNewMessage(role, content) {
     // correction comes back, the question is silently re-rendered and the view
     // returns to the top of it. The stored question used for marking is
     // replaced server-side at the same time.
-    // A note under the question while it is being checked, replaced by a
-    // visible notice if the check corrects it (the student may already have
-    // started working from the first version).
-    function setCalculationCheckStatus(messageDiv, state, reason) {
-        let note = messageDiv.querySelector('.calc-check-status');
-        if (state === 'clear') { if (note) note.remove(); return; }
-        if (!note) {
-            note = document.createElement('div');
-            note.setAttribute('role', 'status');
-            messageDiv.appendChild(note);
-        }
-        if (state === 'checking') {
-            note.className = 'calc-check-status small text-muted mt-2';
-            note.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>'
-                + 'Double-checking the figures in this question. You can start working on it; '
-                + 'if anything needs correcting it will be updated here.';
-        } else if (state === 'corrected') {
-            note.className = 'calc-check-status alert alert-warning py-2 small mt-2 mb-0';
-            note.innerHTML = '<strong>Updated:</strong> the first version of this question had a mistake'
-                + (reason ? ' (' + escapeHtml(reason.replace(/[.\s]+$/, '')) + ')' : '')
-                + '. The question above has been corrected; please use these figures.';
-        }
-    }
-
     async function awaitCalculationVerification(taskId, messageDiv, messageContent, scrollToQuestionStart) {
-        setCalculationCheckStatus(messageDiv, 'checking');
         const deadline = Date.now() + 90000;
         let verdict = null;
         while (Date.now() < deadline) {
@@ -1185,12 +1155,8 @@ function addNewMessage(role, content) {
             }
         }
         // 'tidied': correct, but shown again without lines about the app's own checks
-        if (!(verdict && (verdict.status === 'corrected' || verdict.status === 'tidied') && verdict.question)) {
-            setCalculationCheckStatus(messageDiv, 'clear');
-            return;
-        }
+        if (!(verdict && (verdict.status === 'corrected' || verdict.status === 'tidied') && verdict.question)) return;
         messageContent.innerHTML = formatMessageSimplified(verdict.question);
-        setCalculationCheckStatus(messageDiv, verdict.status === 'corrected' ? 'corrected' : 'clear', verdict.reason);
         const hasMath = verdict.question.includes('\\(') || verdict.question.includes('\\[') || verdict.question.includes('\\begin{');
         if (hasMath) {
             try { await loadMathJax(); await renderMathInElement(messageContent); } catch (e) { console.error(e); }
@@ -1261,7 +1227,6 @@ function addNewMessage(role, content) {
 
             let verifyTaskId = null;
             let streamError = null;
-            let correctedReason = null;   // the pre-generated question was corrected while it was being shown
             const fullText = await streamSSE(response, {
                 onFirstChunk: () => {
                     // On first chunk, swap progress bar for message bubble
@@ -1276,7 +1241,6 @@ function addNewMessage(role, content) {
                 onControl: (msg) => {
                     if (msg.verify_task_id) verifyTaskId = msg.verify_task_id;
                     if (msg.error) streamError = msg;
-                    if (msg.corrected !== undefined) correctedReason = msg.corrected || '';
                 }
             });
 
@@ -1326,14 +1290,11 @@ function addNewMessage(role, content) {
                 console.error('AITutor instance or showCalculationAnswerInput method not available');
             }
 
-            // Background check of the draft by the strong model, shown under the
-            // question; a correction is swapped in with a notice (see
-            // awaitCalculationVerification). A pre-generated question was
-            // checked before it was served and needs no check here.
+            // Background check of the draft by the strong model; a correction is
+            // swapped in silently (see awaitCalculationVerification). A
+            // pre-generated question was checked before it was served.
             if (verifyTaskId && fullText) {
                 awaitCalculationVerification(verifyTaskId, messageDiv, messageContent, scrollToQuestionStart);
-            } else if (correctedReason !== null) {
-                setCalculationCheckStatus(messageDiv, 'corrected', correctedReason);
             }
 
             // Set button to active state (green) to show success

@@ -1609,24 +1609,17 @@ async function submitEssayAnswer() {
     }
 }
 
-// intent 'question' (the "Ask the tutor instead" link): the text is a question
-// for the tutor and is answered in chat rather than marked.
-async function submitCalculationAnswer(intent) {
+async function submitCalculationAnswer() {
     console.log('📝 GLOBAL DEBUG: submitCalculationAnswer called');
-
+    
     const calcInput = document.getElementById('calcAnswerInput');
     if (!calcInput) {
         console.log('📝 GLOBAL DEBUG: calcAnswerInput not found');
         return;
     }
-
+    
     const answer = calcInput.value.trim();
     if (!answer) {
-        if (intent === 'question') {
-            calcInput.placeholder = 'Type your question for the tutor, then click the link again...';
-            calcInput.focus();
-            return;
-        }
         alert('Please enter an answer before submitting.');
         return;
     }
@@ -1648,7 +1641,7 @@ async function submitCalculationAnswer(intent) {
     if (chatInput) {
         chatInput.value = answer;
         calcInput.value = '';
-        await newSendMessage(intent === 'question' ? 'question' : undefined);
+        await newSendMessage();
     } else {
         console.error('newChatInput not found; cannot submit calculation answer');
     }

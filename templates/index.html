@@ -1656,7 +1656,7 @@ function addNewMessage(role, content) {
             // common unicode math symbols (≈ × ≤ …) are safe and left alone.
             // Inside \text{...} it is the other way round: \unicode{} is shown
             // literally there ("\unicode{x20AC}500"), while a raw € renders.
-            fixed = fixed.replace(/(\\(?:text|textbf|textit|textrm|textsf|texttt|mbox)\{(?:[^{}]|\{[^{}]*\})*\})|€/g, function(m, textCmd) {
+            fixed = fixed.replace(/(\\(?:text|textbf|textit|textrm|textsf|texttt|textnormal|textup|mbox|hbox)\{(?:[^{}]|\{[^{}]*\})*\})|€/g, function(m, textCmd) {
                 return textCmd ? textCmd.replace(/\\unicode\{x20AC\}/gi, '€') : '\\unicode{x20AC}';
             });
             // Without MathJax's text-macros extension (MathJax 3) the inside of

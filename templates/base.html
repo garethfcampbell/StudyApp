@@ -855,6 +855,8 @@
                 s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)');
             }
             s = s.replace(/\\sqrt\{([^{}]*)\}/g, '√($1)');
+            // \unicode{x20AC} (how the page writes € in maths) -> the character
+            s = s.replace(/\\unicode\{x([0-9A-Fa-f]{2,6})\}/g, function(m, hex) { return String.fromCodePoint(parseInt(hex, 16)); });
             const symbols = { times: '×', cdot: '·', approx: '≈', le: '≤', leq: '≤', ge: '≥', geq: '≥', neq: '≠', ne: '≠',
                               pm: '±', sum: 'Σ', infty: '∞', sigma: 'σ', mu: 'μ', rho: 'ρ', beta: 'β', alpha: 'α',
                               lambda: 'λ', delta: 'δ', Delta: 'Δ', pi: 'π', theta: 'θ', ln: 'ln', log: 'log', exp: 'exp' };

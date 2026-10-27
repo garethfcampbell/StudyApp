@@ -1,6 +1,7 @@
 import PyPDF2
 import io
 import re
+import unicodedata
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from docx import Document as DocxDocument
@@ -11,6 +12,86 @@ import logging
 # model (and anyone reading the context) knows material is missing there.
 NO_TEXT_PAGE_NOTE = ("[No extractable text on this page: it may be an image, a diagram, "
                      "or a formula rendered as a picture.]")
+# Added after a PDF page whose equations came out of the text layer as maths
+# letters (Word's equation editor): their layout is lost on extraction.
+FLATTENED_MATHS_NOTE = ("[This page contains equations extracted from the PDF's text layer: "
+                        "superscripts, fractions and matrix layout may have been flattened "
+                        "(e.g. 4e2x may mean 4e^(2x)). Read them with care.]")
+# Mathematical Alphanumeric Symbols (italic/bold maths letters such as 𝑧, 𝑥)
+# and the italic h (ℎ), which equation editors emit instead of plain letters.
+_MATH_LETTER_RE = re.compile('[\U0001D400-\U0001D7FFℎ]')
+
+
+EQUATION_TRANSCRIPT_HEADING = "[Equations on this page, read from an image of the page:]"
+MAX_EQUATION_PAGES = 8    # pages sent to the vision model per document
+_PAGE_MARKER_RE = re.compile(r'^--- Page (\d+) ---$', re.M)
+
+
+def flattened_maths_pages(text):
+    """Page numbers whose extracted text carries FLATTENED_MATHS_NOTE (see
+    extract_text_from_pdf), in order."""
+    pages = []
+    markers = list(_PAGE_MARKER_RE.finditer(text or ""))
+    for i, m in enumerate(markers):
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+        if FLATTENED_MATHS_NOTE in text[m.end():end]:
+            pages.append(int(m.group(1)))
+    return pages
+
+
+def render_pdf_pages_png(file_bytes, page_numbers, scale=2.0):
+    """PNG bytes of the given 1-based PDF pages ({page: png}), rendered with
+    PDFium (pypdfium2). scale 2.0 is 144 dpi: equations stay legible without
+    making the image needlessly large. Pages that fail to render are left out."""
+    import pypdfium2 as pdfium
+    images = {}
+    pdf = pdfium.PdfDocument(file_bytes)
+    try:
+        for number in page_numbers:
+            if not 1 <= number <= len(pdf):
+                continue
+            try:
+                page = pdf[number - 1]
+                bitmap = page.render(scale=scale)
+                buf = io.BytesIO()
+                bitmap.to_pil().save(buf, format="PNG", optimize=True)
+                images[number] = buf.getvalue()
+                bitmap.close()
+                page.close()
+            except Exception as e:
+                logging.warning(f"PDF: could not render page {number}: {e}")
+    finally:
+        pdf.close()
+    return images
+
+
+def add_equation_transcripts(text, transcripts):
+    """Put each page's transcribed equations ({page: text}) after that page's
+    FLATTENED_MATHS_NOTE, keeping the text layer as it is (a misread equation
+    then never removes what the PDF itself says)."""
+    if not transcripts:
+        return text
+    markers = list(_PAGE_MARKER_RE.finditer(text))
+    out, last = [], 0
+    for i, m in enumerate(markers):
+        number = int(m.group(1))
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+        transcript = (transcripts.get(number) or "").strip()
+        note_at = text.find(FLATTENED_MATHS_NOTE, m.end(), end)
+        if transcript and note_at != -1:
+            cut = note_at + len(FLATTENED_MATHS_NOTE)
+            out.append(text[last:cut])
+            out.append(f"\n{EQUATION_TRANSCRIPT_HEADING}\n{transcript}\n")
+            last = cut
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _plain_maths_letters(text):
+    """Map maths-styled letters and digits to plain ones (𝑧 -> z, 𝟐 -> 2), so
+    the models read 𝑧=4𝑒2𝑥 as z=4e2x. Only this block is normalised: NFKC on
+    the whole text would also turn ² into 2 and ½ into 1⁄2."""
+    return _MATH_LETTER_RE.sub(lambda m: unicodedata.normalize('NFKC', m.group()), text)
 
 def extract_text_from_file(uploaded_file):
     """
@@ -161,9 +242,12 @@ def extract_text_from_pdf(uploaded_file):
                 page_text = page.extract_text()
 
                 if page_text and page_text.strip():
+                    flattened_maths = len(_MATH_LETTER_RE.findall(page_text)) >= 5
                     extracted_text += f"\n--- Page {page_num + 1} ---\n"
-                    extracted_text += page_text
+                    extracted_text += _plain_maths_letters(page_text)
                     extracted_text += "\n"
+                    if flattened_maths:
+                        extracted_text += FLATTENED_MATHS_NOTE + "\n"
                     pages_with_text += 1
                     logging.debug(f"PDF DEBUG: Page {page_num + 1} processed successfully")
                 else:
@@ -366,6 +450,8 @@ def clean_text(text):
     """
     if not text:
         return ""
+
+    text = _plain_maths_letters(text)
 
     # Strip whitespace from each line but keep blank lines so paragraph
     # boundaries are preserved

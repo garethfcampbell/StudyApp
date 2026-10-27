@@ -16,7 +16,8 @@ import logging
 import asyncio
 import threading
 import uuid as uuid_module
-from pdf_processor import extract_text_from_file, UnreadableDocument
+from pdf_processor import (extract_text_from_file, UnreadableDocument, flattened_maths_pages,
+                           render_pdf_pages_png, add_equation_transcripts, MAX_EQUATION_PAGES)
 from tutor_ai import TutorAI, _equation_text, CALC_PREWARM_MODEL
 from infographic_email import is_email_configured, normalise_email, email_infographic, email_transport
 from database_storage_manager import DatabaseStorageManager as StorageManager
@@ -245,6 +246,10 @@ def get_pdf_content_with_fallback():
     pdf_content = storage_manager.retrieve_content(session_id, 'pdf_content')
     if pdf_content:
         resource_monitor.increment('cache_misses')
+        # The stored text can change after the upload (equations read from
+        # page images are added): the database copy is current, so follow it.
+        if expected_hash and _pdf_hash(pdf_content) != expected_hash:
+            session['pdf_hash'] = _pdf_hash(pdf_content)
         # Cache it in the optimized storage for next time
         primary_storage.store_content(session_id, 'pdf_content', pdf_content)
         return pdf_content
@@ -470,7 +475,7 @@ def run_calculation_verification_background(task_id, session_id, question_text, 
                 # verdict must not overwrite the question now in play.
                 logging.info(f"CALC VERIFY: {result.get('status')}, but the question has changed; nothing stored")
                 result = dict(result, status='stale', question=None)
-            elif result.get('status') == 'corrected' and result.get('question'):
+            elif result.get('status') in ('corrected', 'tidied') and result.get('question'):
                 corrected = result['question']
                 msgs = storage.retrieve_content(session_id, 'messages') or []
                 for i in range(len(msgs) - 1, -1, -1):
@@ -517,6 +522,28 @@ def start_calculation_verification(session_id, question_text, pdf_content, doc_t
     return task_id
 
 
+def _checked_calc_prewarm(session_id, equation=None, exam_question=None):
+    """finalize for the calculation pre-generation: check the draft on the
+    verification model before it is stored, so the first question a student
+    is served has already been checked (the corrected text replaces the
+    draft). The verdict - status, the verifier's answer to the challenge and
+    the reason for a correction - is stored beside it for /calculation_stream."""
+    async def finalize(text, tutor):
+        if not TutorAI.looks_like_calculation_question(text):
+            return text
+        result = await tutor.verify_calculation_question_async(text, equation=equation, exam_question=exam_question)
+        corrected = result.get('status') in ('corrected', 'tidied') and result.get('question')
+        try:
+            StorageManager().store_content(session_id, 'calculation_prewarm_check', {
+                'status': result.get('status'), 'answer': result.get('answer') or None,
+                'reason': result.get('reason') or '', 'draft': text})
+        except Exception as e:
+            logging.warning(f"PREWARM calculation: could not store the check: {e}")
+        logging.info(f"PREWARM calculation: draft checked before serving ({result.get('status')})")
+        return result['question'] if corrected else text
+    return finalize
+
+
 def _current_calc_equation(session_id):
     """The equation the student is currently working on (lecture-notes mode),
     so answer checking can reuse the pages the question was generated from.
@@ -551,17 +578,46 @@ _CHAT_QUESTION_RE = _re.compile(
     _re.I)
 
 
+# Openings that ask the tutor something even when the message quotes a figure
+# ("why do we use 2.8%?", "what does 2.33 stand for?", "I don't get step 2").
+_CALC_ASKING_RE = _re.compile(
+    r"^\s*(why|how|what|what's|whats|when|where|which|who|whose|explain|tell me|show me|help|"
+    r"can you|could you|would you|should|does|do|did|"
+    r"i\s*(?:don'?t|do not)\s+(?:understand|get|know|follow)|i'?m\s+(?:confused|stuck|lost)|"
+    r"i am\s+(?:confused|stuck|lost)|(?:can i (?:have|get) |give me )?a hint)\b",
+    _re.I)
+# Wording that presents a figure as the student's answer.
+_CALC_ATTEMPT_RE = _re.compile(
+    r"\b(my answer|my result|i got|i get|i make it|i calculated|i worked out|answer is|answer of|"
+    r"result is|comes to|works out)\b", _re.I)
+_CALC_NUMBER_RE = _re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
 def _calc_message_is_a_question(user_message):
-    """While calculation practice is active every message is marked as an
-    answer. A message with no digit and no formula that reads as a question
-    ("why do we discount at the risk-free rate?") is the student asking the
-    tutor something, so it is answered by the tutor instead of being graded."""
+    """While calculation practice is active a message is marked as an answer
+    unless it reads as the student asking the tutor something, which is then
+    answered in chat instead of being graded.
+
+    A figure in the message does not make it an answer: "why do we use 2.8%
+    for every payment?" is a question. A message that is mostly a figure
+    ("41,477.60", "about £46k", "is it 41,477.60?") or that says it is an
+    answer ("I got 12.4%") is marked."""
     text = (user_message or '').strip()
-    if not text or any(ch.isdigit() for ch in text):
+    if not text:
         return False
-    if _re.search(r"[=^\\]|\b(answer|result|equals)\b", text, _re.I):
+    if _CALC_ATTEMPT_RE.search(text):
         return False
-    return text.endswith('?') or bool(_CHAT_QUESTION_RE.match(text)) and len(text.split()) >= 4
+    words = _re.findall(r"[A-Za-z']+", text)
+    if _CALC_ASKING_RE.match(text) and (text.endswith('?') or len(words) >= 3):
+        return True
+    if _re.search(r"[=\\]", text):
+        return False
+    has_number = bool(_CALC_NUMBER_RE.search(text))
+    if text.endswith('?'):
+        # "is it 41,477.60?" is a tentative answer; a longer question that
+        # quotes a figure ("is the rate 2.8% for every payment?") is a question.
+        return not has_number or len(words) >= 5
+    return not has_number and len(words) >= 4 and bool(_CHAT_QUESTION_RE.match(text))
 
 
 def _settle_calculation_verification(session_id, wait_seconds=15):
@@ -1011,8 +1067,11 @@ def simple_chat_stream():
     essay_mode = _flags.get('essay_mode_active')
     current_essay = _flags.get('current_essay_question')
     _ph.mark('mode_flags')
+    # 'question': sent by the page's "Ask the tutor instead" link, so the
+    # message is never marked as an answer.
+    asked_as_question = data.get('intent') == 'question'
     if (calculation_mode and current_calculation and not (essay_mode and current_essay)
-            and _calc_message_is_a_question(user_message)):
+            and (asked_as_question or _calc_message_is_a_question(user_message))):
         # A question to the tutor, not an answer: answer it in normal chat
         # (the practice stays active for the next message).
         logging.info("CALC_ANSWER_STREAM: message reads as a question; answering it in chat instead of marking it")
@@ -1371,6 +1430,7 @@ def calculation_stream():
             full_response = ""
             verify_equation = None      # what the question is about, for verification
             verify_exam_question = None
+            already_checked = None      # verdict of a pre-generated question checked before serving
             error_sent = False
 
             def _emit(chunk):
@@ -1419,13 +1479,24 @@ def calculation_stream():
                     if prewarmed:
                         logging.info("CALC STREAM request=%s event=prewarm_served elapsed=%.3f",
                                      request_id, time.perf_counter() - started)
+                        prewarm_check = _storage.retrieve_content(session_id, 'calculation_prewarm_check')
                         consume_prewarmed(session_id, 'calculation')
                         full_response = prewarmed
                         if exam_questions:
                             verify_exam_question = exam_questions[0]
                         elif equation_list:
                             verify_equation = equation_list[0]
-                        remainder = prewarmed[len(sent):] if prewarmed.startswith(sent) else prewarmed
+                        if isinstance(prewarm_check, dict) and prewarm_check.get('status') in ('ok', 'corrected', 'tidied'):
+                            already_checked = prewarm_check
+                        if prewarmed.startswith(sent):
+                            remainder = prewarmed[len(sent):]
+                        else:
+                            # The draft relayed while it was being made was
+                            # corrected by the check: replace it, with a notice.
+                            q.put({'reset': True})
+                            remainder = prewarmed
+                            if already_checked and already_checked.get('status') == 'corrected':
+                                q.put({'corrected': already_checked.get('reason') or ''})
                         for i in range(0, len(remainder), 400):
                             q.put(remainder[i:i + 400])
                         return
@@ -1531,7 +1602,9 @@ def calculation_stream():
                         writes.append((session_id, 'messages', msgs))
                     if TutorAI.looks_like_calculation_question(full_response):
                         writes += [(session_id, 'current_calculation_question', full_response),
-                                   (session_id, 'current_calculation_answer', None),
+                                   (session_id, 'current_calculation_answer',
+                                    (already_checked or {}).get('answer')),
+                                   (session_id, 'current_calculation_verify_task', None),
                                    (session_id, 'calculation_mode_active', True),
                                    (session_id, 'essay_mode_active', False)]
                     if writes:
@@ -1539,15 +1612,17 @@ def calculation_stream():
                 except Exception as e:
                     logging.error(f"CALCULATION STREAM: Error storing messages: {e}")
                 # Verify the draft on the strong model; the page polls for the
-                # verdict and swaps in a correction if there is one.
-                try:
-                    verify_id = start_calculation_verification(
-                        session_id, full_response, pdf_content, doc_type,
-                        equation=verify_equation, exam_question=verify_exam_question)
-                    if verify_id:
-                        q.put({'verify_task_id': verify_id})
-                except Exception as e:
-                    logging.error(f"CALCULATION STREAM: could not start verification: {e}")
+                # verdict and swaps in a correction if there is one. A
+                # pre-generated question was checked before it was stored.
+                if not already_checked:
+                    try:
+                        verify_id = start_calculation_verification(
+                            session_id, full_response, pdf_content, doc_type,
+                            equation=verify_equation, exam_question=verify_exam_question)
+                        if verify_id:
+                            q.put({'verify_task_id': verify_id})
+                    except Exception as e:
+                        logging.error(f"CALCULATION STREAM: could not start verification: {e}")
                 try:
                     await tutor_ai.close_async_clients()
                 except Exception:
@@ -2092,7 +2167,7 @@ PREWARM_WAIT_SECONDS = 120  # how long a click waits for a pending pre-generatio
 KEEPALIVE = object()        # queue sentinel: emit an SSE comment to keep a waiting connection open
 SSE_KEEPALIVE_SECONDS = 1.0  # live streams: comment line sent whenever the model has been silent this long
 PREWARM_KEYS = tuple(f"{f}_prewarm{suffix}" for f in ('essay', 'calculation', 'quiz', 'infographic', 'infographic_brief')
-                     for suffix in ('', '_pending', '_partial'))
+                     for suffix in ('', '_pending', '_partial', '_check'))
 
 
 def get_prewarmed(session_id, feature, wait_seconds=0):
@@ -2114,7 +2189,8 @@ def get_prewarmed(session_id, feature, wait_seconds=0):
 def consume_prewarmed(session_id, feature):
     """Remove a served pre-generated result so it is used only once."""
     try:
-        StorageManager().delete_many(session_id, [f"{feature}_prewarm", f"{feature}_prewarm_partial"])
+        StorageManager().delete_many(session_id, [f"{feature}_prewarm", f"{feature}_prewarm_partial",
+                                                  f"{feature}_prewarm_check"])
     except Exception as e:
         logging.debug(f"PREWARM: could not remove {feature}: {e}")
 
@@ -2320,8 +2396,40 @@ def _generate_summary_early(session_id, pdf_text, task_id):
             logging.error(f"Upload {task_id}: could not clear summary_pending: {e}")
 
 
-def process_upload_background(task_id, file_data, filename, session_id):
-    """Background function to process uploaded file"""
+EQUATION_TRANSCRIBE_WAIT_SECONDS = 60  # longest the calculation preparation waits for it
+
+
+def _transcribe_equation_pages(file_data, filename, pdf_text):
+    """For a PDF whose equations came out of the text layer flattened, read
+    those pages (rendered as images) with the vision model and return the text
+    with each page's equations added in LaTeX; None when there is nothing to
+    add. Runs in a background thread after the upload has completed."""
+    if not (filename or '').lower().endswith('.pdf'):
+        return None
+    pages = flattened_maths_pages(pdf_text)[:MAX_EQUATION_PAGES]
+    if not pages:
+        return None
+    started = time.perf_counter()
+    images = render_pdf_pages_png(file_data, pages)
+    if not images:
+        return None
+    tutor = TutorAI()
+    tutor.set_context(pdf_text)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        transcripts = loop.run_until_complete(tutor.transcribe_equation_pages_async(images))
+        loop.run_until_complete(tutor.close_async_clients())
+    finally:
+        loop.close()
+    logging.info(f"EQUATION PAGES: {len(transcripts)}/{len(pages)} page(s) read from images "
+                 f"in {time.perf_counter() - started:.1f}s")
+    return add_equation_transcripts(pdf_text, transcripts) if transcripts else None
+
+
+def process_upload_background(task_id, file_data, filename, session_id, display_name=None):
+    """Background function to process uploaded file. display_name is the name
+    the student gave the file (shown on the page); filename is the sanitised one."""
     import io
     with app.app_context():
         try:
@@ -2361,13 +2469,27 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 # until it is stored).
                 update_task_complete(task_id, success=True, data={
                     'success': True,
-                    'filename': filename,
-                    'message': f'Successfully loaded: {filename}',
+                    'filename': display_name or filename,
+                    'message': f'Successfully loaded: {display_name or filename}',
                     'content_length': len(pdf_text) if pdf_text else 0,
                     'document_type': None
                 })
                 _signal_upload_done(task_id)
                 logging.info(f"Upload processing completed for task {task_id}")
+
+                # Equations whose layout the PDF text lost are read from page
+                # images, alongside the classification below; the calculation
+                # preparation that follows uses the text with them added.
+                transcribed = {}
+
+                def _run_transcription():
+                    with app.app_context():
+                        try:
+                            transcribed['text'] = _transcribe_equation_pages(file_data, filename, pdf_text)
+                        except Exception as e:
+                            logging.error(f"Upload {task_id}: equation transcription failed: {e}")
+                transcriber = threading.Thread(target=_run_transcription, daemon=True)
+                transcriber.start()
 
                 # Classify the document once (exam paper / exercise sheet / research
                 # article / lecture notes) so every feature can adapt.
@@ -2391,6 +2513,12 @@ def process_upload_background(task_id, file_data, filename, session_id):
                     # classified: everything below would be stored under the
                     # new document.
                     return
+                transcriber.join(timeout=EQUATION_TRANSCRIBE_WAIT_SECONDS)
+                if transcribed.get('text') and _upload_is_current(session_id, task_id):
+                    pdf_text = transcribed['text']
+                    primary_storage.store_content(session_id, 'pdf_content', pdf_text)
+                    storage_manager.store_content(session_id, 'pdf_content_hash', _pdf_hash(pdf_text))
+                    logging.info(f"Upload {task_id}: equations read from page images added to the text")
                 storage_manager.store_content(session_id, 'calc_doc_type', doc_type)
 
                 # Prepare calculation practice in the background so the first
@@ -2418,7 +2546,8 @@ def process_upload_background(task_id, file_data, filename, session_id):
                                 storage_manager.batch_store([(session_id, 'equation_list', [first_eq]),
                                                              (session_id, 'equation_list_pending', True)])
                                 _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
-                                               lambda t: t.generate_calculation_question_stream_async(specific_equation=first_eq, model=CALC_PREWARM_MODEL))
+                                               lambda t: t.generate_calculation_question_stream_async(specific_equation=first_eq, model=CALC_PREWARM_MODEL),
+                                               finalize=_checked_calc_prewarm(session_id, equation=first_eq))
                                 calc_prewarm_started = True
                                 threading.Thread(target=_extract_full_equation_list_background,
                                                  args=(session_id, pdf_text, doc_type, task_id, first_eq),
@@ -2453,10 +2582,12 @@ def process_upload_background(task_id, file_data, filename, session_id):
                     eq_list = storage_manager.retrieve_content(session_id, 'equation_list')
                     if exam_qs:
                         _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
-                                       lambda t: t._generate_exam_worked_example_stream(t._exam_context(exam_qs[0]), exam_qs[0], model=CALC_PREWARM_MODEL))
+                                       lambda t: t._generate_exam_worked_example_stream(t._exam_context(exam_qs[0]), exam_qs[0], model=CALC_PREWARM_MODEL),
+                                       finalize=_checked_calc_prewarm(session_id, exam_question=exam_qs[0]))
                     elif eq_list and not calc_prewarm_started:
                         _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
-                                       lambda t: t.generate_calculation_question_stream_async(specific_equation=eq_list[0], model=CALC_PREWARM_MODEL))
+                                       lambda t: t.generate_calculation_question_stream_async(specific_equation=eq_list[0], model=CALC_PREWARM_MODEL),
+                                       finalize=_checked_calc_prewarm(session_id, equation=eq_list[0]))
                 except Exception as e:
                     logging.error(f"Upload {task_id}: could not start pre-generation: {e}")
             else:
@@ -2518,6 +2649,9 @@ def upload_file():
 
         # HTML-escape the sanitized name server-side before it appears in any response
         safe_filename = str(escape(secure_name))
+        # The name as the student knows it, for display only (escaped where it
+        # is shown): no path, no control characters, bounded length.
+        display_name = _re.sub(r'[\x00-\x1f\x7f]', '', _re.split(r'[\\/]', original_filename)[-1]).strip()[:120] or secure_name
 
         if file and secure_name and secure_name.lower().endswith(('.pdf', '.pptx', '.docx')):
             
@@ -2545,7 +2679,7 @@ def upload_file():
             done_event = _upload_event(task_id, create=True)
             thread = threading.Thread(
                 target=process_upload_background,
-                args=(task_id, file_data, safe_filename, session_id),
+                args=(task_id, file_data, safe_filename, session_id, display_name),
                 daemon=True
             )
             thread.start()
@@ -2563,7 +2697,7 @@ def upload_file():
                 _UPLOAD_DONE_EVENTS.pop(task_id, None)
 
             # Store sanitized filename in session
-            session['pdf_filename'] = safe_filename
+            session['pdf_filename'] = display_name
             session.pop('doc_type', None)  # new document: the type is re-classified
             session.pop('pdf_hash', None)
             if completed and completed.get('status') == 'complete':

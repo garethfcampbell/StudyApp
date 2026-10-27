@@ -19,7 +19,7 @@ class ImmediateThread:
 
 
 class CalculationStreamTests(unittest.TestCase):
-    def run_stream(self, chunks=(), prewarm=None, failure=False):
+    def run_stream(self, chunks=(), prewarm=None, failure=False, prewarm_partial=None, prewarm_check=None):
         storage = MagicMock()
         state = {
             "calc_doc_type": "lecture_notes",
@@ -33,10 +33,14 @@ class CalculationStreamTests(unittest.TestCase):
             responses = iter([
                 state,
                 {"calculation_prewarm_pending": True},
+                *([{"calculation_prewarm_pending": True, "calculation_prewarm_partial": prewarm_partial}]
+                  if prewarm_partial else []),
                 {"calculation_prewarm": prewarm},
             ])
             storage.batch_retrieve.side_effect = lambda *args: next(responses)
-        storage.retrieve_content.return_value = []
+        storage.retrieve_content.side_effect = (
+            lambda sid, key: prewarm_check if key == "calculation_prewarm_check" else [])
+        self.verify = MagicMock(return_value=None)
         tutor = MagicMock()
         tutor.close_async_clients = AsyncMock()
 
@@ -56,7 +60,7 @@ class CalculationStreamTests(unittest.TestCase):
                 "_make_tutor": lambda *args: tutor,
                 "_wait_for_equation_list": lambda *args: ["Example equation"],
                 "consume_prewarmed": MagicMock(),
-                "start_calculation_verification": MagicMock(return_value=None),
+                "start_calculation_verification": self.verify,
             }.items():
                 stack.enter_context(patch.object(module, name, value))
             stack.enter_context(patch.object(module.threading, "Thread", ImmediateThread))
@@ -91,6 +95,22 @@ class CalculationStreamTests(unittest.TestCase):
         self.assertIn("ready=False pending=True", logs)
         self.assertIn("event=prewarm_served", logs)
         self.assertIn("outcome=complete", logs)
+
+    def test_checked_prewarm_is_not_verified_again_and_keeps_its_answer(self):
+        check = {"status": "ok", "answer": "£41,477.60", "reason": "", "draft": "Cached question"}
+        body, _, _, storage = self.run_stream(prewarm="Cached question", failure=True, prewarm_check=check)
+        self.assertIn('data: "Cached question"', body)
+        self.verify.assert_not_called()
+        self.assertNotIn("verify_task_id", body)
+
+    def test_relayed_draft_corrected_before_serving_is_reset_with_a_notice(self):
+        check = {"status": "corrected", "answer": "8,196.16", "reason": "Arithmetic slip", "draft": "Draft question"}
+        body, _, _, _ = self.run_stream(prewarm="Corrected question", failure=True,
+                                        prewarm_partial="Draft question", prewarm_check=check)
+        self.assertLess(body.index('data: "Draft question"'), body.index('"reset": true'))
+        self.assertLess(body.index('"reset": true'), body.index('data: "Corrected question"'))
+        self.assertIn('"corrected": "Arithmetic slip"', body)
+        self.verify.assert_not_called()
 
     def test_model_failure_returns_control_error_not_a_fake_question(self):
         body, _, logs, storage = self.run_stream(failure=True)

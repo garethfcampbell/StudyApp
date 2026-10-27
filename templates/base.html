@@ -637,6 +637,28 @@
             margin-bottom: 0.75em !important;
         }
 
+        /* On phones, set displayed equations slightly smaller so long lines
+           need fewer breaks (MathJax 4 breaks what is still too wide). */
+        @media (max-width: 576px) {
+            mjx-container[display="true"] {
+                font-size: 92% !important;
+            }
+        }
+
+        /* Long file names wrap inside the upload confirmation box. */
+        .upload-completed h6,
+        #previousFileInfo {
+            overflow-wrap: anywhere;
+        }
+
+        .calc-ask-link {
+            color: #D6000D;
+            text-decoration: none;
+        }
+        .calc-ask-link:hover {
+            text-decoration: underline;
+        }
+
         /* Fallback for math MathJax could not parse: show the raw formula as
            unobtrusive serif-italic text instead of the yellow error box. */
         .math-fallback {
@@ -784,10 +806,15 @@
                         processEscapes: true,
                         processEnvironments: true,
                         // Load packages for advanced math environments
-                        packages: {'[+]': ['ams']}
+                        packages: {'[+]': ['ams']}   // bundled in MathJax 4's tex-svg
                     },
-                    loader: {
-                        load: ['[tex]/ams']
+                    output: {
+                        // MathJax 4: break a displayed equation that is wider
+                        // than the chat column (phones) instead of making it
+                        // scroll sideways. Lines the model already split with
+                        // align* are kept as they are.
+                        displayOverflow: 'linebreak',
+                        linebreaks: { inline: true, width: '100%', lineleading: 0.2 }
                     },
                     options: {
                         // Only skip the standard tags. Don't limit by class.
@@ -798,6 +825,21 @@
                             console.log('MathJax ready');
                             mathJaxLoaded = true;
                             MathJax.startup.defaultReady();
+                            // An align*/array (MathML table) keeps the lines the
+                            // model wrote and scrolls if still too wide: MathJax 4
+                            // breaking a table on a phone can split a name such
+                            // as PV across two lines. Other maths line-breaks.
+                            try {
+                                MathJax.startup.document.inputJax[0].postFilters.add(({data}) => {
+                                    const root = data && data.root;
+                                    if (!root || !root.walkTree) return;
+                                    let table = false;
+                                    root.walkTree(node => { if (node.isKind('mtable')) table = true; });
+                                    if (table) root.attributes.set('overflow', 'scroll');
+                                });
+                            } catch (e) {
+                                console.warn('Could not set table overflow:', e);
+                            }
                             resolve();
                         }
                     }
@@ -805,7 +847,7 @@
                 
                 // Load MathJax script
                 const script = document.createElement('script');
-                script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js';
+                script.src = 'https://cdn.jsdelivr.net/npm/mathjax@4/tex-svg.js';
                 script.async = true;
                 script.onload = () => {
                     // Script loaded, MathJax will call startup.ready when fully initialized

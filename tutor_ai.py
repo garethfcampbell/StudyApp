@@ -2,6 +2,7 @@
 import io
 import os
 import asyncio
+import base64
 import threading
 import json
 import logging
@@ -451,6 +452,22 @@ def _loads_json_lenient(text):
     return value
 
 
+# A line in which a model reports on the app's own checks ("The document's
+# question and table agree with the copied question.", "The supplied reference
+# answer is ...") rather than teaching: never shown to a student.
+_INTERNAL_NOTE_RE = re.compile(
+    r"^[^\n]*\b(copied (?:question|text)|(?:supplied|provided|given) reference answer|reference answer (?:is|was|of)|"
+    r"earlier step)\b[^\n]*\n?", re.I | re.M)
+
+
+def strip_internal_notes(text):
+    """Remove lines that talk about the app's internal checks (see
+    _INTERNAL_NOTE_RE) from a finished calculation question or marking."""
+    if not text:
+        return text
+    return re.sub(r'\n{3,}', '\n\n', _INTERNAL_NOTE_RE.sub('', text))
+
+
 def _strip_code_fences(text):
     """Remove a wrapping markdown code fence (e.g. ```markdown ... ```) that models occasionally add.
 
@@ -499,6 +516,8 @@ class TutorAI:
         - Adapt your teaching style to the student's needs
         - Always base your responses on the provided study material context (lecture notes, an exam paper, a tutorial/homework question sheet, or a research article)
         - If asked about something not in the material, acknowledge this and provide general guidance
+        - If the message has nothing to do with studying finance (sport, celebrities, general trivia, coding help, etc.), do NOT answer it: say in one sentence that you can only help with their finance studies and invite a question about their material
+        - If the conversation shows a calculation CHALLENGE the student has not yet answered, do NOT state its final answer or work it through: explain the idea or the next step they are unsure about and let them do the calculation themselves
         - Use emojis sparingly but appropriately to maintain engagement
 
         CRITICAL FORMATTING REQUIREMENTS FOR CHAT:
@@ -758,7 +777,7 @@ class TutorAI:
         """Grounding clause shared by the essay generation and marking prompts."""
         if self.is_question_set():
             return (
-                "GROUNDING RULE (MOST IMPORTANT): the study material is a past exam paper / question sheet, "
+                f"GROUNDING RULE (MOST IMPORTANT): the study material is {self._material_description().lower()}, "
                 "so it contains questions, not notes. Base everything on the topics its questions test, "
                 "drawing on the standard module knowledge those questions assume, and cite the question "
                 "you are working from, e.g. \"(Question 3)\". Do NOT introduce topics the paper does not "
@@ -781,7 +800,7 @@ class TutorAI:
             return ""
         return (
             "**PLEASE NOTE - CHECK AGAINST YOUR LECTURE NOTES:** this practice is based only on the "
-            "exam paper you uploaded. The app cannot see your lecture notes or the module's model "
+            f"{self._material_noun()} you uploaded. The app cannot see your lecture notes or the module's model "
             "answers, so the suggested answers below draw on general finance knowledge. Refer to your "
             "own lecture notes to confirm that the topics, theories and examples used are consistent "
             "with what has been covered in your module, and prioritise what your lecturer taught.\n\n"
@@ -1429,6 +1448,36 @@ REVISION BRIEF:
                     logging.error(f"{label}: {model} failed on the final attempt: {type(e).__name__}: {e}")
         raise last_error if last_error else RuntimeError(f"{label} failed")
 
+    _EQUATION_PAGE_PROMPT = (
+        "This is page {page} of a university finance document (an exam paper, exercise sheet or "
+        "lecture notes). Its equations were typed with an equation editor, so the text extracted from "
+        "the PDF lost their layout (superscripts, fractions, matrices). Transcribe EVERY equation, "
+        "formula, matrix and table of figures on this page into LaTeX, in reading order. Put the "
+        "question or part label in front of each where the page shows one (e.g. \"Q3 a)\"). Copy every "
+        "number, sign, exponent and subscript exactly as printed; do not simplify, solve, correct or "
+        "add anything. Write inline maths as \\( ... \\), display maths as \\[ ... \\] and matrices with "
+        "bmatrix. If the page has no equations, return an empty transcript.\n\n"
+        "Reply with JSON only: {{\"transcript\": \"<one line per equation>\"}}"
+    )
+
+    async def transcribe_equation_pages_async(self, page_images):
+        """Read the equations on PDF pages whose text layer flattened them.
+        page_images is {page_number: png_bytes}; returns {page_number: LaTeX
+        transcript}. Pages are read in parallel; a page that fails is left out
+        (the flattened text layer is still there)."""
+        async def _one(page, png):
+            try:
+                result = await self._vision_json(self._EQUATION_PAGE_PROMPT.format(page=page),
+                                                 [base64.b64encode(png).decode("ascii")],
+                                                 f"EQUATION PAGE {page}")
+                transcript = str(result.get("transcript") or "").strip()
+                return page, transcript
+            except Exception as e:
+                logging.error(f"EQUATION PAGE {page}: transcription failed: {e}")
+                return page, ""
+        results = await asyncio.gather(*(_one(p, png) for p, png in sorted(page_images.items())))
+        return {page: text for page, text in results if text}
+
     # ---------------- spell-check pass (adapted from the daily infographic pipelines) ----------------
     @staticmethod
     def _image_tiles(image_bytes, cols=2, rows=6, overlap=30, scale=3):
@@ -2053,7 +2102,10 @@ REVISION BRIEF:
         else:
             selective_rule = ("Use 5 to 6 categories, with UP TO 5 concepts per category. Choose the concepts a student must "
                               "know for an exam - leave out restatements and minor variations of the same idea, but make sure "
-                              "every major topic of the material is represented.")
+                              "every major topic of the material is represented. If the material presents formulas, models or "
+                              "indicator settings, ONE of the categories must be \"Key Formulas and Parameters\": give each main "
+                              "formula in words with its standard parameter values, e.g. \"- *MACD:* the 12-day EMA minus the "
+                              "26-day EMA, with a 9-day EMA of the MACD as the signal line.\"")
             continue_rule = "(...continue with categories 4, 5 and, if needed, 6 in the same format...)"
             grouping_rule = "grouped into 5-6 logical categories (5 minimum, 6 maximum, each with 3-5 concepts), numbering the categories in sequence"
         return r"""
@@ -2075,6 +2127,7 @@ Create an executive summary from the study material I provide (lecture notes, an
   * If the material contains LaTeX like $P_t$ or $N_d2$, convert to plain text like "Pt" or "Nd2" (just remove the dollar signs)
   * For Greek letters like $\delta$ or $\alpha$, write out the full word: "delta" or "alpha"
   * Use ONLY plain text to describe all mathematical concepts
+  * Numbers are NOT notation: write figures, percentages and amounts in digits (£800, 8.75%, 3.2 years, a 14-day period), never spelled out in words
 
 ---
 
@@ -2247,7 +2300,8 @@ Would you like to explore any of these topics in more detail?
             - Each bullet point must be on its own line with consistent hyphen formatting
             - Use ONLY plain English words to describe mathematical concepts and symbols (this rule is about formulas and symbols, NOT numbers)
             - NUMBERS ARE ALWAYS DIGITS: write years, percentages, marks, question numbers and counts as digits - "1973", "60-69%", "[15 marks]", "Question 2" - NEVER as words ("nineteen seventy-three" is wrong)
-            - CITATION FORMAT: "Author(s) (Year), Title" with the year in digits, e.g. "Black and Scholes (1973), The Pricing of Options and Corporate Liabilities"
+            - CITATION FORMAT: "Author(s) (Year), Title" with the year in digits, e.g. "Black and Scholes (1973), The Pricing of Options and Corporate Liabilities". Give the title EXACTLY as published - never extend or paraphrase it; if unsure of the exact title, give author(s), year and journal only. Name co-authors in the order the paper lists them (e.g. Miller and Modigliani (1961)). Do NOT put asterisks or italics inside a citation - a colon in a title must not break the formatting
+            - APPROXIMATIONS: when you use a figure from an approximation (e.g. a duration-based price change, a linear estimate), say so and note when it breaks down (e.g. for large yield changes, because of convexity). Do not draw a comparison the material does not support when the items compared differ in more than one respect
             - Always respond in plain text with markdown formatting only
 
             TASK: Run ONE round of essay-question practice, based strictly on the study material provided.
@@ -2473,6 +2527,9 @@ CRITICAL FORMATTING REQUIREMENTS:
 - ONLY USE HYPHENS FOR BULLETS (-) - never use asterisks (*) or dots (•)
 - Each bullet point must be on its own line with consistent hyphen formatting
 - Describe ALL mathematical concepts using ONLY plain English words
+- Numbers are NOT notation: write figures, percentages and amounts in digits (£800, 8.75%, 3.2 years), never spelled out in words
+- APPROXIMATIONS: when you quote a figure the material gets from an approximation (e.g. a duration-based price change, a linear or first-order estimate), say it is an approximation and when it breaks down (e.g. duration overstates the price fall for a large yield rise because it ignores convexity)
+- *Real-world example* must be a genuine example from markets, firms or everyday finance - not a restatement of a question from the material
 - CONCEPT HEADINGS: Each concept heading must be bold, on its own line (NOT a bullet point), numbered with a DIGIT and a period, exactly like: **1. Concept Name**
 - The no-mathematical-notation rule does NOT apply to these heading numbers: you MUST use the digits 1. 2. 3. 4. 5. - NEVER spell them as words (never "One:", "Two:", "Three:")
 
@@ -2642,6 +2699,26 @@ End the overall response with: "Would you like to explore any of these topics in
                 break
         return TutorAI._validate_quiz_questions(objects[:15])
 
+    _QUIZ_FRAME_WORDS = frozenset(
+        "the and for are was were which what does did how why when where who that this these those with from "
+        "following best describes describe statement true false most likely according material lecture notes "
+        "term used refers refer mean means meaning".split())
+
+    @staticmethod
+    def _quiz_words(text):
+        return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+                if (len(w) >= 3 or w.isdigit()) and w not in TutorAI._QUIZ_FRAME_WORDS}
+
+    @staticmethod
+    def _quiz_questions_overlap(a, b):
+        """True when two quiz questions test the same thing: largely the same
+        question wording, or (a mirrored pair) three or more of the same options."""
+        wa, wb = TutorAI._quiz_words(a.get("question")), TutorAI._quiz_words(b.get("question"))
+        if wa and wb and len(wa & wb) / len(wa | wb) >= 0.7:
+            return True
+        norm = lambda opts: {re.sub(r"\W+", " ", o.lower()).strip() for o in opts}
+        return len(norm(a.get("options") or []) & norm(b.get("options") or [])) >= 3
+
     @staticmethod
     def _validate_quiz_questions(questions):
         """Validate/repair parsed quiz question dicts; malformed ones are skipped."""
@@ -2652,6 +2729,7 @@ End the overall response with: "Would you like to explore any of these topics in
             return text.strip()
 
         valid_questions = []
+        positions = None  # balanced correct-answer positions, set from the first valid question
         for i, q in enumerate(questions):
             try:
                 # Check required fields
@@ -2699,14 +2777,35 @@ End the overall response with: "Would you like to explore any of these topics in
                     logging.warning(f"Quiz question {i+1} has empty fields")
                     continue
 
-                # Shuffle the (stripped) options so the model's position bias
-                # (correct answer listed first) never reaches students. The
-                # shuffle is seeded by the question text so the same question
-                # parsed again later (from a growing stream) keeps its order.
                 if correct_answer in options:
                     q["correct_answer"] = correct_answer
-                random.Random(q["question"]).shuffle(options)
-                q["options"] = options
+
+                # A near-duplicate or mirror of an earlier question gives its
+                # answer away: skip it.
+                if any(TutorAI._quiz_questions_overlap(q, earlier) for earlier in valid_questions):
+                    logging.warning(f"Quiz question {i+1} skipped: overlaps an earlier question")
+                    continue
+
+                # Place the correct answer at a balanced position (each of A-D
+                # about equally often) and shuffle the other options, so the
+                # model's position bias never reaches students. Both are seeded
+                # by question text and position in the quiz, so a question
+                # parsed again later (from a growing stream) keeps its order.
+                if positions is None:
+                    # Every run of 4 questions uses each position once.
+                    rng = random.Random(q["question"])
+                    positions = []
+                    for _ in range(4):
+                        block = [0, 1, 2, 3]
+                        rng.shuffle(block)
+                        positions += block
+                others = [opt for opt in options if opt != q["correct_answer"]]
+                if len(others) != 3:
+                    logging.warning(f"Quiz question {i+1} has a repeated option")
+                    continue
+                random.Random(q["question"]).shuffle(others)
+                others.insert(positions[len(valid_questions) % len(positions)], q["correct_answer"])
+                q["options"] = others
 
                 valid_questions.append(q)
             except Exception as question_error:
@@ -2807,6 +2906,11 @@ ANSWER FORMAT REQUIREMENTS:
 - Example: If options are ["Risk increases", "Risk decreases", "No change", "Unknown"], then correct_answer must be one of these exact strings like "Risk increases"
 - All four options MUST be of similar length and detail (within a few words of each other). Do NOT make the correct answer longer, more precise, or more carefully worded than the other options - students spot this pattern. Write every incorrect option with the same level of detail and plausibility as the correct one
 - Vary the position of the correct answer across questions - it must NOT usually be the first option
+
+DISTRACTOR QUALITY (students must not be able to guess the answer from the wording):
+- Each incorrect option must be a plausible misconception a student who half-knows the topic might choose - a real but wrong concept from the material, a reversed relationship, a confused term - never an obviously silly statement
+- Do NOT put absolute words (always, never, all, every, none, guarantees, eliminates, only, completely) in incorrect options unless the correct option is worded with equal certainty; the correct option must not be the only hedged one
+- Each question must test a DIFFERENT fact or idea. Do NOT write mirrored pairs (e.g. "what is a golden cross?" and "what is a death cross?", or support and resistance) and do NOT reuse the same set of options for two questions
 
 Make questions simple and focused on basic concepts. Keep explanations short and informative.
 
@@ -3195,6 +3299,8 @@ Choose ONE equation from the lecture notes that has not been used before."""
             - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
 - CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
 - CRITICAL: Currency — use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
+- Use the currency the material uses for that data (a share priced in dollars in the notes stays in dollars); inside math write a thousands comma as {{,}} (e.g. £2{{,}}500) so it does not render as "2, 500"
+- NEVER put \begin{{align*}} inside \[ \] or \( \) - an align* block stands on its own
             - For the worked examples, you MUST use \begin{{align*}} with proper alignment for each step so that the calculations are clear and easy to follow.
             - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}.
             - For line spacing in align* environments use \\[6pt] between lines.
@@ -3336,7 +3442,7 @@ SPECIFIC QUESTION TO SOLVE (Question {q_id}):
 {q_text}
 
 YOUR TASK:
-1. Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given. First re-read the question's figures and any table it relies on in the DOCUMENT above: the question text was copied out of the document by an earlier step and may have mis-copied a number or a table row. If the two differ, use the document's figures and say so in one line. If the paper provides discount, annuity or other tables, use the paper's tabulated values rather than computing your own.
+1. Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given. First re-read the question's figures and any table it relies on in the DOCUMENT above: the question text was copied out of the document by an earlier step and may have mis-copied a number or a table row. If the two differ, reproduce and use the document's figures. Do this check silently: never mention it, the copied text or whether the two agree - the student only sees the document's question. If the paper provides discount, annuity or other tables, use the paper's tabulated values rather than computing your own.
 2. If the document already includes a solution or answer for this question, cross-check YOUR calculated answer against the PROVIDED solution. If they differ, carefully re-examine both approaches, identify where any error lies (yours or the paper's), and explain the discrepancy to the student.
 3. Then set the student a new challenge using different numbers.
 
@@ -3393,6 +3499,8 @@ FORMATTING REQUIREMENTS:
 - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
 - CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
 - CRITICAL: Currency — use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
+- Use the currency the material uses for that data (a share priced in dollars in the notes stays in dollars); inside math write a thousands comma as {{,}} (e.g. £2{{,}}500) so it does not render as "2, 500"
+- NEVER put \begin{{align*}} inside \[ \] or \( \) - an align* block stands on its own
 - Provide the formatted text directly — no JSON, no code blocks."""
 
     async def _generate_exam_worked_example(self, context_truncated, exam_question, model=None):
@@ -3441,9 +3549,10 @@ FORMATTING REQUIREMENTS:
         reference_block = ""
         if reference_answer:
             reference_block = f"""
-REFERENCE ANSWER (computed independently when the question was checked): {reference_answer}
-Treat this as the expected answer. Recompute it yourself; if your own figure differs from the reference by more than rounding, re-examine your working before marking the student, and say which figure you are marking against.
+PRIVATE REFERENCE ANSWER (computed independently when the question was checked; for your eyes only): {reference_answer}
+Treat this as the expected answer. Recompute it yourself; if your own figure differs from the reference by more than rounding, re-examine your working and mark against the figure your checked working supports. NEVER mention the reference answer, that one was supplied, or any disagreement with it - the student only sees your solution.
 """
+        next_step = ("the next question from your " + self._material_noun()) if self.context else "the next question"
         return rf"""Evaluate the student's answer to the calculation question below, using the study material above for the equation, terminology and conventions.
 
 ORIGINAL CHALLENGE QUESTION (the WORKED EXAMPLE in it shows the equation, conventions and method the student has been taught - use exactly the same ones for the CHALLENGE):
@@ -3460,7 +3569,9 @@ EVALUATION TASKS:
 
 NOTE: The student may provide a numerical answer, a formula, a written explanation of their working, or a combination. Evaluate whatever form of answer they have given.
 
-RESPONSE FORMAT:
+NOT AN ATTEMPT: if the student's message contains no attempt at the CHALLENGE (no figure for its answer, no formula with its values, no working) - for example a question about the method, a request for help, or a message about something else - do NOT mark it, do NOT show the solution and do NOT state the final answer. Instead reply in a few sentences: answer a question about the method or the material briefly (without solving the CHALLENGE), or, if the message has nothing to do with their finance studies, say in one sentence that you can only help with their finance studies and do not answer it. Then give one hint for the first step of the CHALLENGE and ask them to type their answer. Use none of the RESPONSE FORMAT below in that case.
+
+RESPONSE FORMAT (when the student has attempted the CHALLENGE):
 **Step-by-Step Solution:**
 **Step 1:** [Description of first step]
 \begin{{align*}}
@@ -3480,7 +3591,7 @@ RESPONSE FORMAT:
 
 **Feedback:** [Comment on the student's answer]
 
-**To move on to the next set of equations from the lecture notes, just click the Next Question button.**
+**To move on to {next_step}, just click the Next Question button.**
 
 CRITICAL FORMATTING REQUIREMENTS:
 - ALWAYS use \begin{{align*}} environment for ALL step-by-step calculations
@@ -3493,6 +3604,8 @@ CRITICAL FORMATTING REQUIREMENTS:
 - CRITICAL: Inside math, ALWAYS escape percent signs as \% (write 5\%, never 5%) and ampersands as \& — a bare % or & breaks the rendering
 - CRITICAL: In ordinary sentences OUTSIDE math delimiters, write numbers and percentages as plain text (e.g. "a return of 5%", "grows by 12%") — do NOT wrap plain numbers or percentages in \( \); reserve inline math for variables and symbols only
 - CRITICAL: Currency — use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
+- Use the currency the material uses for that data (a share priced in dollars in the notes stays in dollars); inside math write a thousands comma as {{,}} (e.g. £2{{,}}500) so it does not render as "2, 500"
+- NEVER put \begin{{align*}} inside \[ \] or \( \) - an align* block stands on its own
 - For matrices: \begin{{bmatrix}} a & b \\ c & d \end{{bmatrix}}
 - For line spacing in align* environments use \\[6pt] between lines.
 - Use **bold** for section headers and step descriptions
@@ -3616,7 +3729,14 @@ REPLY FORMAT (nothing else):
         except Exception as e:
             logging.error(f"CALC VERIFY: verification call failed, showing draft unverified: {e}")
             return {"status": "unverified", "question": None, "reason": "", "answer": ""}
-        return self._parse_verification(raw)
+        result = self._parse_verification(raw)
+        if result.get("question"):
+            result["question"] = strip_internal_notes(result["question"])
+        elif result.get("status") == "ok" and strip_internal_notes(question_text) != question_text:
+            # A correct draft that talks about the app's own checks: shown
+            # again without those lines (no correction notice).
+            result = dict(result, status="tidied", question=strip_internal_notes(question_text))
+        return result
 
     _ANSWER_LINE_RE = re.compile(r'^\s*\**ANSWER\**\s*:\s*(.+?)\s*$', re.I | re.M)
 

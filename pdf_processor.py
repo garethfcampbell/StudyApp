@@ -42,6 +42,10 @@ def extract_text_from_file(uploaded_file):
         file_extension = filename.lower().split('.')[-1]
         logging.info(f"PDF DEBUG: File extension: {file_extension}")
 
+        # Check the bytes before parsing, so a file that cannot be read gets a
+        # specific reason instead of a parser traceback retried three times.
+        _check_file_signature(uploaded_file, file_extension)
+
         if file_extension == 'pdf':
             logging.info("PDF DEBUG: Processing PDF file")
             return extract_text_from_pdf(uploaded_file)
@@ -61,6 +65,52 @@ def extract_text_from_file(uploaded_file):
         import traceback
         logging.error(f"PDF DEBUG: Traceback: {traceback.format_exc()}")
         raise
+
+class UnreadableDocument(ValueError):
+    """The upload cannot be parsed and retrying will not help; the message is
+    written for the student."""
+
+
+_OLE_SIGNATURE = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
+
+
+def _check_file_signature(uploaded_file, file_extension):
+    """Raise UnreadableDocument for an empty file, an old binary Office file or
+    an encrypted / sensitivity-labelled Office file saved under a .pptx or
+    .docx name, and for a .pdf that does not start with a PDF header."""
+    try:
+        if hasattr(uploaded_file, 'getvalue'):
+            head = uploaded_file.getvalue()[:8]
+            size = len(uploaded_file.getvalue())
+        else:
+            pos = uploaded_file.tell()
+            head = uploaded_file.read(8)
+            uploaded_file.seek(0, 2)
+            size = uploaded_file.tell()
+            uploaded_file.seek(pos)
+    except Exception as e:
+        logging.debug(f"PDF DEBUG: could not inspect the file header: {e}")
+        return
+    if size == 0:
+        raise UnreadableDocument(
+            "The file is empty (0 bytes). If it is stored in a cloud drive, open it once so it "
+            "is downloaded, or re-export it, and try again.")
+    if file_extension in ('pptx', 'docx'):
+        if head.startswith(_OLE_SIGNATURE):
+            raise UnreadableDocument(
+                f"This .{file_extension} file could not be opened. It is either an older binary "
+                f"Office file (.{file_extension[:3]}) saved with a new extension, or it is protected "
+                "by a password or a sensitivity label. Please remove the protection or save a copy "
+                "as a standard .pptx/.docx or as a PDF, and upload that.")
+        if not head.startswith(b"PK\x03\x04"):
+            raise UnreadableDocument(
+                f"This .{file_extension} file is not a readable Office document (it may be corrupt "
+                "or a different file type renamed). Please save a fresh copy or export it to PDF.")
+    elif file_extension == 'pdf' and not head.startswith(b"%PDF"):
+        raise UnreadableDocument(
+            "This file does not look like a PDF (it may be corrupt or a different file type renamed). "
+            "Please export it again and upload the new copy.")
+
 
 def _read_file_bytes(uploaded_file):
     """Return a BytesIO of the file content.

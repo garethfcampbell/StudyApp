@@ -16,7 +16,7 @@ import logging
 import asyncio
 import threading
 import uuid as uuid_module
-from pdf_processor import extract_text_from_file
+from pdf_processor import extract_text_from_file, UnreadableDocument
 from tutor_ai import TutorAI, _equation_text, CALC_PREWARM_MODEL
 from infographic_email import is_email_configured, normalise_email, email_infographic, email_transport
 from database_storage_manager import DatabaseStorageManager as StorageManager
@@ -1371,6 +1371,24 @@ def calculation_stream():
             full_response = ""
             verify_equation = None      # what the question is about, for verification
             verify_exam_question = None
+            error_sent = False
+
+            def _emit(chunk):
+                """Relay a generated chunk. The model helpers retry and fall back
+                themselves and, when every model has failed, yield a plain
+                "having trouble" sentence as if it were text. Before any question
+                text has been sent that sentence is an error, not a question: the
+                page then shows it as one instead of opening the answer box."""
+                nonlocal full_response, error_sent
+                if not full_response and TutorAI.is_failure_text(chunk) \
+                        and not TutorAI.looks_like_calculation_question(chunk):
+                    logging.error("CALC STREAM request=%s event=model_unavailable", request_id)
+                    q.put({'error': chunk.strip(), 'code': 'model_unavailable', 'retryable': False})
+                    error_sent = True
+                    return
+                full_response += chunk
+                q.put(chunk)
+
             try:
                 tutor_ai = _make_tutor(pdf_content, session_id)
                 _storage = StorageManager()
@@ -1458,8 +1476,7 @@ def calculation_stream():
                     logging.info(f"CALCULATION STREAM: Streaming worked example for exam Q{current_q.get('id', current_index+1)} ({current_index + 1}/{len(exam_questions)})")
                     context_truncated = tutor_ai._exam_context(current_q)
                     async for chunk in tutor_ai._generate_exam_worked_example_stream(context_truncated, current_q):
-                        full_response += chunk
-                        q.put(chunk)
+                        _emit(chunk)
 
                 else:
                     # --- LECTURE NOTES PATH (streaming) ---
@@ -1482,10 +1499,9 @@ def calculation_stream():
                     verify_equation = specific_equation
                     logging.info(f"CALCULATION STREAM: Streaming question for equation {current_index + 1}/{len(equation_list)}")
                     async for chunk in tutor_ai.generate_calculation_question_stream_async(specific_equation=specific_equation):
-                        full_response += chunk
-                        q.put(chunk)
+                        _emit(chunk)
 
-                if not full_response:
+                if not full_response and not error_sent:
                     # Nothing reached the student. The model helpers retry and
                     # fall back, so this should not happen; if it does, say so
                     # rather than close the stream with nothing in it.
@@ -1959,12 +1975,18 @@ def process_document_with_fallback(file, max_retries=3):
                 else:
                     return False, None, "No text could be extracted from the file"
                     
+        except UnreadableDocument as e:
+            # Deterministic: an empty, protected or mis-typed file will not
+            # parse on a retry. Report the specific reason at once.
+            logging.warning(f"Document rejected: {e}")
+            return False, None, str(e)
         except Exception:
             logging.exception(f"Document processing attempt {attempt + 1} failed")
             if attempt < max_retries - 1:
                 continue
             else:
-                return False, None, f"Error processing file after {max_retries} attempts. Please try a different file."
+                return False, None, ("The file could not be read. Please check it opens on your computer, "
+                                     "then save a fresh copy or export it to PDF and try again.")
     
     return False, None, "Maximum retries exceeded"
 

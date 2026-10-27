@@ -703,6 +703,10 @@ function addNewMessage(role, content) {
             showUploadProblem('Please upload a PDF, PowerPoint (.pptx) or Word (.docx) file.');
             return;
         }
+        if (file.size === 0) {
+            showUploadProblem('That file is empty (0 bytes). If it lives in a cloud drive, open it once so it is downloaded, or export it again, then try again.');
+            return;
+        }
         if (file.size > UPLOAD_MAX_MB * 1024 * 1024) {
             showUploadProblem(`That file is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is ${UPLOAD_MAX_MB} MB. Please upload a smaller file.`);
             return;

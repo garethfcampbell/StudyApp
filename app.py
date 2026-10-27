@@ -1475,6 +1475,13 @@ def calculation_stream():
                         full_response += chunk
                         q.put(chunk)
 
+                if not full_response:
+                    # Nothing reached the student. The model helpers retry and
+                    # fall back, so this should not happen; if it does, say so
+                    # rather than close the stream with nothing in it.
+                    logging.error("CALCULATION STREAM: generation produced no text")
+                    q.put("I'm having trouble generating a calculation question right now. Please try again in a moment.")
+
             except Exception as e:
                 logging.error(f"CALCULATION STREAM: Error: {e}")
                 import traceback

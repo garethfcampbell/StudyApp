@@ -888,6 +888,28 @@ class TutorAI:
                                                 response_format=None):
         """Streaming variant of _make_async_openai_fallback_call. Yields text chunks.
 
+        A stream that ends without any visible text (an empty completion, a
+        content-filtered answer, a response made only of reasoning) is raised
+        as a retryable error: the caller then retries and falls back exactly as
+        it does for a connection failure, instead of ending the student's
+        stream with nothing in it.
+        """
+        emitted = False
+        async for piece in self._stream_text_chunks(messages, model=model, temperature=temperature,
+                                                    max_tokens=max_tokens, timeout=timeout,
+                                                    reasoning_effort=reasoning_effort,
+                                                    response_format=response_format):
+            emitted = True
+            yield piece
+        if not emitted:
+            logging.warning(f"Streaming ({model}): the stream ended with no visible content")
+            raise _RetryableEmptyResponse(f"{model} streamed no content")
+
+    async def _stream_text_chunks(self, messages, model=MODEL_FALLBACK, temperature=0.7,
+                                  max_tokens=20000, timeout=60, reasoning_effort=None,
+                                  response_format=None):
+        """The raw stream of text chunks for one model call.
+
         A leading markdown code fence (``` or ```lang) is stripped from the
         start of the stream: output is buffered until the first newline when the
         stream begins with a backtick, so consumers never see the fence.
@@ -960,12 +982,15 @@ class TutorAI:
             flushed = _strip_code_fences(lead_buffer)
             if flushed:
                 yield flushed
-        if finish["reason"] == "length":
+        if finish["reason"] == "length" and lead_done:
             # A streamed answer cannot be regenerated once text has reached the
             # student, so say that it stopped early instead of leaving a
-            # truncated answer that reads as complete.
+            # truncated answer that reads as complete. (With no text at all the
+            # caller retries instead, see _make_async_openai_streaming_call.)
             logging.error(f"Streaming ({model}): response cut off by its token budget ({max_tokens})")
             yield TRUNCATION_NOTICE
+        elif finish["reason"] not in (None, "stop", "length"):
+            logging.warning(f"Streaming ({model}): finish_reason={finish['reason']}")
 
     def _stream_with_fallback_for(self, primary, stream_factory, label, failure_message):
         """_stream_with_fallback with a feature-specific first-choice model."""

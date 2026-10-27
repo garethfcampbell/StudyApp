@@ -1341,6 +1341,10 @@ def calculation_stream():
     """Streaming SSE endpoint for calculation question generation (exam & lecture notes)."""
     import queue as queue_mod
 
+    request_id = uuid_module.uuid4().hex
+    started = time.perf_counter()
+    logging.info("CALC STREAM request=%s event=start retry=%s", request_id,
+                 request.headers.get('X-Calculation-Retry') == '1')
     init_session()
 
     session_id = session.get('session_id')
@@ -1377,6 +1381,8 @@ def calculation_stream():
                 if (current_index or 0) == 0:
                     _pw = _storage.batch_retrieve(session_id, ['calculation_prewarm', 'calculation_prewarm_pending'])
                     prewarmed = _pw.get('calculation_prewarm')
+                    logging.info("CALC STREAM request=%s event=prewarm ready=%s pending=%s",
+                                 request_id, bool(prewarmed), bool(_pw.get('calculation_prewarm_pending')))
                     sent = ""
                     if not prewarmed and _pw.get('calculation_prewarm_pending'):
                         deadline = time.time() + PREWARM_WAIT_SECONDS
@@ -1393,6 +1399,8 @@ def calculation_stream():
                                 q.put(KEEPALIVE)
                             await asyncio.sleep(0.5)
                     if prewarmed:
+                        logging.info("CALC STREAM request=%s event=prewarm_served elapsed=%.3f",
+                                     request_id, time.perf_counter() - started)
                         consume_prewarmed(session_id, 'calculation')
                         full_response = prewarmed
                         if exam_questions:
@@ -1410,6 +1418,8 @@ def calculation_stream():
                         # sees two questions in one bubble).
                         q.put({'reset': True})
 
+                logging.info("CALC STREAM request=%s event=live_generation elapsed=%.3f",
+                             request_id, time.perf_counter() - started)
                 # --- Detect document type on first call ---
                 if not doc_type:
                     # The upload job classifies the document a few seconds after
@@ -1476,11 +1486,13 @@ def calculation_stream():
                         q.put(chunk)
 
             except Exception as e:
-                logging.error(f"CALCULATION STREAM: Error: {e}")
+                logging.error("CALC STREAM request=%s event=generation_error type=%s",
+                              request_id, type(e).__name__)
                 import traceback
                 logging.error(traceback.format_exc())
                 if not full_response:
-                    q.put("I'm having trouble generating a calculation question right now. Please try again in a moment.")
+                    q.put({'error': "I'm having trouble generating a calculation question right now. Please try again in a moment.",
+                           'code': 'generation_failed', 'retryable': True})
             finally:
                 # Store the response for calculation answer checking. A failure
                 # notice or a cut-off draft is not a question: it is neither
@@ -1518,32 +1530,60 @@ def calculation_stream():
                     pass
                 q.put(None)
 
-        asyncio.run(_consume())
+        try:
+            asyncio.run(_consume())
+        except Exception:
+            logging.exception("CALC STREAM request=%s event=worker_failed", request_id)
+            q.put({'error': 'Calculation generation stopped unexpectedly. Please try again.',
+                   'code': 'worker_failed', 'retryable': True})
+            q.put(None)
 
     thread = threading.Thread(target=_run_stream, daemon=True)
     thread.start()
 
     def generate():
-        while True:
-            try:
-                chunk = q.get(timeout=SSE_KEEPALIVE_SECONDS)
-            except _queue.Empty:
-                # Nothing from the model yet (it can think for 10-30 s on a long
-                # document before the first token): send an SSE comment so the
-                # proxy does not give up on a response that has sent no bytes.
-                yield ": waiting\n\n"
-                continue
-            if chunk is None:
-                yield f"data: [DONE]\n\n"
-                break
-            if chunk is KEEPALIVE:
-                yield ": waiting\n\n"   # SSE comment: ignored by the page, keeps the connection open
-                continue
-            escaped = json.dumps(chunk)   # text chunks are JSON strings; control messages JSON objects
-            yield f"data: {escaped}\n\n"
+        text_chars = 0
+        first_text = False
+        error_sent = False
+        outcome = 'aborted'
+        try:
+            while True:
+                try:
+                    chunk = q.get(timeout=SSE_KEEPALIVE_SECONDS)
+                except _queue.Empty:
+                    yield ": waiting\n\n"
+                    continue
+                if chunk is None:
+                    if not text_chars and not error_sent:
+                        logging.warning("CALC STREAM request=%s event=empty_response", request_id)
+                        yield 'data: ' + json.dumps({
+                            'error': 'No question text arrived. Please try again.',
+                            'code': 'empty_response', 'retryable': True}) + '\n\n'
+                        error_sent = True
+                    outcome = 'error' if error_sent else 'complete'
+                    yield "data: [DONE]\n\n"
+                    break
+                if chunk is KEEPALIVE:
+                    yield ": waiting\n\n"
+                    continue
+                if isinstance(chunk, dict):
+                    error_sent = error_sent or bool(chunk.get('error'))
+                    if chunk.get('reset'):
+                        text_chars = 0
+                elif isinstance(chunk, str) and chunk.strip():
+                    text_chars += len(chunk)
+                    if not first_text:
+                        first_text = True
+                        logging.info("CALC STREAM request=%s event=first_text elapsed=%.3f",
+                                     request_id, time.perf_counter() - started)
+                yield f"data: {json.dumps(chunk)}\n\n"
+        finally:
+            logging.info("CALC STREAM request=%s event=end outcome=%s text_chars=%s elapsed=%.3f",
+                         request_id, outcome, text_chars, time.perf_counter() - started)
 
     return Response(generate(), mimetype='text/event-stream',
-                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
+                             'X-Calculation-Request-ID': request_id})
 
 @app.route('/summary_stream', methods=['POST'])
 @csrf.exempt

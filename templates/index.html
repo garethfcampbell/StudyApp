@@ -1092,6 +1092,7 @@ function addNewMessage(role, content) {
         
         // Special handling for calculation questions - use streaming SSE
         if (action === 'Calculation questions') {
+            if (calculationStreamActive) return;
             console.log('=== CALCULATION QUESTION STREAMING ===');
             console.log('Starting calculation question generation with streaming...');
             
@@ -1158,15 +1159,29 @@ function addNewMessage(role, content) {
         if (scrollToQuestionStart) scrollToQuestionStart();
     }
 
+    let calculationStreamActive = false;
     async function streamCalculationQuestion(clickedButton) {
+        if (calculationStreamActive) return;
+        calculationStreamActive = true;
+        try {
+            await runCalculationStream(clickedButton, 0);
+        } finally {
+            calculationStreamActive = false;
+        }
+    }
+
+    async function runCalculationStream(clickedButton, attempt) {
         const messagesDiv = document.getElementById('messages');
+        let receivedText = '';
+        let requestId = null;
 
         try {
             const response = await fetch('/calculation_stream', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-Calculation-Retry': String(attempt) },
                 body: JSON.stringify({})
             });
+            requestId = response.headers.get('X-Calculation-Request-ID');
 
             const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('application/json')) {
@@ -1180,6 +1195,9 @@ function addNewMessage(role, content) {
                     btn.classList.remove('processing', 'active');
                 });
                 return;
+            }
+            if (!response.ok || !contentType.includes('text/event-stream')) {
+                throw new Error('Unexpected calculation response');
             }
 
             // SSE streaming — create a message bubble and fill it progressively
@@ -1203,6 +1221,7 @@ function addNewMessage(role, content) {
             messageDiv.appendChild(messageContent);
 
             let verifyTaskId = null;
+            let streamError = null;
             const fullText = await streamSSE(response, {
                 onFirstChunk: () => {
                     // On first chunk, swap progress bar for message bubble
@@ -1210,20 +1229,27 @@ function addNewMessage(role, content) {
                     messagesDiv.appendChild(messageDiv);
                 },
                 render: (text) => {
+                    receivedText = text;
                     messageContent.innerHTML = formatMessageSimplified(text);
                     messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 },
                 onControl: (msg) => {
                     if (msg.verify_task_id) verifyTaskId = msg.verify_task_id;
+                    if (msg.error) streamError = msg;
                 }
             });
 
-            // If no chunks arrived at all, still clean up
-            if (!progressRemoved) {
-                removeProgress();
-                if (!fullText) {
-                    addMessage('assistant', 'No response received. Please try again.');
+            if (!fullText.trim()) {
+                messageDiv.remove();
+                console.warn('Empty calculation stream', { requestId, attempt, code: streamError?.code });
+                if (attempt === 0 && (!streamError || streamError.retryable)) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    return runCalculationStream(clickedButton, 1);
                 }
+                removeProgress();
+                addMessage('assistant', streamError?.error || 'No question text arrived after retrying. Please try again in a moment.');
+                if (clickedButton) clickedButton.classList.remove('processing', 'active');
+                return;
             }
 
             // Scroll back to the START of the question — streaming leaves the
@@ -1272,7 +1298,11 @@ function addNewMessage(role, content) {
             }
 
         } catch (error) {
-            console.error('Stream calculation error:', error);
+            console.error('Stream calculation error:', { requestId, attempt, error });
+            if (attempt === 0 && !receivedText.trim()) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                return runCalculationStream(clickedButton, 1);
+            }
             if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
             const progressIndicator = document.getElementById('progress-indicator');
             if (progressIndicator) progressIndicator.remove();

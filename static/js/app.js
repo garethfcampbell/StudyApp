@@ -454,7 +454,8 @@ class AITutor {
                 }
                 
                 this.setRevisionButtonState(null, null);
-                this.addMessage('assistant', '❌ Quiz generation failed: ' + (data.error || 'Unknown error'));
+                console.error('Quiz generation failed:', data.error);
+                this.addMessage('assistant', 'I could not generate the quiz just now. Please try again in a moment.');
             }
         } catch (error) {
             console.error('Quiz generation start error:', error);
@@ -475,7 +476,7 @@ class AITutor {
             }
             
             this.setRevisionButtonState(null, null);
-            this.addMessage('assistant', '❌ Quiz generation failed: ' + error.message);
+            this.addMessage('assistant', 'I could not generate the quiz just now. Please try again in a moment.');
         }
     }
     
@@ -579,7 +580,8 @@ class AITutor {
                     }
                     
                     this.setRevisionButtonState(null, null);
-                    this.addMessage('assistant', '❌ ' + (data.error || 'Quiz generation failed'));
+                    console.error('Quiz generation failed:', data.error);
+                    this.addMessage('assistant', 'I could not generate the quiz just now. Please try again in a moment.');
                     
                 } else if (data.status === 'pending' || data.status === 'running') {
                     // Task still running, continue polling
@@ -617,7 +619,7 @@ class AITutor {
                     }
                     
                     this.setRevisionButtonState(null, null);
-                    this.addMessage('assistant', '❌ Unknown error occurred during quiz generation');
+                    this.addMessage('assistant', 'I could not generate the quiz just now. Please try again in a moment.');
                 }
             })
             .catch(error => {
@@ -1137,7 +1139,8 @@ class AITutor {
                     messagesDiv.removeChild(progressDiv);
                 }
                 this.setRevisionButtonState(null, null);
-                this.addMessage('assistant', '❌ Infographic generation failed: ' + (data.error || 'Unknown error'));
+                console.error('Infographic generation failed:', data.error);
+                this.addMessage('assistant', 'I could not create the infographic just now. Please try again in a moment.');
             }
         } catch (error) {
             console.error('Infographic generation start error:', error);
@@ -1146,7 +1149,7 @@ class AITutor {
                 messagesDiv.removeChild(progressDiv);
             }
             this.setRevisionButtonState(null, null);
-            this.addMessage('assistant', '❌ Infographic generation failed: ' + error.message);
+            this.addMessage('assistant', 'I could not create the infographic just now. Please try again in a moment.');
         }
     }
 
@@ -1190,7 +1193,8 @@ class AITutor {
                     console.error('✗ Infographic generation failed:', data.error);
                     cleanupProgress();
                     this.setRevisionButtonState(null, null);
-                    this.addMessage('assistant', '❌ ' + (data.error || 'Infographic generation failed'));
+                    console.error('Infographic generation failed:', data.error);
+                    this.addMessage('assistant', 'I could not create the infographic just now. Please try again in a moment.');
 
                 } else if (data.status === 'pending' || data.status === 'running') {
                     if (attempts < maxAttempts) {
@@ -1205,7 +1209,7 @@ class AITutor {
                     console.error('✗ Unknown infographic task status:', data.status);
                     cleanupProgress();
                     this.setRevisionButtonState(null, null);
-                    this.addMessage('assistant', '❌ Unknown error occurred during infographic generation');
+                    this.addMessage('assistant', 'I could not create the infographic just now. Please try again in a moment.');
                 }
             })
             .catch(error => {

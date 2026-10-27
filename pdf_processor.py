@@ -2,8 +2,15 @@ import PyPDF2
 import io
 import re
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from docx import Document as DocxDocument
+from docx.oxml.ns import qn
 import logging
+
+# Placed under the marker of a page/slide that yielded no text, so the
+# model (and anyone reading the context) knows material is missing there.
+NO_TEXT_PAGE_NOTE = ("[No extractable text on this page: it may be an image, a diagram, "
+                     "or a formula rendered as a picture.]")
 
 def extract_text_from_file(uploaded_file):
     """
@@ -110,6 +117,11 @@ def extract_text_from_pdf(uploaded_file):
                     pages_with_text += 1
                     logging.debug(f"PDF DEBUG: Page {page_num + 1} processed successfully")
                 else:
+                    # Keep the page in the sequence with a note, so the model
+                    # knows a slide (often a formula or diagram rendered as a
+                    # picture) exists here and is missing, instead of treating
+                    # the deck as complete.
+                    extracted_text += f"\n--- Page {page_num + 1} ---\n{NO_TEXT_PAGE_NOTE}\n"
                     logging.warning(f"PDF DEBUG: Page {page_num + 1} had no text")
 
             except Exception as e:
@@ -117,6 +129,8 @@ def extract_text_from_pdf(uploaded_file):
                 continue  # Skip this page but continue with others
 
         logging.info(f"PDF DEBUG: Total extracted text length: {len(extracted_text)} ({pages_with_text}/{total_pages} pages had text)")
+        if 0 < pages_with_text < total_pages:
+            logging.warning(f"PDF DEBUG: {total_pages - pages_with_text} of {total_pages} pages had no extractable text (image-only)")
 
         # Aggregate check: if no page yielded any text, the PDF is almost
         # certainly scanned images. Raise a clear message rather than letting
@@ -176,8 +190,32 @@ def extract_text_from_docx(uploaded_file):
         from docx.table import Table
         from docx.text.paragraph import Paragraph
         body = doc.element.body
+
+        # Word records where each page ended when the file was last saved
+        # (w:lastRenderedPageBreak) and explicit page breaks (w:br type=page).
+        # When present they give real page numbers, so the same "--- Page N ---"
+        # markers as PDFs can be emitted: citations work and the calculation
+        # features can select pages instead of truncating the document.
+        def _page_breaks_in(el):
+            n = 0
+            for node in el.iter():
+                if node.tag == qn('w:lastRenderedPageBreak'):
+                    n += 1
+                elif node.tag == qn('w:br') and node.get(qn('w:type')) == 'page':
+                    n += 1
+            return n
+
+        has_breaks = _page_breaks_in(body) > 0
+        page = 1
+        if has_breaks:
+            parts.append(f"--- Page {page} ---")
         for child in body.iterchildren():
             tag = child.tag.rsplit('}', 1)[-1]
+            if has_breaks:
+                breaks = _page_breaks_in(child)
+                if breaks:
+                    page += breaks
+                    parts.append(f"\n--- Page {page} ---")
             if tag == 'p':
                 text = Paragraph(child, doc).text
                 if text.strip():
@@ -186,6 +224,8 @@ def extract_text_from_docx(uploaded_file):
                 parts.extend(_docx_table_lines(Table(child, doc)))
                 parts.append('')
         extracted_text = '\n'.join(parts)
+        if has_breaks:
+            logging.info(f"PDF DEBUG: DOCX has {page} pages from recorded page breaks")
         logging.info(f"PDF DEBUG: DOCX extraction complete, {len(extracted_text)} characters")
         if not extracted_text.strip():
             raise Exception("No text could be extracted from the Word document")
@@ -193,6 +233,28 @@ def extract_text_from_docx(uploaded_file):
     except Exception as e:
         logging.error(f"PDF DEBUG: Error extracting DOCX text: {e}")
         raise Exception(f"Failed to extract text from Word document: {str(e)}")
+
+def _pptx_shape_text(shape):
+    """Text of one shape, including the shapes inside a group (grouped text
+    boxes and equation/diagram labels were previously dropped) and tables."""
+    text = ""
+    try:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            for inner in shape.shapes:
+                text += _pptx_shape_text(inner)
+            return text
+    except Exception:
+        pass
+    if hasattr(shape, "text") and shape.text:
+        text += shape.text + "\n"
+    try:
+        if shape.has_table:
+            for row in shape.table.rows:
+                text += " | ".join(cell.text.strip() for cell in row.cells) + "\n"
+    except Exception:
+        pass
+    return text
+
 
 def extract_text_from_pptx(uploaded_file):
     """
@@ -220,18 +282,15 @@ def extract_text_from_pptx(uploaded_file):
         for slide_num, slide in enumerate(prs.slides):
             extracted_text += f"\n--- Slide {slide_num + 1} ---\n"
 
-            # Extract text from all text-containing shapes
+            slide_text = ""
             for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text:
-                    extracted_text += shape.text + "\n"
-
-                # Handle tables
-                if shape.has_table:
-                    for row in shape.table.rows:
-                        row_text = []
-                        for cell in row.cells:
-                            row_text.append(cell.text.strip())
-                        extracted_text += " | ".join(row_text) + "\n"
+                slide_text += _pptx_shape_text(shape)
+            if slide_text.strip():
+                extracted_text += slide_text
+            else:
+                # Picture-only slide (a diagram, a formula pasted as an image):
+                # say so rather than leaving a silently empty slide.
+                extracted_text += NO_TEXT_PAGE_NOTE + "\n"
 
         # Clean up the text
         extracted_text = clean_text(extracted_text)

@@ -23,9 +23,21 @@ MAX_CONTEXT_CHARS = 320000
 # citable regardless of document length.
 CHAT_CONTEXT_CHARS = 120000
 
-# Answer checking grades a self-contained challenge question; the notes are
-# only needed for terminology, so a small slice suffices.
-ANSWER_CHECK_CONTEXT_CHARS = 20000
+# Calculation questions on a specific equation are sent only the pages/slides
+# where that equation is introduced, explained or applied (plus neighbours and
+# keyword matches), not the whole document: the calc model is the expensive one
+# and its prompt cache is never warm from the other features.
+CALC_CONTEXT_CHARS = 40000
+# Up to this size the whole document is sent (it fits the budget anyway):
+# page selection only ever removes slides, and a slide that defines a
+# convention (compounding, day count, sample vs population) is cheap to keep
+# and expensive to lose. Selection starts above the budget.
+CALC_CONTEXT_WHOLE_DOC_CHARS = CALC_CONTEXT_CHARS
+# Answer checking receives the same pages as the verification of the same
+# question, so on the verification model its document prefix is a cache read.
+ANSWER_CHECK_CONTEXT_CHARS = CALC_CONTEXT_CHARS
+# Most keyword-matched pages added on top of the cited pages and their neighbours.
+CALC_KEYWORD_PAGES = 6
 
 # Page/slide markers emitted by pdf_processor ("--- Page 4 ---", "--- Slide 12 ---").
 _PAGE_MARKER_SPLIT = re.compile(r'(?m)^(?=--- (?:Page|Slide) \d+ ---$)')
@@ -42,7 +54,7 @@ _STOPWORDS = frozenset((
 
 # Primary and fallback model names used across all features.
 MODEL_PRIMARY = "gpt-6-luna"
-MODEL_FALLBACK = "gpt-6-sol"
+MODEL_FALLBACK = "gpt-6.1-terra"
 MODEL_FAST = "gpt-6-luna"
 
 # First-choice model per feature. Generation / condensation features run on the
@@ -52,15 +64,40 @@ MODEL_FAST = "gpt-6-luna"
 SUMMARY_MODEL = MODEL_FAST
 ESSAY_MODEL = MODEL_FAST        # essay-round generation (marking stays on MODEL_PRIMARY)
 QUIZ_MODEL = MODEL_FAST
-CALC_MODEL = "gpt-6.1-sol"      # calculation questions / worked examples
-CALC_CHECK_MODEL = "gpt-6.1-sol"  # calculation answer checking
+# Calculation practice: the FIRST question is pre-generated on the fast model
+# right after upload (paid on every upload, clicked or not, so it is kept
+# cheap); every question generated live on a click - "next question", an exam
+# worked example, or a first click the pre-generation missed - is drafted on
+# the strong model. Every question, whichever model drafted it, is then
+# VERIFIED on the strong model when shown: the verifier recomputes the
+# challenge answer for the marker and rewrites only for a genuine error.
+CALC_PREWARM_MODEL = MODEL_FAST   # pre-generated first question (luna)
+CALC_MODEL = "gpt-6.1-terra"     # live drafts and verification of every draft
+CALC_DRAFT_MODEL = CALC_MODEL     # default model for a live draft
+CALC_CHECK_MODEL = "gpt-6.1-terra"  # calculation answer checking
 EXTRACTION_MODEL = MODEL_FAST   # equation list / exam question extraction
 BRIEF_MODEL = MODEL_FAST        # infographic text brief
 
 
 def _fallback_for(model):
-    """The other model: luna falls back to sol; anything else falls back to luna."""
+    """The other model: luna falls back to terra; anything else falls back to luna."""
     return MODEL_FALLBACK if model == MODEL_PRIMARY else MODEL_PRIMARY
+
+
+def _equation_text(equation):
+    """LaTeX of an extracted equation: entries are dicts (equation/name/variables/
+    pages) since the richer extraction, or plain strings in older sessions."""
+    if isinstance(equation, dict):
+        return str(equation.get('equation') or '')
+    return str(equation or '')
+
+
+def _query_terms(text):
+    """Content words of a query for page scoring. LaTeX commands (\\frac, \\times)
+    and bare symbols are dropped so that equation-heavy text still yields
+    meaningful words (variable names, concept names)."""
+    text = re.sub(r'\\[a-zA-Z]+', ' ', text or '')
+    return set(re.findall(r'[a-z0-9]{3,}', text.lower())) - _STOPWORDS
 
 # How many times the PRIMARY model is attempted (timeouts, connection errors,
 # rate limits, 5xx, empty responses) before a feature falls back to
@@ -80,6 +117,12 @@ QUIZ_REASONING_EFFORT = "medium"
 # condensation: low effort (~40% faster). Essay MARKING keeps the medium default.
 ESSAY_REASONING_EFFORT = "medium"   # essay ROUND generation (low produced a contradictory model answer on an exam paper)
 INFOGRAPHIC_BRIEF_REASONING_EFFORT = "medium"
+# Equation extraction is retrieval, not reasoning: low effort halves its output
+# tokens and time (benchmarked 18.6 s -> 9.4 s on a 48-page deck) with the same
+# list. It runs in two stages after an upload: a first-equation-only call
+# (~5 s) that lets the calculation pre-generation start at once, then the full
+# list, reconciled so index 0 is the equation already pre-generated.
+EXTRACTION_REASONING_EFFORT = "low"
 PRIMARY_RETRY_DELAY = 2  # seconds; multiplied by the attempt number
 
 
@@ -91,14 +134,30 @@ def _model_attempt_order():
 class _RetryableEmptyResponse(ValueError):
     """The API returned no content without a content-filter or length reason."""
 
+
+# Largest output budget a cut-off call is retried with (the budget includes the
+# model's hidden reasoning tokens).
+MAX_OUTPUT_TOKENS_CAP = 32000
+
+# Appended to a streamed answer that the model stopped mid-way because of its
+# token budget (see _make_async_openai_streaming_call).
+TRUNCATION_NOTICE = "\n\n[Response cut short - please ask me to continue, or click the button again]"
+
 # Models in this family do not support system messages (all messages must be
 # combined into a single user message), use max_completion_tokens instead of
 # max_tokens, and reject non-default temperature values.
-NO_SYSTEM_MESSAGE_MODELS = ("gpt-6-sol", "gpt-6.1-sol", "gpt-5", "gpt-5-mini", "gpt-6-luna", "gpt-5.4")
+NO_SYSTEM_MESSAGE_MODELS = ("gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-5", "gpt-5-mini", "gpt-6-luna", "gpt-5.4")
 
 # Reasoning effort applied to every reasoning-model call unless a feature passes
 # its own value explicitly (the calculation features pass "medium" themselves).
 DEFAULT_REASONING_EFFORT = "medium"
+
+# OpenAI Fast mode (service_tier="fast") for every gpt-6-luna call: faster
+# token generation at the fast-mode price. The response reports the tier that
+# actually served the request (the API answers "priority" for fast). The
+# verification model keeps the default tier.
+FAST_MODE_MODELS = (MODEL_PRIMARY, MODEL_FAST)
+FAST_SERVICE_TIER = "fast"
 
 # Lazily-initialized module-level AsyncOpenAI client. TutorAI is constructed
 # per request in app.py, so the client is shared across instances to avoid
@@ -446,9 +505,38 @@ class TutorAI:
                 "because the document is too long to include in full.]\n\n"
                 + tail)
 
-    def _select_relevant_context(self, query, limit=CHAT_CONTEXT_CHARS):
+    # Shown to the model whenever it receives a selection of pages rather than
+    # the whole document, so it never tells a student that something is "not
+    # in your notes" when it is simply on a page it was not given.
+    _SELECTION_NOTE = ("[NOTE: only the pages of the study material most relevant to the "
+                       "task are included below; the document has more pages that are "
+                       "omitted here. If something you need is not in these pages, say that "
+                       "the pages you were given do not cover it - never claim that the "
+                       "notes as a whole do not cover it.]\n\n")
+
+    @staticmethod
+    def _looks_like_data_page(chunk):
+        """A page that is mostly numbers or that is headed as a table, formula
+        sheet or appendix: present-value tables and formula sheets rarely share
+        words with the question that relies on them, so keyword scoring would
+        drop them."""
+        body = chunk.split('\n', 1)[1] if '\n' in chunk else chunk
+        head = body.strip()[:160].lower()
+        if re.search(r'\b(table|tables|formula|formulae|formulas|appendix|annuity|discount factor)\b', head):
+            return True
+        stripped = re.sub(r'\s', '', body)
+        if len(stripped) < 80:
+            return False
+        digits = sum(ch.isdigit() or ch in '.%-' for ch in stripped)
+        return digits / len(stripped) >= 0.35
+
+    def _select_relevant_context(self, query, limit=CHAT_CONTEXT_CHARS, select_above=None,
+                                 must_keep=None):
         """Context for chat: the whole document when it fits, otherwise the
-        pages/slides most relevant to the query.
+        pages/slides most relevant to the query. `select_above` lowers the size
+        from which selection applies, while `limit` stays the cap on what is
+        returned. `must_keep(chunk)` marks pages that are kept regardless of
+        their score (data tables, formula sheets), budget permitting.
 
         Pages are scored by occurrences of the query's content words, then
         packed in document order (markers intact, so citations stay valid).
@@ -456,12 +544,12 @@ class TutorAI:
         Falls back to head+tail truncation when there are no page markers or
         the query has no usable content words.
         """
-        if len(self.context) <= limit:
+        if len(self.context) <= (limit if select_above is None else min(limit, select_above)):
             return self.context
         chunks = [c for c in _PAGE_MARKER_SPLIT.split(self.context) if c.strip()]
         if len(chunks) < 2:
             return self._get_truncated_context(limit)
-        terms = set(re.findall(r'[a-z0-9]{3,}', (query or '').lower())) - _STOPWORDS
+        terms = _query_terms(query)
         if not terms:
             return self._get_truncated_context(limit)
 
@@ -472,6 +560,14 @@ class TutorAI:
 
         keep = {0}
         used = len(chunks[0])
+        if must_keep:
+            for idx, chunk in enumerate(chunks):
+                if idx in keep or not must_keep(chunk):
+                    continue
+                if used + len(chunks[idx]) > limit:
+                    continue
+                keep.add(idx)
+                used += len(chunks[idx])
         for score, idx in sorted(scored, key=lambda s: (-s[0], s[1])):
             if score <= 0 or idx in keep:
                 continue
@@ -482,21 +578,117 @@ class TutorAI:
 
         if len(keep) < 2:
             # Nothing scored: the question doesn't match page text
+            logging.warning(f"CHAT CONTEXT: no page matched the query; using head+tail truncation ({len(self.context)} chars)")
             return self._get_truncated_context(limit)
         logging.info(f"CHAT CONTEXT: selected {len(keep)}/{len(chunks)} pages ({used} chars) for query")
-        return ("[NOTE: only the pages of the study material most relevant to the "
-                "student's question are included below; the document has more pages "
-                "that are omitted here.]\n\n"
-                + "\n".join(chunks[i] for i in sorted(keep)))
+        return self._SELECTION_NOTE + "\n".join(chunks[i] for i in sorted(keep))
 
-    def _build_feature_messages(self, persona, prompt, guidance=None):
+    def _equation_context(self, equation, limit=CALC_CONTEXT_CHARS):
+        """Context for a calculation question on ONE equation: the pages/slides
+        where the extraction step saw it introduced, derived, explained or
+        applied, their immediate neighbours (an equation is often explained over
+        several consecutive slides) and any other page that mentions its name
+        or variables - packed in document order up to `limit`. The whole
+        document is used when it already fits. Falls back to head+tail
+        truncation when the text has no page markers."""
+        if len(self.context) <= min(limit, CALC_CONTEXT_WHOLE_DOC_CHARS):
+            return self.context
+        chunks = [c for c in _PAGE_MARKER_SPLIT.split(self.context) if c.strip()]
+        if len(chunks) < 2:
+            logging.warning(f"CALC CONTEXT: no page markers; using head+tail truncation ({len(self.context)} chars)")
+            return self._get_truncated_context(limit)
+
+        # page/slide number -> chunk index (chunks start with their marker)
+        by_number = {}
+        for idx, chunk in enumerate(chunks):
+            m = re.match(r'--- (?:Page|Slide) (\d+) ---', chunk.strip())
+            if m:
+                by_number.setdefault(int(m.group(1)), idx)
+
+        cited = set()
+        query_parts = [_equation_text(equation)]
+        if isinstance(equation, dict):
+            query_parts += [str(equation.get('name') or ''), str(equation.get('variables') or '')]
+            # The page list is the extraction model's reading of the markers;
+            # a cited page is trusted only if it mentions the equation (a name
+            # word or a variable's meaning), so a mis-read number does not pull
+            # in an unrelated slide in place of the right one.
+            check_terms = _query_terms(' '.join(query_parts[1:]))
+            for n in equation.get('pages') or []:
+                try:
+                    n = int(n)
+                except (TypeError, ValueError):
+                    continue
+                if n not in by_number:
+                    continue
+                low = chunks[by_number[n]].lower()
+                if check_terms and not any(t in low for t in check_terms):
+                    logging.warning(f"CALC CONTEXT: cited page {n} does not mention the equation; ignoring it")
+                    continue
+                cited.add(by_number[n])
+        neighbours = {i + d for i in cited for d in (-1, 1) if 0 <= i + d < len(chunks)} - cited
+
+        # Keyword pages must be selective: on a single-topic deck generic words
+        # ("bond", "price") appear on nearly every slide, so a page qualifies
+        # only when it mentions the equation's name as a phrase or covers most
+        # of the distinct query terms, and at most CALC_KEYWORD_PAGES are kept.
+        name = (str(equation.get('name') or '').strip().lower()
+                if isinstance(equation, dict) else '')
+        terms = _query_terms(' '.join(query_parts))
+        scored = []
+        for idx, chunk in enumerate(chunks):
+            if idx in cited or idx in neighbours:
+                continue
+            low = chunk.lower()
+            present = sum(1 for t in terms if t in low)
+            named = bool(name) and name in low
+            if named or (len(terms) >= 3 and present >= 0.6 * len(terms)):
+                scored.append((present + (len(terms) if named else 0), idx))
+        scored = sorted(scored, key=lambda s: (-s[0], s[1]))[:CALC_KEYWORD_PAGES]
+
+        # Priority: cited pages, then their neighbours, then keyword matches.
+        ordered = sorted(cited) + sorted(neighbours) + [idx for _, idx in scored]
+        keep, used = set(), 0
+        for idx in ordered:
+            if used + len(chunks[idx]) > limit:
+                if idx in cited:
+                    continue  # try the remaining cited pages, they matter most
+                break
+            keep.add(idx)
+            used += len(chunks[idx])
+
+        if not keep:
+            logging.warning(f"CALC CONTEXT: no cited, neighbouring or keyword page found for "
+                            f"'{(equation.get('name') if isinstance(equation, dict) else '') or _equation_text(equation)[:40]}'; "
+                            f"using head+tail truncation")
+            return self._get_truncated_context(limit)
+        logging.info(f"CALC CONTEXT: {len(keep)}/{len(chunks)} pages ({used} chars): "
+                     f"{len(cited & keep)} cited, {len(neighbours & keep)} neighbours, "
+                     f"{len(keep - cited - neighbours)} keyword matches")
+        return self._SELECTION_NOTE + "\n".join(chunks[i] for i in sorted(keep))
+
+    def _exam_context(self, exam_question, limit=CALC_CONTEXT_CHARS):
+        """Context for a worked example of one exam question: the whole paper
+        when it fits, otherwise the pages most relevant to the question text
+        plus any data/table/formula pages (kept regardless of keyword score)."""
+        q_text = exam_question.get("question", "") if isinstance(exam_question, dict) else str(exam_question)
+        return self._select_relevant_context(q_text, limit, select_above=CALC_CONTEXT_WHOLE_DOC_CHARS,
+                                             must_keep=self._looks_like_data_page)
+
+    def _build_feature_messages(self, persona, prompt, guidance=None, context=None):
         """Build the standard system+user message pair for a document feature.
-        `guidance` overrides the material-type guidance (pass "" to omit it)."""
-        truncated_context = self._get_truncated_context()
+        `guidance` overrides the material-type guidance (pass "" to omit it);
+        `context` overrides the document text (the calculation features pass
+        their page-focused slice, which equals the whole document whenever it
+        fits the budget)."""
+        truncated_context = self._get_truncated_context() if context is None else context
         material_guidance = self._material_guidance() if guidance is None else guidance
-        # The document goes FIRST so every feature's prompt shares the same long
-        # prefix: OpenAI prompt caching then bills those input tokens at the
-        # cached rate (about a tenth) for later features on the same document.
+        # The document goes FIRST, before anything feature-specific, so every
+        # feature's prompt shares the same long prefix: OpenAI prompt caching
+        # then bills those input tokens at the cached rate (a tenth, or a
+        # twentieth on the gpt-6.1 models) for later calls on the same document
+        # and model. The persona and task text follow the document; models
+        # attend well to the end of a prompt, so the task loses nothing there.
         return [
             {"role": "system", "content": f"{self._material_label()}:\n{truncated_context}\n\n{persona}\n\n{material_guidance}".rstrip()},
             {"role": "user", "content": prompt},
@@ -590,6 +782,8 @@ class TutorAI:
                 # reasoning models reject non-default temperature values.
             }
             api_args["reasoning_effort"] = reasoning_effort or DEFAULT_REASONING_EFFORT
+            if model in FAST_MODE_MODELS:
+                api_args["service_tier"] = FAST_SERVICE_TIER
         else:
             # Regular OpenAI models (gpt-4o-mini, etc.)
             api_args = {
@@ -620,7 +814,10 @@ class TutorAI:
         # (4xx) and content filtering are never retried.
         attempts = PRIMARY_MAX_ATTEMPTS if model in (MODEL_PRIMARY, MODEL_FAST) else 1
         last_error = None
-        for attempt in range(1, attempts + 1):
+        budget_grown = False
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
             attempt_timeout = min(timeout * (1 + 0.5 * (attempt - 1)), 300)
             reason = None
             try:
@@ -630,10 +827,24 @@ class TutorAI:
                 )
 
                 content = response.choices[0].message.content
-                logging.debug(f"Async OpenAI response: finish_reason={response.choices[0].finish_reason}, content_length={len(content) if content else 0}")
+                finish_reason = response.choices[0].finish_reason
+                logging.debug(f"Async OpenAI response: finish_reason={finish_reason}, content_length={len(content) if content else 0}, "
+                              f"service_tier={getattr(response, 'service_tier', None)}")
+
+                if finish_reason == "length" and not budget_grown:
+                    # The budget covers the hidden reasoning tokens too, so a
+                    # long worked example can be cut off mid-step. Retry once
+                    # with a doubled budget rather than returning a partial
+                    # answer that would be shown (and marked) as complete.
+                    budget_grown = True
+                    key = "max_completion_tokens" if "max_completion_tokens" in api_args else "max_tokens"
+                    api_args[key] = min(int(api_args[key]) * 2, MAX_OUTPUT_TOKENS_CAP)
+                    logging.warning(f"Async OpenAI call to {model} was cut off by its token budget; "
+                                    f"retrying once with {key}={api_args[key]}")
+                    attempt -= 1  # this retry does not count against the attempts
+                    continue
 
                 if not content or not content.strip():
-                    finish_reason = response.choices[0].finish_reason
                     logging.error(f"Async OpenAI returned an empty response. Finish reason: {finish_reason}")
                     if finish_reason == "content_filter":
                         raise ValueError("Content was filtered by AI safety systems. Please try generating a different question.")
@@ -641,6 +852,8 @@ class TutorAI:
                         raise ValueError("Response was truncated due to length limits. Please try again.")
                     raise _RetryableEmptyResponse("Async OpenAI service returned an empty response.")
 
+                if finish_reason == "length":
+                    logging.error(f"Async OpenAI call to {model} still cut off after growing the budget; returning the partial text")
                 if attempt > 1:
                     logging.info(f"Async OpenAI call to {model} succeeded on attempt {attempt}/{attempts}")
                 return content
@@ -689,6 +902,8 @@ class TutorAI:
             timeout=timeout
         )
 
+        finish = {"reason": None}
+
         async def _guarded(raw_stream):
             """Yield chunks; once the model has sent a finish_reason the answer is
             complete, so a transport error while the connection closes must not
@@ -698,6 +913,7 @@ class TutorAI:
                 async for chunk in raw_stream:
                     if chunk.choices and chunk.choices[0].finish_reason:
                         finished = True
+                        finish["reason"] = chunk.choices[0].finish_reason
                     yield chunk
             except Exception as e:
                 if finished:
@@ -744,6 +960,12 @@ class TutorAI:
             flushed = _strip_code_fences(lead_buffer)
             if flushed:
                 yield flushed
+        if finish["reason"] == "length":
+            # A streamed answer cannot be regenerated once text has reached the
+            # student, so say that it stopped early instead of leaving a
+            # truncated answer that reads as complete.
+            logging.error(f"Streaming ({model}): response cut off by its token budget ({max_tokens})")
+            yield TRUNCATION_NOTICE
 
     def _stream_with_fallback_for(self, primary, stream_factory, label, failure_message):
         """_stream_with_fallback with a feature-specific first-choice model."""
@@ -825,8 +1047,7 @@ class TutorAI:
         """Condense the ENTIRE lecture into a revision brief that fits the
         images API prompt budget, so the infographic covers the whole lecture
         rather than just whatever survives a head/tail truncation."""
-        full_context = self._get_truncated_context()
-        summary_prompt = rf"""Condense the following uploaded university material (lecture slides, notes, a test/exam paper, a tutorial/exercise/homework question sheet, or an academic research article) into a revision brief that will be handed to an image-generation model to design a one-page revision infographic.
+        summary_prompt = rf"""Condense the uploaded university material above (lecture slides, notes, a test/exam paper, a tutorial/exercise/homework question sheet, or an academic research article) into a revision brief that will be handed to an image-generation model to design a one-page revision infographic.
 
 STRICT REQUIREMENTS:
 - The brief MUST be under {char_limit} characters in total.
@@ -846,9 +1067,9 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
 - Use ONLY information that actually appears in the uploaded material - no outside knowledge.
 - VISUAL suggestions must also come only from what the material discusses - do not suggest imagery for topics it does not cover.
 
-{self._infographic_material_note()}UPLOADED MATERIAL:
-{full_context}"""
-        messages = [{"role": "user", "content": summary_prompt}]
+"""
+        messages = self._build_feature_messages(self.BRIEF_PERSONA, summary_prompt,
+                                                guidance=self._infographic_material_note())
 
         try:
             logging.info(f"INFOGRAPHIC: Summarizing lecture with {BRIEF_MODEL} for the image prompt...")
@@ -866,7 +1087,10 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
         summary = summary.strip()
         if len(summary) > char_limit:
             logging.warning(f"INFOGRAPHIC: Summary overshot the {char_limit}-char budget ({len(summary)} chars); trimming")
-            summary = summary[:char_limit]
+            # Cut at the last complete line, never mid-line: a FORMULA line cut
+            # in half would be typeset (and then "verified") as a wrong formula.
+            cut = summary.rfind("\n", 0, char_limit)
+            summary = summary[:cut if cut > char_limit // 2 else char_limit].rstrip()
         logging.info(f"INFOGRAPHIC: Lecture condensed to {len(summary)} chars for the image prompt")
         return summary
 
@@ -980,6 +1204,13 @@ THIS IS A REVISION RECORD, NOT A WORKSHEET (MOST IMPORTANT):
             "all section headings, one for all bullet text, one for formula "
             "callouts. Dark charcoal text on white, left-aligned, generous line "
             "spacing, no drop shadows, outlines, gradients or effects on text.\n"
+            "- RENDERING: every fill is a flat, vector-style solid colour, rendered "
+            "perfectly clean like a printed poster or a PDF export - no grain, film "
+            "noise, speckle, paper texture, dithering, compression artefacts, blur or "
+            "soft cloudiness anywhere on the page, and no halo, glow, fringe or "
+            "off-colour ring of pixels around text, lines, boxes or card edges: the "
+            "colour touching each letter is exactly the card's background colour, and "
+            "each card's tint is one uniform value from edge to edge.\n"
             "- Every word must be spelled correctly, crisply rendered and readable.\n"
             "- Include every section of the brief, but let visuals carry the meaning "
             "wherever they can replace words.\n\n"
@@ -1110,6 +1341,8 @@ REVISION BRIEF:
                     "response_format": {"type": "json_object"},
                     "reasoning_effort": DEFAULT_REASONING_EFFORT,
                 }
+                if model in FAST_MODE_MODELS:
+                    api_args["service_tier"] = FAST_SERVICE_TIER
                 response = await asyncio.wait_for(client.chat.completions.create(**api_args), timeout=180)
                 content_text = (response.choices[0].message.content or "").strip()
                 result = json.loads(content_text)
@@ -1682,7 +1915,7 @@ REVISION BRIEF:
 
         except Exception as e:
             logging.error(f"ASYNC SUMMARY: Critical error in async summary generation: {e}")
-            return f"Critical error in summary generation: {str(e)}"
+            return "I'm having trouble generating a summary right now. Please try again in a moment."
 
     async def generate_cheat_sheet_stream_async(self):
         """Streaming version of generate_cheat_sheet_async. Yields text chunks."""
@@ -1710,7 +1943,7 @@ REVISION BRIEF:
                 yield chunk
         except Exception as e:
             logging.error(f"STREAM SUMMARY: Critical error: {e}")
-            yield f"Critical error in summary generation: {str(e)}"
+            yield "I'm having trouble generating a summary right now. Please try again in a moment."
 
     def _get_summary_prompt(self):
         """Return the summary/cheat sheet prompt text (single source for streaming and non-streaming).
@@ -1862,7 +2095,7 @@ Would you like to explore any of these topics in more detail?
 
         except Exception as e:
             logging.error(f"ASYNC ESSAY: Critical error in async essay generation: {e}")
-            return f"Critical error in essay generation: {str(e)}"
+            return "I'm having trouble generating an essay question right now. Please try again in a moment."
 
     async def generate_essay_question_stream_async(self, used_questions=None):
         """Streaming version of generate_essay_question_async. Yields text chunks."""
@@ -1891,7 +2124,7 @@ Would you like to explore any of these topics in more detail?
                 yield chunk
         except Exception as e:
             logging.error(f"STREAM ESSAY: Critical error: {e}")
-            yield f"Critical error in essay generation: {str(e)}"
+            yield "I'm having trouble generating an essay question right now. Please try again in a moment."
 
     @staticmethod
     def essay_round_is_complete(text):
@@ -2021,10 +2254,7 @@ Write your answer in the box below (aim for 300-500 words - bullet points are fi
 
     def _get_essay_check_prompt(self, context_truncated, essay_round_text, user_answer):
         """Prompt for marking the student's answer to the question set in the last essay round."""
-        return rf"""You are an experienced QUB Finance examiner marking a student's short qualitative exam answer. Be encouraging but honest and specific.
-
-STUDY MATERIAL (the module content the question is based on):
-{context_truncated}
+        return rf"""Mark the student's short qualitative exam answer below against the study material above (the module content the question is based on). Be encouraging but honest and specific.
 
 THE PRACTICE ROUND SHOWN TO THE STUDENT (the question they were asked is the italic line under the "YOUR QUESTION" label):
 {essay_round_text}
@@ -2094,13 +2324,26 @@ CONTENT RULES (never print these):
 - To reach the next band: 2-3 bullets of additional literature - foundational peer-reviewed journal articles (author(s), year, title, journal), NOT textbooks - that would strengthen the answer, each with the point it supports; then 1 bullet encouraging the student to search Google Scholar for recent academic work on the topic, with a specific search phrase; then 2-3 bullets of real-world examples NOT already used in the study material (additional cases the lecturer did not cover), each with how to use it; then 1 bullet with the single most important structural or analytical improvement.
 - The closing sentence ("Click **Next Question** ...") is printed word for word."""
 
+    _YOUR_QUESTION_RE = re.compile(r"YOUR QUESTION:?\**\s*\n*\s*(.+)")
+
+    def _essay_marking_context(self, essay_round_text, user_answer):
+        """The material the marker reads: the whole document when it fits the
+        chat budget, otherwise the pages most relevant to the question set and
+        the student's answer. (A head-and-tail slice would leave the marker
+        blind to the middle slides the question is usually about.)"""
+        m = self._YOUR_QUESTION_RE.search(essay_round_text or "")
+        question = m.group(1).strip().strip('*_ ') if m else ""
+        query = f"{question} {(user_answer or '')[:3000]}"
+        return self._select_relevant_context(query, CHAT_CONTEXT_CHARS)
+
     async def check_essay_answer_stream_async(self, essay_round_text, user_answer):
         """Stream marking feedback for the student's essay answer (mirrors the calculation answer check)."""
         if not self.context:
             yield "No study material available to mark the answer against."
             return
-        prompt = self._get_essay_check_prompt(self._get_truncated_context(ANSWER_CHECK_CONTEXT_CHARS), essay_round_text, user_answer)
-        messages = [{"role": "user", "content": prompt}]
+        marking_context = self._essay_marking_context(essay_round_text, user_answer)
+        prompt = self._get_essay_check_prompt(marking_context, essay_round_text, user_answer)
+        messages = self._build_feature_messages(self.ESSAY_MARK_PERSONA, prompt, guidance="", context=marking_context)
 
         def factory(model):
             return self._make_async_openai_streaming_call(
@@ -2116,7 +2359,7 @@ CONTENT RULES (never print these):
                 yield chunk
         except Exception as e:
             logging.error(f"ESSAY_ANSWER_STREAM: Critical error: {e}")
-            yield f"Critical error while marking the answer: {str(e)}"
+            yield "I'm having trouble marking your answer right now. Please try again in a moment."
 
     async def explain_key_concepts_stream_async(self):
         """Streaming version of explain_key_concepts_async. Yields text chunks."""
@@ -2143,7 +2386,7 @@ CONTENT RULES (never print these):
                 yield chunk
         except Exception as e:
             logging.error(f"STREAM KEY CONCEPTS: Critical error: {e}")
-            yield f"Critical error in key concepts explanation: {str(e)}"
+            yield "I'm having trouble explaining the key concepts right now. Please try again in a moment."
 
     def _get_key_concepts_prompt(self):
         """Return the key concepts prompt text (single source for streaming and non-streaming)."""
@@ -2256,7 +2499,7 @@ End the overall response with: "Would you like to explore any of these topics in
 
         except Exception as e:
             logging.error(f"ASYNC KEY CONCEPTS: Critical error in async key concepts explanation: {e}")
-            return f"Critical error in key concepts explanation: {str(e)}"
+            return "I'm having trouble explaining the key concepts right now. Please try again in a moment."
 
     @staticmethod
     def _parse_and_validate_quiz(content):
@@ -2412,8 +2655,7 @@ End the overall response with: "Would you like to explore any of these topics in
 
         try:
             context_truncated = self._get_truncated_context()
-            prompt = self._get_quiz_prompt(context_truncated)
-            messages = [{"role": "user", "content": prompt}]
+            messages = self._quiz_messages()
 
             # Try the primary model
             try:
@@ -2463,13 +2705,15 @@ End the overall response with: "Would you like to explore any of these topics in
             logging.error(f"ASYNC QUIZ: Critical error in async quiz generation: {e}")
             return []
 
-    def _get_quiz_prompt(self, context_truncated=None):
-        """The multiple-choice quiz prompt (shared by the whole and streaming generators)."""
-        if context_truncated is None:
-            context_truncated = self._get_truncated_context()
-        return rf"""Based on this study material, create exactly 15 simple multiple choice questions about the key concepts. Do NOT include any mathematical equations or formulas.
+    QUIZ_PERSONA = "You are an expert at writing multiple-choice retrieval questions from study material."
 
-{self._material_guidance()}{context_truncated}
+    def _quiz_messages(self):
+        """Document-first messages for the quiz (shared prefix with the other features)."""
+        return self._build_feature_messages(self.QUIZ_PERSONA, self._get_quiz_prompt())
+
+    def _get_quiz_prompt(self):
+        """The multiple-choice quiz task (the study material precedes it in the system message)."""
+        return rf"""Based on the study material above, create exactly 15 simple multiple choice questions about the key concepts. Do NOT include any mathematical equations or formulas.
 
 CRITICAL INSTRUCTIONS:
 1. Your response must start immediately with {{ and end with }} - NO other characters
@@ -2521,7 +2765,7 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
         if not self.context:
             return
         try:
-            messages = [{"role": "user", "content": self._get_quiz_prompt()}]
+            messages = self._quiz_messages()
 
             def factory(model):
                 return self._make_async_openai_streaming_call(
@@ -2544,7 +2788,16 @@ RESPONSE FORMAT: Start your response with {{ immediately - no whitespace, no tex
             return "lecture_notes"
 
         try:
-            sample = self.context[:8000]
+            # Head, middle and tail of the document: a deck that opens with a
+            # cover page of tutorial questions, or a paper whose rubric is on the
+            # last page, is misclassified from the first 8k characters alone.
+            text = self.context
+            if len(text) <= 8000:
+                sample = text
+            else:
+                mid = len(text) // 2
+                sample = (text[:5000] + "\n\n[...]\n\n" + text[mid - 1000:mid + 1000]
+                          + "\n\n[...]\n\n" + text[-1000:])
             prompt = f"""Classify this document as EXACTLY ONE of "exam_paper", "exercise_set", "research_article" or "lecture_notes".
 
 exam_paper: a formal examination or class test. It contains numbered questions asking students to
@@ -2610,16 +2863,12 @@ lecture_notes"""
         try:
             context_truncated = self._get_truncated_context()
 
-            prompt = f"""You are analysing a {self._material_noun()} to extract each individual calculation question.
-
-DOCUMENT ({self._material_label()}):
-{context_truncated}
-
-TASK: Extract every calculation question from this document as a list of self-contained question objects.
+            prompt = f"""TASK: Extract every calculation question from the {self._material_noun()} above as a list of self-contained question objects.
 
 Rules:
 - Include EVERY question and sub-question that requires a numerical calculation (e.g. 1a, 1b, 2a, 2b, 2c etc.).
 - Preserve the EXACT wording, numbers, and data from the document — do not alter, summarise, or rephrase.
+- The text was extracted from a PDF or Word file, so a data table may appear with its columns run together or its rows out of order: reconstruct each table carefully, keeping every figure with the row and column label it belongs to, and include it in full in every question that uses it.
 - Each entry must be completely self-contained: include any shared data, tables, or context from the parent question that the sub-question depends on so it can be understood in isolation.
 - Preserve the original question ordering.
 - Exclude purely discursive questions that ask students to "explain", "discuss", or "describe" without any calculation.
@@ -2632,7 +2881,9 @@ Example output format:
   {{"id": "1b", "question": "Using the same bond from Question 1a (face value £1,000, coupon 5%)... Calculate the yield to maturity if the bond is trading at £950. [8 marks]"}}
 ]"""
 
-            messages = [{"role": "user", "content": prompt}]
+            messages = self._build_feature_messages(
+                f"You are analysing the {self._material_noun()} above to extract each individual calculation question.",
+                prompt, guidance="")
 
             for model in (EXTRACTION_MODEL, _fallback_for(EXTRACTION_MODEL)):
                 try:
@@ -2653,6 +2904,122 @@ Example output format:
             logging.error(f"extract_exam_questions_async failed: {e}")
             return []
 
+    async def extract_first_equation_async(self):
+        """Stage one of the equation extraction: only the FIRST main computable
+        equation, with name, variables and pages, so the calculation
+        pre-generation can start ~5 s after upload instead of waiting for the
+        full list. Returns one dict or None."""
+        if not self.context:
+            return None
+        try:
+            context_truncated = self._get_truncated_context()
+            prompt = rf"""TASK: Find the FIRST main, computable equation that appears in the notes above, reading from top to bottom: the first principal formula a student must be able to apply in an exam (a student could substitute numbers and calculate an answer). Skip notation definitions, trivial rearrangements, identities and purely conceptual definitions.
+TEXT QUALITY: the notes were extracted from a PDF or slides, so exponents, subscripts, fractions and summation limits may have been flattened (e.g. (1+r)^t may appear as (1+r)t or 1+rt). Reconstruct the standard form of the named equation; do not reproduce a flattened artefact as if it were the formula.
+
+Give: "equation" (standard LaTeX), "name" (the short name the notes use for it), "variables" (one line per symbol: meaning and units, as the notes define them), and "pages" (the numbers of ALL the pages/slides where this equation is introduced, derived, explained, or applied in a worked example, read from the "--- Page N ---" / "--- Slide N ---" markers; an equation is often explained over several consecutive slides, so list every one of them, in order).
+Return ONLY one valid JSON object with those four keys, with no surrounding text, no markdown, no code fences.
+
+Example output format:
+{{"equation": "\\sigma^2 = \\frac{{\\sum(x_i - \\bar{{x}})^2}}{{n-1}}", "name": "Sample variance", "variables": "\\sigma^2: sample variance\\nx_i: observation i\\n\\bar{{x}}: sample mean\\nn: number of observations", "pages": [7, 8, 9]}}"""
+            messages = self._build_feature_messages(self.EXTRACTION_PERSONA, prompt, guidance="")
+            for model in (EXTRACTION_MODEL, _fallback_for(EXTRACTION_MODEL)):
+                try:
+                    content = await self._make_async_openai_fallback_call(
+                        messages, model=model, max_tokens=2000, timeout=60,
+                        reasoning_effort=EXTRACTION_REASONING_EFFORT
+                    )
+                    parsed = json.loads(_strip_code_fences(content.strip()))
+                    if isinstance(parsed, list):
+                        parsed = parsed[0] if parsed else None
+                    equations = self._normalize_equations([parsed] if parsed else [])
+                    if equations:
+                        logging.info(f"Extracted first equation using {model}: {equations[0]['name'] or equations[0]['equation'][:60]}")
+                        return equations[0]
+                except Exception as e:
+                    logging.error(f"First-equation extraction failed with {model}: {e}")
+            return None
+        except Exception as e:
+            logging.error(f"extract_first_equation_async failed: {e}")
+            return None
+
+    @staticmethod
+    def _equation_key(equation):
+        """Loose identity of an equation for matching the two extraction stages."""
+        latex = _equation_text(equation).lower()
+        latex = re.sub(r'\\(left|right|displaystyle|,|;|!|quad|qquad|text|mathrm)', '', latex)
+        return re.sub(r'[^a-z0-9=+\-*/^_]', '', latex)
+
+    @staticmethod
+    def _name_words(equation):
+        name = (equation.get('name') if isinstance(equation, dict) else '') or ''
+        return set(re.findall(r'[a-z0-9]{3,}', name.lower())) - _STOPWORDS
+
+    @staticmethod
+    def merge_first_equation(first, full):
+        """Reconcile the stage-one equation with the full list so that index 0
+        is the equation whose question was already pre-generated. The matching
+        entry (same LaTeX key, or overlapping name words) is moved to the front
+        and replaced by `first`; with no match, `first` replaces the list's
+        first entry (the two calls almost always agree on the first equation,
+        just phrased differently)."""
+        full = list(full or [])
+        if not first:
+            return full
+        if not full:
+            return [first]
+        fkey, fwords = TutorAI._equation_key(first), TutorAI._name_words(first)
+        match = None
+        for i, e in enumerate(full):
+            if fkey and TutorAI._equation_key(e) == fkey:
+                match = i
+                break
+        if match is None:
+            # Name match only when the shorter name is contained in the longer
+            # one ("Bond price" vs "Price of a coupon bond"); a single shared
+            # word ("Current yield" vs "Yield to maturity") is not a match.
+            for i, e in enumerate(full):
+                ewords = TutorAI._name_words(e)
+                if fwords and ewords and (fwords <= ewords or ewords <= fwords):
+                    match = i
+                    break
+        if match is not None:
+            del full[match]
+        else:
+            logging.info("EQUATIONS: stage-one equation not found in the full list; keeping both")
+        # The two stages can still describe one equation twice in different
+        # LaTeX: drop later entries whose key repeats an earlier one.
+        merged, seen = [], set()
+        for e in [first] + full:
+            key = TutorAI._equation_key(e) or _equation_text(e)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(e)
+        return merged
+
+    @staticmethod
+    def _normalize_equations(raw):
+        """Coerce the extraction output to a list of dicts with keys equation,
+        name, variables, pages (plain strings are accepted and wrapped)."""
+        if not isinstance(raw, list):
+            return []
+        out = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out.append({"equation": item.strip(), "name": "", "variables": "", "pages": []})
+            elif isinstance(item, dict) and str(item.get("equation") or "").strip():
+                pages = []
+                for n in item.get("pages") or []:
+                    try:
+                        pages.append(int(n))
+                    except (TypeError, ValueError):
+                        pass
+                out.append({"equation": str(item["equation"]).strip(),
+                            "name": str(item.get("name") or "").strip(),
+                            "variables": str(item.get("variables") or "").strip(),
+                            "pages": pages})
+        return out
+
     async def extract_equation_list_async(self):
         """Extract the MAIN calculable equations from the lecture notes in order (a selective list,
         not every equation), returning a list of LaTeX strings."""
@@ -2662,12 +3029,7 @@ Example output format:
         try:
             context_truncated = self._get_truncated_context()
 
-            prompt = rf"""You are analysing lecture notes to identify the key mathematical equations a student should practise.
-
-LECTURE NOTES:
-{context_truncated}
-
-TASK: List ONLY the MAIN equations and formulas from the notes above, in the EXACT ORDER they appear from top to bottom.
+            prompt = rf"""TASK: List ONLY the MAIN equations and formulas from the notes above, in the EXACT ORDER they appear from top to bottom.
 
 This is a SELECTIVE list, not an inventory: you do NOT have to extract every equation. Pick the handful of principal formulas a student must be able to apply in an exam and leave the rest out.
 
@@ -2680,21 +3042,24 @@ Rules:
 - If the same equation appears in multiple forms, include only the most general or most useful form once.
 - Preserve the original order — do not reorder or group them.
 - Express each equation in standard LaTeX notation.
-- Return ONLY a valid JSON array of strings, with no surrounding text, no markdown, no code fences.
+- TEXT QUALITY: the notes were extracted from a PDF or slides, so exponents, subscripts, fractions and summation limits may have been flattened (e.g. (1+r)^t may appear as (1+r)t or 1+rt, and a fraction as its numerator and denominator on separate lines). Reconstruct the standard form of the named equation; do not reproduce a flattened artefact as if it were the formula.
+- For each equation also give: "name" (the short name the notes use for it), "variables" (one line per symbol: meaning and units, as the notes define them), and "pages" (the numbers of ALL the pages/slides where this equation is introduced, derived, explained, or applied in a worked example, read from the "--- Page N ---" / "--- Slide N ---" markers; an equation is often explained over several consecutive slides, so list every one of them, in order).
+- Return ONLY a valid JSON array of objects, with no surrounding text, no markdown, no code fences.
 
 Example output format:
-["\\hat{{\\mu}}_{{12}} = \\frac{{n_1 \\hat{{\\mu}}_1 + n_2 \\hat{{\\mu}}_2}}{{n_1 + n_2}}", "\\sigma^2 = \\frac{{\\sum(x_i - \\bar{{x}})^2}}{{n-1}}"]"""
+[{{"equation": "\\hat{{\\mu}}_{{12}} = \\frac{{n_1 \\hat{{\\mu}}_1 + n_2 \\hat{{\\mu}}_2}}{{n_1 + n_2}}", "name": "Pooled mean", "variables": "\\hat{{\\mu}}_{{12}}: pooled mean of both samples\\nn_1, n_2: sample sizes\\n\\hat{{\\mu}}_1, \\hat{{\\mu}}_2: sample means", "pages": [4, 5]}}, {{"equation": "\\sigma^2 = \\frac{{\\sum(x_i - \\bar{{x}})^2}}{{n-1}}", "name": "Sample variance", "variables": "\\sigma^2: sample variance\\nx_i: observation i\\n\\bar{{x}}: sample mean\\nn: number of observations", "pages": [7, 8, 9]}}]"""
 
-            messages = [{"role": "user", "content": prompt}]
+            messages = self._build_feature_messages(self.EXTRACTION_PERSONA, prompt, guidance="")
 
             for model in (EXTRACTION_MODEL, _fallback_for(EXTRACTION_MODEL)):
                 try:
                     content = await self._make_async_openai_fallback_call(
-                        messages, model=model, max_tokens=8000, timeout=60
+                        messages, model=model, max_tokens=8000, timeout=60,
+                        reasoning_effort=EXTRACTION_REASONING_EFFORT
                     )
                     content = _strip_code_fences(content.strip())
-                    equations = json.loads(content)
-                    if isinstance(equations, list) and len(equations) > 0:
+                    equations = self._normalize_equations(json.loads(content))
+                    if equations:
                         logging.info(f"Extracted {len(equations)} equations using {model}")
                         return equations
                 except Exception as e:
@@ -2709,13 +3074,19 @@ Example output format:
     def _get_calculation_question_prompt(self, context_truncated, specific_equation=None, used_questions=None):
         """Return the calculation question prompt (single source for streaming and non-streaming)."""
         if specific_equation:
+            eq_latex = _equation_text(specific_equation)
+            eq_name = specific_equation.get('name') if isinstance(specific_equation, dict) else ''
+            eq_vars = specific_equation.get('variables') if isinstance(specific_equation, dict) else ''
+            name_line = f"\nThe notes call this equation: {eq_name}" if eq_name else ""
+            vars_block = f"\n\nVariable definitions as given in the notes:\n{eq_vars}" if eq_vars else ""
             equation_instruction = f"""
 EQUATION TO USE:
 You MUST base this question on the following specific equation from the lecture notes:
 
-    {specific_equation}
+    {eq_latex}
+{name_line}{vars_block}
 
-Do not choose a different equation — this is the equation for this question."""
+Do not choose a different equation — this is the equation for this question. Use the notation and variable definitions from the notes."""
         else:
             used_questions_context = ""
             if used_questions and len(used_questions) > 0:
@@ -2727,10 +3098,7 @@ PREVIOUSLY USED QUESTIONS (DO NOT REPEAT):
 {used_questions_context}
 Choose ONE equation from the lecture notes that has not been used before."""
 
-        return rf"""Based on the following lecture notes, generate ONE calculation question that follows this specific 6-part layout pattern:
-
-            LECTURE NOTES:
-            {context_truncated}
+        return rf"""Based on the lecture notes above, generate ONE calculation question that follows this specific 6-part layout pattern:
 
             {equation_instruction}
 
@@ -2814,7 +3182,8 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
             RESPONSE FORMAT: Provide the formatted text directly - no JSON, no code blocks, just the formatted calculation question."""
 
-    async def generate_calculation_question_async(self, used_questions=None, specific_equation=None, exam_question=None):
+    async def generate_calculation_question_async(self, used_questions=None, specific_equation=None, exam_question=None, model=None):
+        draft_model = model or CALC_DRAFT_MODEL
 
         if not self.context:
             return "No document context available. Please upload a document first."
@@ -2824,20 +3193,22 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
             # --- EXAM PAPER MODE ---
             if exam_question:
-                return await self._generate_exam_worked_example(context_truncated, exam_question)
+                return await self._generate_exam_worked_example(self._exam_context(exam_question), exam_question, model=draft_model)
 
             # --- LECTURE NOTES MODE ---
+            if specific_equation:
+                context_truncated = self._equation_context(specific_equation)
             prompt = self._get_calculation_question_prompt(
                 context_truncated, specific_equation=specific_equation, used_questions=used_questions
             )
 
-            messages = [{"role": "user", "content": prompt}]
+            messages = self._build_feature_messages(self.CALC_PERSONA, prompt, guidance="", context=context_truncated)
 
             try:
-                logging.debug(f"ASYNC DEBUG: Trying async {CALC_MODEL} for calculation question generation...")
+                logging.debug(f"ASYNC DEBUG: Trying async {draft_model} for calculation question generation...")
                 result = await self._make_async_openai_fallback_call(
                     messages=messages,
-                    model=CALC_MODEL,
+                    model=draft_model,
                     max_tokens=8000,
                     timeout=120,
                     reasoning_effort="medium"
@@ -2847,7 +3218,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
                 logging.debug(f"RAW API RESPONSE:\n{result}")
 
                 # No LaTeX formatting - let MathJax handle delimiters directly
-                logging.info(f"Async calculation question generated successfully using {CALC_MODEL}")
+                logging.info(f"Async calculation question generated successfully using {draft_model}")
                 return result
 
             except Exception as e:
@@ -2859,18 +3230,21 @@ Choose ONE equation from the lecture notes that has not been used before."""
             logging.error(f"Async calculation question generation failed: {e}")
             return "Sorry, I couldn't generate calculation questions at this time. Please try again later."
 
-    async def generate_calculation_question_stream_async(self, specific_equation=None, used_questions=None):
+    async def generate_calculation_question_stream_async(self, specific_equation=None, used_questions=None, model=None):
+        draft_model = model or CALC_DRAFT_MODEL
         """Streaming version of generate_calculation_question_async for lecture notes. Yields text chunks."""
 
         if not self.context:
             yield "No document context available. Please upload a document first."
             return
 
+        context_truncated = (self._equation_context(specific_equation) if specific_equation
+                             else self._get_truncated_context())
         prompt = self._get_calculation_question_prompt(
-            self._get_truncated_context(), specific_equation=specific_equation, used_questions=used_questions
+            context_truncated, specific_equation=specific_equation, used_questions=used_questions
         )
 
-        messages = [{"role": "user", "content": prompt}]
+        messages = self._build_feature_messages(self.CALC_PERSONA, prompt, guidance="", context=context_truncated)
 
         def factory(model):
             return self._make_async_openai_streaming_call(
@@ -2879,7 +3253,7 @@ Choose ONE equation from the lecture notes that has not been used before."""
 
         # Same policy as the other features: retry the primary model, then fall
         # back to the secondary, and only then show the failure message.
-        async for chunk in self._stream_with_fallback_for(CALC_MODEL, 
+        async for chunk in self._stream_with_fallback_for(draft_model,
             factory, "CALC_QUESTION_STREAM", "I'm sorry, the AI service is taking too long to generate a calculation question right now. Please try again in a moment."
         ):
             yield chunk
@@ -2889,16 +3263,13 @@ Choose ONE equation from the lecture notes that has not been used before."""
         q_id = exam_question.get("id", "?")
         q_text = exam_question.get("question", "")
 
-        return rf"""You are helping a student work through their {self._material_noun()}. Below is the full document for context, followed by ONE specific question from it.
-
-DOCUMENT ({self._material_label()}, for reference/context):
-{context_truncated}
+        return rf"""You are helping a student work through their {self._material_noun()}. The document above is for context; below is ONE specific question from it.
 
 SPECIFIC QUESTION TO SOLVE (Question {q_id}):
 {q_text}
 
 YOUR TASK:
-1. Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given.
+1. Produce a complete worked solution for THIS EXACT question using the EXACT numbers and data given. First re-read the question's figures and any table it relies on in the DOCUMENT above: the question text was copied out of the document by an earlier step and may have mis-copied a number or a table row. If the two differ, use the document's figures and say so in one line. If the paper provides discount, annuity or other tables, use the paper's tabulated values rather than computing your own.
 2. If the document already includes a solution or answer for this question, cross-check YOUR calculated answer against the PROVIDED solution. If they differ, carefully re-examine both approaches, identify where any error lies (yours or the paper's), and explain the discrepancy to the student.
 3. Then set the student a new challenge using different numbers.
 
@@ -2957,17 +3328,18 @@ FORMATTING REQUIREMENTS:
 - CRITICAL: Currency — use the real symbols with amounts (£1,000, $500, €250), NOT the words pounds/dollars/euros. £ and € may be written directly inside math; the dollar sign inside math MUST be escaped as \$ (a raw $ inside math breaks the rendering)
 - Provide the formatted text directly — no JSON, no code blocks."""
 
-    async def _generate_exam_worked_example(self, context_truncated, exam_question):
+    async def _generate_exam_worked_example(self, context_truncated, exam_question, model=None):
+        draft_model = model or CALC_DRAFT_MODEL
         """Generate a worked example for an exam paper question using its exact numbers, then set a challenge with different numbers."""
         q_id = exam_question.get("id", "?")
         prompt = self._get_exam_worked_example_prompt(context_truncated, exam_question)
-        messages = [{"role": "user", "content": prompt}]
+        messages = self._build_feature_messages(self.EXAM_PERSONA, prompt, guidance="", context=context_truncated)
 
         try:
             logging.info(f"Generating exam worked example for question {q_id}...")
             result = await self._make_async_openai_fallback_call(
                 messages=messages,
-                model=CALC_MODEL,
+                model=draft_model,
                 max_tokens=8000,
                 timeout=120,
                 reasoning_effort="medium"
@@ -2978,11 +3350,12 @@ FORMATTING REQUIREMENTS:
             logging.error(f"Exam worked example generation failed: {e}")
             return "I'm sorry, the AI service is taking too long to generate a worked example right now. Please try again in a moment."
 
-    async def _generate_exam_worked_example_stream(self, context_truncated, exam_question):
+    async def _generate_exam_worked_example_stream(self, context_truncated, exam_question, model=None):
+        draft_model = model or CALC_DRAFT_MODEL
         """Streaming version of _generate_exam_worked_example. Yields text chunks."""
         q_id = exam_question.get("id", "?")
         prompt = self._get_exam_worked_example_prompt(context_truncated, exam_question)
-        messages = [{"role": "user", "content": prompt}]
+        messages = self._build_feature_messages(self.EXAM_PERSONA, prompt, guidance="", context=context_truncated)
 
         def factory(model):
             return self._make_async_openai_streaming_call(
@@ -2991,27 +3364,30 @@ FORMATTING REQUIREMENTS:
 
         # Same policy as the other features: retry the primary model, then fall
         # back to the secondary, and only then show the failure message.
-        async for chunk in self._stream_with_fallback_for(CALC_MODEL, 
+        async for chunk in self._stream_with_fallback_for(draft_model,
             factory, "EXAM_WORKED_EXAMPLE_STREAM", "I'm sorry, the AI service is taking too long to generate a worked example right now. Please try again in a moment."
         ):
             yield chunk
 
-    def _get_answer_check_prompt(self, truncated_context, challenge_question, user_answer):
+    def _get_answer_check_prompt(self, truncated_context, challenge_question, user_answer, reference_answer=None):
         """Return the calculation answer-check prompt (single source for streaming and non-streaming)."""
-        return rf"""You are evaluating a student's answer to a calculation question.
+        reference_block = ""
+        if reference_answer:
+            reference_block = f"""
+REFERENCE ANSWER (computed independently when the question was checked): {reference_answer}
+Treat this as the expected answer. Recompute it yourself; if your own figure differs from the reference by more than rounding, re-examine your working before marking the student, and say which figure you are marking against.
+"""
+        return rf"""Evaluate the student's answer to the calculation question below, using the study material above for the equation, terminology and conventions.
 
-LECTURE NOTES CONTEXT:
-{truncated_context}
-
-ORIGINAL CHALLENGE QUESTION:
+ORIGINAL CHALLENGE QUESTION (the WORKED EXAMPLE in it shows the equation, conventions and method the student has been taught - use exactly the same ones for the CHALLENGE):
 {challenge_question}
-
+{reference_block}
 STUDENT'S ANSWER: {user_answer}
 
 EVALUATION TASKS:
-1. Calculate the correct answer using the provided challenge values
+1. Calculate the correct answer to the CHALLENGE using its values and the SAME equation, conventions (compounding, timing, units, sample vs population) and method as the worked example in the question
 2. Provide the correct step-by-step solution
-3. Determine if the student's answer is correct (accept reasonable rounding and alternative valid approaches)
+3. Determine if the student's answer is correct. TOLERANCE: a numerical answer within 1% of the correct figure, or that differs only by rounding or by the number of decimal places shown, is CORRECT; an answer in an equivalent form (e.g. 0.05 vs 5%, or a different unit stated explicitly) is CORRECT. An alternative valid method that reaches the same figure is also correct.
 4. Give appropriate feedback
 5. Ask if they want another calculation question
 
@@ -3075,13 +3451,158 @@ CORRECT:
 
 """
 
-    async def check_calculation_answer_async(self, challenge_question, user_answer):
+    CALC_QUESTION_MARKER = "CALCULATION QUESTION"
+    # Lecture-notes questions are headed CALCULATION QUESTION, exam worked
+    # examples EXAM QUESTION <id>; both end with a CHALLENGE for the student.
+    _CALC_HEADING_RE = re.compile(r'\b(CALCULATION QUESTION|EXAM QUESTION)\b')
+
+    # Text the app itself emits when a model call fails or is cut off. Such
+    # text must never be cached, pre-warmed, stored as the current question or
+    # fed back into the chat history as if it were an answer.
+    _FAILURE_MARKERS = (
+        "[Connection interrupted",
+        "[Response cut short",
+        "I'm having trouble",
+        "I'm sorry, the AI service is taking too long",
+        "Critical error",
+        "No study material available",
+        "No document context available",
+        "I couldn't find any",
+        "No response received",
+    )
+
+    @staticmethod
+    def is_failure_text(text):
+        """True when the text is (or ends with) one of the app's own failure notices."""
+        if not text:
+            return True
+        return any(marker in text for marker in TutorAI._FAILURE_MARKERS)
+
+    @staticmethod
+    def looks_like_calculation_question(text):
+        """True for a generated question or worked example (not an error/notice message)."""
+        return (bool(text) and len(text) > 300 and bool(TutorAI._CALC_HEADING_RE.search(text))
+                and not TutorAI.is_failure_text(text))
+
+    @staticmethod
+    def is_complete_calculation_question(text):
+        """A question is only complete when the CHALLENGE section the layout
+        requires is present (a draft or correction cut off by the token budget
+        stops before it)."""
+        return TutorAI.looks_like_calculation_question(text) and "CHALLENGE" in text
+
+    # Personas for the calculation features. They follow the document in the
+    # system message (see _build_feature_messages), so the document prefix is
+    # shared: on luna with every other feature, and on the verification model
+    # between the verification and the answer check of the same question.
+    EXTRACTION_PERSONA = "You are analysing the lecture notes above to identify the key mathematical equations a student should practise."
+    ESSAY_MARK_PERSONA = "You are an experienced QUB Finance examiner marking a student's short qualitative exam answer against the study material above."
+    BRIEF_PERSONA = "You are condensing the uploaded university material above into a revision brief for a one-page infographic."
+    CALC_PERSONA = "You are a QUB Finance tutor writing calculation practice from the lecture notes above."
+    EXAM_PERSONA = "You are a QUB Finance tutor producing a worked solution to one question from the document above."
+    VERIFY_PERSONA = ("You are a meticulous finance lecturer checking a calculation question before it is shown "
+                      "to a student. The study material above contains the pages relevant to the question.")
+    CHECK_PERSONA = ("You are a QUB Finance tutor marking a student's answer to a calculation question, using "
+                     "the study material above for the equation, terminology and conventions.")
+
+    def _get_verify_prompt(self, context, question_text):
+        return rf"""Check the calculation question below against the study material above.
+
+CALCULATION QUESTION TO CHECK:
+{question_text}
+
+Check that: the equation matches the notes (same form, same conventions - e.g. annual vs continuous compounding, sample vs population, the notes' day-count or timing assumptions); every variable is defined correctly; the worked example's arithmetic is right and its final result is correct; the challenge is well-posed, uses different values from the worked example and can be answered from the information given; the LaTeX will render. Then COMPUTE the correct answer to the CHALLENGE yourself, using the same equation and conventions as the worked example.
+
+WHAT IS NOT AN ERROR (do NOT rewrite for these):
+- Minor rounding differences: an intermediate or final figure that differs only because of rounding (e.g. 5410.28 vs 5410.29, 33.3% vs 33.33%), or rounding at a different number of decimal places.
+- Style, tone, length, wording, formatting choices, or the order of explanations.
+- A valid alternative but equivalent form of the equation or of a step.
+
+REWRITE ONLY FOR A GENUINE MISTAKE: a wrong or mis-stated equation, a wrong variable definition, an arithmetic error that changes a result beyond rounding, a wrong final answer, a challenge that cannot be answered from the information given, a missing CHALLENGE section, or LaTeX that would not render.
+
+REPLY FORMAT (nothing else):
+- If the question is acceptable: first line exactly OK, second line "ANSWER: <the correct answer to the CHALLENGE, with its unit>".
+- Otherwise: first line "CORRECTED: <one sentence saying what was wrong>", second line "ANSWER: <the correct answer to the corrected CHALLENGE, with its unit>", then the complete corrected question in the same format and with the same heading as the original, ending with its CHALLENGE section."""
+
+    async def verify_calculation_question_async(self, question_text, equation=None, exam_question=None):
+        """Check a drafted calculation question on the verification model.
+
+        Returns {"status": "ok" | "corrected" | "unverified", "question": corrected
+        text or None, "reason": one sentence or "", "answer": the verifier's own
+        answer to the challenge or ""}. Any failure of the verification call
+        yields "unverified" so the draft is shown as is."""
+        if not self.context or not question_text:
+            return {"status": "unverified", "question": None, "reason": "", "answer": ""}
+        if equation:
+            context = self._equation_context(equation)
+        elif exam_question:
+            context = self._exam_context(exam_question)
+        else:
+            context = self._select_relevant_context(question_text, CALC_CONTEXT_CHARS,
+                                                    select_above=CALC_CONTEXT_WHOLE_DOC_CHARS)
+        messages = self._build_feature_messages(self.VERIFY_PERSONA, self._get_verify_prompt(context, question_text),
+                                                guidance="", context=context)
+        try:
+            raw = await self._make_async_openai_fallback_call(
+                messages=messages, model=CALC_MODEL, max_tokens=8000, timeout=120,
+                reasoning_effort="medium")
+        except Exception as e:
+            logging.error(f"CALC VERIFY: verification call failed, showing draft unverified: {e}")
+            return {"status": "unverified", "question": None, "reason": "", "answer": ""}
+        return self._parse_verification(raw)
+
+    _ANSWER_LINE_RE = re.compile(r'^\s*\**ANSWER\**\s*:\s*(.+?)\s*$', re.I | re.M)
+
+    @staticmethod
+    def _parse_verification(raw):
+        text = _strip_code_fences((raw or "").strip())
+        if not text:
+            return {"status": "unverified", "question": None, "reason": "", "answer": ""}
+        # The verifier's own answer to the challenge (first ANSWER: line, which
+        # precedes any corrected question text) is handed to the answer checker.
+        m_ans = TutorAI._ANSWER_LINE_RE.search(text)
+        answer = m_ans.group(1).strip() if m_ans else ""
+        if m_ans:
+            text = (text[:m_ans.start()] + text[m_ans.end():]).strip()
+        first, _, rest = text.partition("\n")
+        head = first.strip()
+        rest = rest.strip()
+        if head.upper().rstrip('.') == "OK" or head.upper().startswith("OK"):
+            # "OK" alone, or OK with commentary: a pass unless the verifier
+            # went on to supply a full rewritten question anyway.
+            if TutorAI.is_complete_calculation_question(rest):
+                return {"status": "corrected", "question": rest, "reason": head[2:].strip(" :-.") or "", "answer": answer}
+            return {"status": "ok", "question": None, "reason": "", "answer": answer}
+        if head.upper().startswith("CORRECTED"):
+            reason = head.split(":", 1)[1].strip() if ":" in head else ""
+            if TutorAI.is_complete_calculation_question(rest):
+                return {"status": "corrected", "question": rest, "reason": reason, "answer": answer}
+            # A correction without a complete question (e.g. cut off before the
+            # CHALLENGE) must not replace the draft the student is reading.
+            logging.warning(f"CALC VERIFY: correction discarded as incomplete ({reason or 'no reason'})")
+            return {"status": "ok", "question": None, "reason": reason, "answer": answer}
+        if TutorAI.is_complete_calculation_question(text):
+            # A full question without the CORRECTED header: treat as a rewrite.
+            return {"status": "corrected", "question": text, "reason": "", "answer": answer}
+        return {"status": "ok", "question": None, "reason": "", "answer": answer}
+
+    def _answer_check_context(self, challenge_question, equation=None):
+        """Pages for checking an answer: the same focused pages the question was
+        generated from when the equation is known, otherwise the pages most
+        relevant to the challenge text."""
+        if equation:
+            return self._equation_context(equation, ANSWER_CHECK_CONTEXT_CHARS)
+        return self._select_relevant_context(challenge_question, ANSWER_CHECK_CONTEXT_CHARS,
+                                             select_above=CALC_CONTEXT_WHOLE_DOC_CHARS)
+
+    async def check_calculation_answer_async(self, challenge_question, user_answer, equation=None, reference_answer=None):
 
         if not self.context:
             return "No document context available."
 
-        prompt = self._get_answer_check_prompt(self._get_truncated_context(ANSWER_CHECK_CONTEXT_CHARS), challenge_question, user_answer)
-        messages = [{"role": "user", "content": prompt}]
+        check_context = self._answer_check_context(challenge_question, equation)
+        prompt = self._get_answer_check_prompt(check_context, challenge_question, user_answer, reference_answer=reference_answer)
+        messages = self._build_feature_messages(self.CHECK_PERSONA, prompt, guidance="", context=check_context)
 
         try:
             logging.info(f"CHECK_CALC_ANSWER: Trying async {CALC_CHECK_MODEL} for calculation answer evaluation...")
@@ -3120,15 +3641,16 @@ CORRECT:
                 logging.error(f"Both {CALC_CHECK_MODEL} and {_fallback_for(CALC_CHECK_MODEL)} failed for calculation answer check: {primary_error} | {fallback_error}")
                 return f"**Feedback:** I received your answer: {user_answer}. However, I'm having trouble processing calculation evaluations right now. Please try again in a moment, or click the Calculation questions button to get a new question."
 
-    async def check_calculation_answer_stream_async(self, challenge_question, user_answer):
+    async def check_calculation_answer_stream_async(self, challenge_question, user_answer, equation=None, reference_answer=None):
         """Streaming version of check_calculation_answer_async. Yields text chunks."""
 
         if not self.context:
             yield "No document context available."
             return
 
-        prompt = self._get_answer_check_prompt(self._get_truncated_context(ANSWER_CHECK_CONTEXT_CHARS), challenge_question, user_answer)
-        messages = [{"role": "user", "content": prompt}]
+        check_context = self._answer_check_context(challenge_question, equation)
+        prompt = self._get_answer_check_prompt(check_context, challenge_question, user_answer, reference_answer=reference_answer)
+        messages = self._build_feature_messages(self.CHECK_PERSONA, prompt, guidance="", context=check_context)
 
         def factory(model):
             return self._make_async_openai_streaming_call(

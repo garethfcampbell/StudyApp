@@ -17,7 +17,7 @@ import asyncio
 import threading
 import uuid as uuid_module
 from pdf_processor import extract_text_from_file
-from tutor_ai import TutorAI
+from tutor_ai import TutorAI, _equation_text, CALC_PREWARM_MODEL
 from infographic_email import is_email_configured, normalise_email, email_infographic, email_transport
 from database_storage_manager import DatabaseStorageManager as StorageManager
 from performance_optimizations import optimized_storage, resource_monitor, rate_limit, start_periodic_cleanup
@@ -72,7 +72,7 @@ logging.info(f"INFOGRAPHIC EMAIL: transport = {email_transport() or 'none (set R
 app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV') == 'production'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour session timeout
+app.config['PERMANENT_SESSION_LIFETIME'] = 24 * 3600  # matches the 24 h expiry of stored session rows
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Security configuration
@@ -150,7 +150,11 @@ def stream_cached_sse(cached_text, chunk_size=800):
 def init_session():
     """Initialize session variables - optimized for scalability with batch retrieval"""
     resource_monitor.increment('requests_processed')
-    
+
+    # A permanent cookie: the student's document and conversation survive
+    # closing the browser for as long as the stored rows do (24 h after the
+    # last activity, see PERMANENT_SESSION_LIFETIME).
+    session.permanent = True
     if 'session_id' not in session:
         session['session_id'] = storage_manager.generate_session_id()
     if 'pdf_filename' not in session:
@@ -219,13 +223,24 @@ def get_pdf_content_with_fallback():
         return None
     
     session_id = session['session_id']
-    
-    # Try optimized storage first
+
+    # Try optimized storage first. Its in-process cache is per gunicorn worker
+    # and is not invalidated by an upload handled on another worker, so the
+    # cached text is accepted only if it matches the hash of the document this
+    # session uploaded last (carried in the signed cookie, see /upload).
+    expected_hash = session.get('pdf_hash')
     pdf_content = primary_storage.retrieve_content(session_id, 'pdf_content')
+    if pdf_content and expected_hash and _pdf_hash(pdf_content) != expected_hash:
+        logging.warning("PDF content in this worker's cache is from a previous upload; re-reading it")
+        try:
+            primary_storage.cache.delete(primary_storage._get_cache_key(session_id, 'pdf_content'))
+        except Exception as e:
+            logging.debug(f"Could not drop stale cached pdf_content: {e}")
+        pdf_content = None
     if pdf_content:
         resource_monitor.increment('cache_hits')
         return pdf_content
-    
+
     # Fallback to original storage manager
     pdf_content = storage_manager.retrieve_content(session_id, 'pdf_content')
     if pdf_content:
@@ -233,9 +248,14 @@ def get_pdf_content_with_fallback():
         # Cache it in the optimized storage for next time
         primary_storage.store_content(session_id, 'pdf_content', pdf_content)
         return pdf_content
-    
+
     logging.info("PDF content not found in current session")
     return None
+
+
+def _pdf_hash(text):
+    """Short fingerprint of a document's extracted text (cheap: ~1 ms for 300k chars)."""
+    return hashlib.md5((text or '').encode('utf-8', 'ignore')).hexdigest()[:16]
 
 def get_tutor_ai():
     """Create a TutorAI instance (returns None if initialization fails)"""
@@ -416,230 +436,160 @@ def cleanup_task(task_id):
             postgres_db.session.rollback()
             logging.error(f"Error cleaning up task {task_id}: {e}")
 
-def run_calculation_generation_background(task_id, session_id, pdf_content):
-    """
-    Background function to generate calculation questions using async CALC_MODEL (gpt-6.1-sol).
-    On first call, extracts an ordered equation list from the notes and stores it in the
-    session. Subsequent calls use the stored list and advance the index.
-    """
+
+def run_calculation_verification_background(task_id, session_id, question_text, pdf_content, doc_type=None,
+                                            equation=None, exam_question=None):
+    """Verify a drafted calculation question on the strong model after it has
+    been shown. On a correction, the stored current question (used for answer
+    checking) and the last assistant message are replaced by the corrected
+    text; the page polls /calculation_verify_status to swap the display."""
     with app.app_context():
         try:
-            logging.info(f"BACKGROUND TASK: Starting calculation generation for task {task_id}")
+            tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
 
-            tutor_ai = _make_tutor(pdf_content, session_id)
-
-            # Access storage inside app context (before entering async)
-            _storage = StorageManager()
-            equation_list = _storage.retrieve_content(session_id, 'equation_list')
-            exam_questions = _storage.retrieve_content(session_id, 'exam_questions')
-            doc_type = _storage.retrieve_content(session_id, 'calc_doc_type')
-            current_index = _storage.retrieve_content(session_id, 'current_equation_index') or 0
-
-            async def async_generation():
-                nonlocal equation_list, exam_questions, doc_type, current_index
+            async def _verify():
                 try:
-                    # --- First use: detect document type and extract questions/equations ---
-                    if not doc_type:
-                        logging.info("BACKGROUND TASK: Detecting document type...")
-                        doc_type = await tutor_ai.detect_document_type_async()
-                        _storage.store_content(session_id, 'calc_doc_type', doc_type)
-                        logging.info(f"BACKGROUND TASK: Document classified as {doc_type}")
-
-                    if doc_type in ("exam_paper", "exercise_set"):
-                        # --- EXAM PAPER PATH ---
-                        if not exam_questions:
-                            logging.info("BACKGROUND TASK: Extracting exam questions...")
-                            exam_questions = await tutor_ai.extract_exam_questions_async()
-                            logging.info(f"BACKGROUND TASK: Extracted {len(exam_questions) if exam_questions else 0} exam questions")
-                            if not exam_questions:
-                                return "I couldn't find any calculation questions in this document. Please check it contains numerical questions."
-                            _storage.store_content(session_id, 'exam_questions', exam_questions)
-                            _storage.store_content(session_id, 'current_equation_index', 0)
-                            current_index = 0
-
-                        if current_index >= len(exam_questions):
-                            return f"You've worked through all {len(exam_questions)} exam questions — great work! You can upload a new paper to continue practising."
-
-                        current_q = exam_questions[current_index]
-                        logging.info(f"BACKGROUND TASK: Generating worked example for exam Q{current_q.get('id', current_index+1)} ({current_index + 1}/{len(exam_questions)})")
-                        return await tutor_ai.generate_calculation_question_async(exam_question=current_q)
-
-                    else:
-                        # --- LECTURE NOTES PATH (original behaviour) ---
-                        if not equation_list:
-                            logging.info("BACKGROUND TASK: No equation list found — extracting from notes")
-                            equation_list = await tutor_ai.extract_equation_list_async()
-                            logging.info(f"BACKGROUND TASK: Extraction returned {len(equation_list) if equation_list else 0} equations")
-                            if not equation_list:
-                                return "I couldn't find any calculable equations in your notes. Please make sure your document contains mathematical formulas."
-                            _storage.store_content(session_id, 'equation_list', equation_list)
-                            _storage.store_content(session_id, 'current_equation_index', 0)
-                            current_index = 0
-
-                        if current_index >= len(equation_list):
-                            return f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising."
-
-                        specific_equation = equation_list[current_index]
-                        logging.info(f"BACKGROUND TASK: Generating question for equation {current_index + 1}/{len(equation_list)}: {specific_equation[:80]}")
-                        return await tutor_ai.generate_calculation_question_async(specific_equation=specific_equation)
+                    return await tutor_ai.verify_calculation_question_async(
+                        question_text, equation=equation, exam_question=exam_question)
                 finally:
                     await tutor_ai.close_async_clients()
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(async_generation())
+            result = loop.run_until_complete(_verify())
             loop.close()
 
-            logging.info(f"BACKGROUND TASK: Generation completed for task {task_id}")
+            storage = StorageManager()
+            rows = storage.batch_retrieve(session_id, ['current_calculation_question', 'current_calculation_verify_task'])
+            still_current = rows.get('current_calculation_question') == question_text
+            writes = []
+            if rows.get('current_calculation_verify_task') == task_id:
+                writes.append((session_id, 'current_calculation_verify_task', None))
+            if not still_current:
+                # The student has moved on (next question / new upload): the
+                # verdict must not overwrite the question now in play.
+                logging.info(f"CALC VERIFY: {result.get('status')}, but the question has changed; nothing stored")
+                result = dict(result, status='stale', question=None)
+            elif result.get('status') == 'corrected' and result.get('question'):
+                corrected = result['question']
+                msgs = storage.retrieve_content(session_id, 'messages') or []
+                for i in range(len(msgs) - 1, -1, -1):
+                    if msgs[i].get('role') == 'assistant' and msgs[i].get('content') == question_text:
+                        msgs[i]['content'] = corrected
+                        break
+                writes += [(session_id, 'current_calculation_question', corrected),
+                           (session_id, 'current_calculation_answer', result.get('answer') or None),
+                           (session_id, 'messages', msgs)]
+                logging.info(f"CALC VERIFY: question corrected ({result.get('reason') or 'no reason given'})")
+            else:
+                if result.get('answer'):
+                    writes.append((session_id, 'current_calculation_answer', result['answer']))
+                logging.info(f"CALC VERIFY: {result.get('status')}")
+            if writes:
+                storage.batch_store(writes)
             update_task_complete(task_id, success=True, data=result)
-
         except Exception as e:
-            logging.error(f"BACKGROUND TASK: Error in task {task_id}: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
-            update_task_failed(task_id, "An internal error occurred. Please try again.")
-
-def run_calculation_answer_check_background(task_id, challenge_question, user_answer, pdf_content, doc_type=None):
-    """
-    Background function to check calculation answers using async CALC_CHECK_MODEL (gpt-6.1-sol).
-    This runs in a separate thread to avoid blocking the web server.
-    """
-    try:
-        logging.info(f"CALC ANSWER BACKGROUND: Starting answer check for task {task_id}")
-        
-        # Initialize TutorAI and set context
-        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
-        
-        # Check calculation answer using async method with CALC_CHECK_MODEL
-        async def async_answer_check():
+            logging.error(f"CALC VERIFY: task {task_id} failed: {e}")
             try:
-                return await tutor_ai.check_calculation_answer_async(challenge_question, user_answer)
-            finally:
-                await tutor_ai.close_async_clients()
-        
-        # Run the async function in this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(async_answer_check())
-        loop.close()
-        
-        logging.info(f"CALC ANSWER BACKGROUND: Answer check completed for task {task_id}")
-        
-        # Store the final result in PostgreSQL Database
-        update_task_complete(task_id, success=True, data=result)
-        
-    except Exception as e:
-        logging.error(f"CALC ANSWER BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, "An internal error occurred. Please try again.")
+                update_task_failed(task_id, "Verification failed")
+            except Exception:
+                pass
 
-def run_summary_generation_background(task_id, pdf_content, doc_type=None):
-    """
-    Background function to generate executive summaries using async Gemini.
-    This runs in a separate thread to avoid blocking the web server.
-    """
+
+def start_calculation_verification(session_id, question_text, pdf_content, doc_type=None,
+                                   equation=None, exam_question=None):
+    """Create the verification task and run it in a thread; returns the task id
+    or None when the text is not a question (error/notice messages)."""
+    if not TutorAI.looks_like_calculation_question(question_text):
+        return None
+    task_id = str(uuid_module.uuid4())
+    create_task(task_id, "pending")
     try:
-        logging.info(f"SUMMARY BACKGROUND: Starting summary generation for task {task_id}")
-        
-        # Initialize TutorAI and set context
-        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
-        
-        # Generate summary using async method
-        async def async_summary_generation():
-            try:
-                return await tutor_ai.generate_cheat_sheet_async()
-            finally:
-                await tutor_ai.close_async_clients()
-        
-        # Run the async function in this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(async_summary_generation())
-        loop.close()
-        
-        logging.info(f"SUMMARY BACKGROUND: Generation completed for task {task_id}")
-
-        # Cache the deterministic result and store it in PostgreSQL Database
-        store_cached_ai_result(pdf_content, 'summary', result)
-        update_task_complete(task_id, success=True, data=result)
-
+        # Remembered so an answer that arrives while the check is in flight
+        # waits for the verdict, and so a stale verdict cannot be applied.
+        StorageManager().batch_store([(session_id, 'current_calculation_verify_task', task_id),
+                                      (session_id, 'current_calculation_answer', None)])
     except Exception as e:
-        logging.error(f"SUMMARY BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, "An internal error occurred. Please try again.")
+        logging.warning(f"CALC VERIFY: could not record the verification task: {e}")
+    threading.Thread(target=run_calculation_verification_background,
+                     args=(task_id, session_id, question_text, pdf_content, doc_type, equation, exam_question),
+                     daemon=True).start()
+    return task_id
 
-def run_essay_generation_background(task_id, pdf_content, doc_type=None):
-    """
-    Background function to generate essay questions using async Gemini.
-    This runs in a separate thread to avoid blocking the web server.
-    """
+
+def _current_calc_equation(session_id):
+    """The equation the student is currently working on (lecture-notes mode),
+    so answer checking can reuse the pages the question was generated from.
+    None for exam papers or when nothing is stored."""
     try:
-        logging.info(f"ESSAY BACKGROUND: Starting essay generation for task {task_id}")
-        
-        # Initialize TutorAI and set context
-        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
-        
-        # Generate essay using async method
-        async def async_essay_generation():
-            try:
-                return await tutor_ai.generate_essay_question_async()
-            finally:
-                await tutor_ai.close_async_clients()
-        
-        # Run the async function in this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(async_essay_generation())
-        loop.close()
-        
-        logging.info(f"ESSAY BACKGROUND: Generation completed for task {task_id}")
-
-        # Cache the deterministic result and store it in PostgreSQL Database
-        store_cached_ai_result(pdf_content, 'essay', result)
-        update_task_complete(task_id, success=True, data=result)
-
+        rows = StorageManager().batch_retrieve(session_id, ['equation_list', 'current_equation_index'])
+        equations = rows.get('equation_list') or []
+        index = rows.get('current_equation_index') or 0
+        return equations[index] if 0 <= index < len(equations) else None
     except Exception as e:
-        logging.error(f"ESSAY BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, "An internal error occurred. Please try again.")
+        logging.warning(f"Could not load current equation for answer check: {e}")
+        return None
 
-def run_key_concepts_generation_background(task_id, pdf_content, doc_type=None):
-    """
-    Background function to generate key concepts explanations using async Gemini.
-    This runs in a separate thread to avoid blocking the web server.
-    """
+
+def _upload_is_current(session_id, task_id):
+    """False when a newer upload has replaced the one a background job was
+    started for: the job must then drop its result instead of storing it
+    under the new document."""
     try:
-        logging.info(f"KEY CONCEPTS BACKGROUND: Starting key concepts generation for task {task_id}")
-        
-        # Initialize TutorAI and set context
-        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
-        
-        # Generate key concepts using async method
-        async def async_key_concepts_generation():
-            try:
-                return await tutor_ai.explain_key_concepts_async()
-            finally:
-                await tutor_ai.close_async_clients()
-        
-        # Run the async function in this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(async_key_concepts_generation())
-        loop.close()
-        
-        logging.info(f"KEY CONCEPTS BACKGROUND: Generation completed for task {task_id}")
-
-        # Cache the deterministic result and store it in PostgreSQL Database
-        store_cached_ai_result(pdf_content, 'key_concepts', result)
-        update_task_complete(task_id, success=True, data=result)
-
+        current = StorageManager().retrieve_content(session_id, 'current_upload')
     except Exception as e:
-        logging.error(f"KEY CONCEPTS BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, "An internal error occurred. Please try again.")
+        logging.debug(f"Could not read current_upload: {e}")
+        return True
+    if current and current != task_id:
+        logging.info(f"Upload {task_id}: superseded by {current}; result discarded")
+        return False
+    return True
 
-# ---- "Email me the infographic as a PDF when it is ready" requests ----
-# Stored in the shared PostgreSQL session store keyed by task_id (NOT in process
-# memory): the request may be handled by a different gunicorn worker from the
-# one running the generation thread, and the student may close the tab. The
-# background thread delivers the PDF once the image is complete; if the task has
-# already finished, the route sends immediately.
+
+_CHAT_QUESTION_RE = _re.compile(
+    r"^\s*(what|why|how|when|where|which|who|can|could|would|should|is|are|does|do|did|explain|tell|show|help|please)\b",
+    _re.I)
+
+
+def _calc_message_is_a_question(user_message):
+    """While calculation practice is active every message is marked as an
+    answer. A message with no digit and no formula that reads as a question
+    ("why do we discount at the risk-free rate?") is the student asking the
+    tutor something, so it is answered by the tutor instead of being graded."""
+    text = (user_message or '').strip()
+    if not text or any(ch.isdigit() for ch in text):
+        return False
+    if _re.search(r"[=^\\]|\b(answer|result|equals)\b", text, _re.I):
+        return False
+    return text.endswith('?') or bool(_CHAT_QUESTION_RE.match(text)) and len(text.split()) >= 4
+
+
+def _settle_calculation_verification(session_id, wait_seconds=15):
+    """Before an answer is marked, let a verification of the question that is
+    still in flight finish (it usually takes 3-5 s), so the answer is marked
+    against the question the student will see. Returns the (possibly
+    corrected) stored question and the verifier's reference answer."""
+    storage = StorageManager()
+    try:
+        rows = storage.batch_retrieve(session_id, ['current_calculation_verify_task', 'current_calculation_question',
+                                                   'current_calculation_answer'])
+        task_id = rows.get('current_calculation_verify_task')
+        deadline = time.time() + wait_seconds
+        while task_id and time.time() < deadline:
+            status = get_task_status(task_id)
+            if not status or status.get('status') in ('complete', 'failed'):
+                break
+            time.sleep(0.5)
+        else:
+            if task_id:
+                logging.warning("CALC VERIFY: still pending when the answer arrived; marking against the draft")
+        rows = storage.batch_retrieve(session_id, ['current_calculation_question', 'current_calculation_answer'])
+        return rows.get('current_calculation_question'), rows.get('current_calculation_answer')
+    except Exception as e:
+        logging.warning(f"Could not settle calculation verification: {e}")
+        return None, None
+
+
 _INFOGRAPHIC_EMAIL_CONTENT_TYPE = 'infographic_email_request'
 
 
@@ -758,39 +708,6 @@ def run_infographic_generation_background(task_id, pdf_content, doc_type=None, n
             pass
         update_task_failed(task_id, "An internal error occurred. Please try again.")
 
-def run_chat_response_background(task_id, user_message, pdf_content, conversation_history, doc_type=None):
-    """
-    Background function to generate chat responses using async processing.
-    This runs in a separate thread to avoid blocking the web server.
-    """
-    try:
-        logging.info(f"CHAT BACKGROUND: Starting chat response generation for task {task_id}")
-        
-        # Initialize TutorAI and set context
-        tutor_ai = _make_tutor(pdf_content, doc_type=doc_type)
-        tutor_ai.conversation_history = conversation_history or []
-        
-        # Generate chat response using async method
-        async def async_chat_generation():
-            try:
-                return await tutor_ai.get_response_async(user_message)
-            finally:
-                await tutor_ai.close_async_clients()
-        
-        # Run the async function in this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(async_chat_generation())
-        loop.close()
-        
-        logging.info(f"CHAT BACKGROUND: Chat response generation completed for task {task_id}")
-        
-        # Store the final result in PostgreSQL Database
-        update_task_complete(task_id, success=True, data=result)
-        
-    except Exception as e:
-        logging.error(f"CHAT BACKGROUND: Error in task {task_id}: {e}")
-        update_task_failed(task_id, "An internal error occurred. Please try again.")
 
 @app.route('/')
 def index():
@@ -800,16 +717,53 @@ def index():
     # OPTIMIZED: Get message count from cache (already fetched in init_session via batch_retrieve)
     # This avoids a duplicate database call
     session_id = session.get('session_id')
-    messages = primary_storage.retrieve_content(session_id, 'messages') or []
-    
-    return render_template('index.html', 
-                         has_document=session.get('pdf_filename') is not None,
+    rows = storage_manager.batch_retrieve(session_id, ['messages', 'pdf_content_hash'])
+    messages = rows.get('messages') or []
+
+    # The cookie remembers a filename, but the stored document expires 24 h
+    # after the last activity. If it has gone, show the upload panel rather
+    # than a loaded-looking page whose every button fails.
+    has_document = session.get('pdf_filename') is not None
+    if has_document and not rows.get('pdf_content_hash'):
+        if not storage_manager.retrieve_content(session_id, 'pdf_content'):
+            logging.info("Stored document for this session has expired; showing the upload panel")
+            session['pdf_filename'] = None
+            session.pop('doc_type', None)
+            session.pop('pdf_hash', None)
+            has_document = False
+            messages = []
+
+    return render_template('index.html',
+                         has_document=has_document,
                          pdf_filename=session.get('pdf_filename'),
                          infographic_email_enabled=is_email_configured(),
                          infographic_email_prefill=session.get('infographic_email') or '',
                          message_count=len(messages),
                          quiz_active=session.get('quiz_active', False),
                          equation_active=session.get('equation_active', False))
+
+
+@app.route('/chat_history', methods=['GET'])
+def chat_history():
+    """The stored conversation and practice state, so a reloaded page can
+    rebuild the chat instead of showing an empty one."""
+    try:
+        init_session()
+        session_id = session.get('session_id')
+        rows = storage_manager.batch_retrieve(session_id, [
+            'messages', 'calculation_mode_active', 'current_calculation_question',
+            'essay_mode_active', 'current_essay_question'])
+        messages = [m for m in (rows.get('messages') or [])
+                    if isinstance(m, dict) and m.get('role') in ('user', 'assistant')
+                    and isinstance(m.get('content'), str) and m['content'].strip()]
+        return jsonify({
+            'messages': messages,
+            'calculation_mode': bool(rows.get('calculation_mode_active') and rows.get('current_calculation_question')),
+            'essay_mode': bool(rows.get('essay_mode_active') and rows.get('current_essay_question')),
+        })
+    except Exception:
+        logging.exception("Error loading chat history")
+        return jsonify({'messages': [], 'calculation_mode': False, 'essay_mode': False}), 500
 
 @app.route('/simple_chat', methods=['POST'])
 @csrf.exempt
@@ -921,8 +875,11 @@ def simple_chat():
                 # Use calculation answer checking instead of general chat
                 try:
                     logging.debug("SIMPLE_CHAT: Calling check_calculation_answer_async")
-                    
-                    response = await tutor_ai.check_calculation_answer_async(current_calculation, user_message)
+
+                    settled_question, reference_answer = _settle_calculation_verification(session_id)
+                    response = await tutor_ai.check_calculation_answer_async(settled_question or current_calculation, user_message,
+                                                                             equation=_current_calc_equation(session_id),
+                                                                             reference_answer=reference_answer)
                     
                     if response:
                         logging.debug(f"SIMPLE_CHAT: Got calculation answer response of {len(response)} characters")
@@ -964,7 +921,7 @@ def simple_chat():
                         'error': 'Error checking your answer. Please try again.'
                     }, 500
             else:
-                # Normal chat mode - get response asynchronously using gpt-6-sol primary with Gemini fallback
+                # Normal chat mode - get response asynchronously (primary model, then the fallback model)
                 response = await tutor_ai.get_response_async(user_message)
                 
                 if response:
@@ -1054,6 +1011,12 @@ def simple_chat_stream():
     essay_mode = _flags.get('essay_mode_active')
     current_essay = _flags.get('current_essay_question')
     _ph.mark('mode_flags')
+    if (calculation_mode and current_calculation and not (essay_mode and current_essay)
+            and _calc_message_is_a_question(user_message)):
+        # A question to the tutor, not an answer: answer it in normal chat
+        # (the practice stays active for the next message).
+        logging.info("CALC_ANSWER_STREAM: message reads as a question; answering it in chat instead of marking it")
+        calculation_mode = False
     if (essay_mode and current_essay) or (calculation_mode and current_calculation):
         pdf_content = get_pdf_content_with_fallback()
         if not pdf_content:
@@ -1068,7 +1031,13 @@ def simple_chat_stream():
             # Essay practice takes precedence: the student's message is their essay answer
             if essay_mode and current_essay:
                 return tutor_ai.check_essay_answer_stream_async(current_essay, user_message)
-            return tutor_ai.check_calculation_answer_stream_async(current_calculation, user_message)
+            # If the strong model is still checking the question, wait for its
+            # verdict so the answer is marked against the question the student
+            # will see, and hand its reference answer to the marker.
+            settled_question, reference_answer = _settle_calculation_verification(session_id)
+            return tutor_ai.check_calculation_answer_stream_async(settled_question or current_calculation, user_message,
+                                                                  equation=_current_calc_equation(session_id),
+                                                                  reference_answer=reference_answer)
 
         def _run_calc_stream():
             with app.app_context():
@@ -1084,11 +1053,12 @@ def simple_chat_stream():
                             calc_q.put("I'm having trouble checking your answer right now. Please try again.")
                     finally:
                         try:
-                            _storage = StorageManager()
-                            msgs = _storage.retrieve_content(session_id, 'messages') or []
-                            msgs.append({'role': 'user', 'content': user_message})
-                            msgs.append({'role': 'assistant', 'content': full_response})
-                            _storage.store_content(session_id, 'messages', msgs)
+                            if full_response and not TutorAI.is_failure_text(full_response):
+                                _storage = StorageManager()
+                                msgs = _storage.retrieve_content(session_id, 'messages') or []
+                                msgs.append({'role': 'user', 'content': user_message})
+                                msgs.append({'role': 'assistant', 'content': full_response})
+                                _storage.store_content(session_id, 'messages', msgs)
                         except Exception as e:
                             logging.error(f"CALC_ANSWER_STREAM: Error storing messages: {e}")
                         try:
@@ -1156,12 +1126,15 @@ def simple_chat_stream():
                     if not full_response:
                         q.put("I'm having trouble connecting to the AI service right now. Please try again.")
                 finally:
-                    # Store complete conversation after streaming finishes
+                    # Store complete conversation after streaming finishes (a
+                    # failure notice is not stored: it would be fed back to the
+                    # tutor as part of the conversation).
                     try:
-                        msgs = storage_manager.retrieve_content(session_id, 'messages') or []
-                        msgs.append({'role': 'user', 'content': user_message})
-                        msgs.append({'role': 'assistant', 'content': full_response})
-                        storage_manager.store_content(session_id, 'messages', msgs)
+                        if full_response and not TutorAI.is_failure_text(full_response):
+                            msgs = storage_manager.retrieve_content(session_id, 'messages') or []
+                            msgs.append({'role': 'user', 'content': user_message})
+                            msgs.append({'role': 'assistant', 'content': full_response})
+                            storage_manager.store_content(session_id, 'messages', msgs)
                     except Exception as e:
                         logging.error(f"STREAM: Error storing messages: {e}")
                     try:
@@ -1312,19 +1285,24 @@ def quickaction_stream():
                 if not full_response:
                     q.put("I'm having trouble right now. Please try again in a moment.")
             finally:
-                if stream_ok and full_response and action != 'essay':
+                # A failure notice or interrupted stream is never cached for
+                # other sessions, never starts essay practice and is not fed
+                # back into the chat history.
+                usable = stream_ok and full_response and not TutorAI.is_failure_text(full_response)
+                if usable and action != 'essay':
                     store_cached_ai_result(pdf_content, action, full_response)
-                if action == 'essay' and stream_ok and full_response:
+                if action == 'essay' and usable:
                     _activate_essay_practice(session_id, full_response)
                 # Store the response in message history
-                try:
-                    storage_manager = StorageManager()
-                    msgs = storage_manager.retrieve_content(session_id, 'messages') or []
-                    msgs.append({'role': 'user', 'content': 'Explanation of key concepts' if action == 'key_concepts' else 'Essay question'})
-                    msgs.append({'role': 'assistant', 'content': full_response})
-                    storage_manager.store_content(session_id, 'messages', msgs)
-                except Exception as e:
-                    logging.error(f"QUICKACTION STREAM: Error storing messages: {e}")
+                if usable:
+                    try:
+                        storage_manager = StorageManager()
+                        msgs = storage_manager.retrieve_content(session_id, 'messages') or []
+                        msgs.append({'role': 'user', 'content': 'Explanation of key concepts' if action == 'key_concepts' else 'Essay question'})
+                        msgs.append({'role': 'assistant', 'content': full_response})
+                        storage_manager.store_content(session_id, 'messages', msgs)
+                    except Exception as e:
+                        logging.error(f"QUICKACTION STREAM: Error storing messages: {e}")
                 try:
                     if tutor_ai:
                         await tutor_ai.close_async_clients()
@@ -1387,6 +1365,8 @@ def calculation_stream():
         async def _consume():
             nonlocal doc_type, exam_questions, equation_list, current_index
             full_response = ""
+            verify_equation = None      # what the question is about, for verification
+            verify_exam_question = None
             try:
                 tutor_ai = _make_tutor(pdf_content, session_id)
                 _storage = StorageManager()
@@ -1415,12 +1395,32 @@ def calculation_stream():
                     if prewarmed:
                         consume_prewarmed(session_id, 'calculation')
                         full_response = prewarmed
+                        if exam_questions:
+                            verify_exam_question = exam_questions[0]
+                        elif equation_list:
+                            verify_equation = equation_list[0]
                         remainder = prewarmed[len(sent):] if prewarmed.startswith(sent) else prewarmed
                         for i in range(0, len(remainder), 400):
                             q.put(remainder[i:i + 400])
                         return
+                    if sent:
+                        # The pre-generation was relayed but never finished: the
+                        # page must clear that partial text before the live
+                        # question below replaces it (otherwise the student
+                        # sees two questions in one bubble).
+                        q.put({'reset': True})
 
                 # --- Detect document type on first call ---
+                if not doc_type:
+                    # The upload job classifies the document a few seconds after
+                    # the upload completes; give it a moment rather than running
+                    # a second, possibly disagreeing, classification.
+                    deadline = time.time() + 8
+                    while not doc_type and time.time() < deadline:
+                        doc_type = _storage.retrieve_content(session_id, 'calc_doc_type')
+                        if not doc_type:
+                            q.put(KEEPALIVE)
+                            await asyncio.sleep(0.5)
                 if not doc_type:
                     logging.info("CALCULATION STREAM: Detecting document type...")
                     doc_type = await tutor_ai.detect_document_type_async()
@@ -1440,12 +1440,13 @@ def calculation_stream():
                         current_index = 0
 
                     if current_index >= len(exam_questions):
-                        q.put(f"You've worked through all {len(exam_questions)} exam questions — great work! You can upload a new paper to continue practising.")
+                        q.put(f"You've worked through all {len(exam_questions)} calculation questions I found in this paper — great work! You can upload a new paper to continue practising.")
                         return
 
                     current_q = exam_questions[current_index]
+                    verify_exam_question = current_q
                     logging.info(f"CALCULATION STREAM: Streaming worked example for exam Q{current_q.get('id', current_index+1)} ({current_index + 1}/{len(exam_questions)})")
-                    context_truncated = tutor_ai._get_truncated_context()
+                    context_truncated = tutor_ai._exam_context(current_q)
                     async for chunk in tutor_ai._generate_exam_worked_example_stream(context_truncated, current_q):
                         full_response += chunk
                         q.put(chunk)
@@ -1462,11 +1463,13 @@ def calculation_stream():
                         _storage.store_content(session_id, 'current_equation_index', 0)
                         current_index = 0
 
+                    equation_list = _wait_for_equation_list(_storage, session_id, equation_list, current_index)
                     if current_index >= len(equation_list):
-                        q.put(f"You've worked through all {len(equation_list)} equations in your notes — great work! You can upload new notes to continue practising.")
+                        q.put(f"You've worked through all {len(equation_list)} of the main equations I picked out from your notes — great work! You can upload new notes to continue practising.")
                         return
 
                     specific_equation = equation_list[current_index]
+                    verify_equation = specific_equation
                     logging.info(f"CALCULATION STREAM: Streaming question for equation {current_index + 1}/{len(equation_list)}")
                     async for chunk in tutor_ai.generate_calculation_question_stream_async(specific_equation=specific_equation):
                         full_response += chunk
@@ -1479,19 +1482,36 @@ def calculation_stream():
                 if not full_response:
                     q.put("I'm having trouble generating a calculation question right now. Please try again in a moment.")
             finally:
-                # Store the response for calculation answer checking
+                # Store the response for calculation answer checking. A failure
+                # notice or a cut-off draft is not a question: it is neither
+                # stored as the current question nor added to the history the
+                # tutor is shown.
                 try:
                     _storage = StorageManager()
-                    msgs = _storage.retrieve_content(session_id, 'messages') or []
-                    msgs.append({'role': 'assistant', 'content': full_response})
-                    writes = [(session_id, 'messages', msgs)]
-                    if full_response:
+                    writes = []
+                    if full_response and not TutorAI.is_failure_text(full_response):
+                        msgs = _storage.retrieve_content(session_id, 'messages') or []
+                        msgs.append({'role': 'assistant', 'content': full_response})
+                        writes.append((session_id, 'messages', msgs))
+                    if TutorAI.looks_like_calculation_question(full_response):
                         writes += [(session_id, 'current_calculation_question', full_response),
+                                   (session_id, 'current_calculation_answer', None),
                                    (session_id, 'calculation_mode_active', True),
                                    (session_id, 'essay_mode_active', False)]
-                    _storage.batch_store(writes)  # one write instead of four
+                    if writes:
+                        _storage.batch_store(writes)  # one write instead of four
                 except Exception as e:
                     logging.error(f"CALCULATION STREAM: Error storing messages: {e}")
+                # Verify the draft on the strong model; the page polls for the
+                # verdict and swaps in a correction if there is one.
+                try:
+                    verify_id = start_calculation_verification(
+                        session_id, full_response, pdf_content, doc_type,
+                        equation=verify_equation, exam_question=verify_exam_question)
+                    if verify_id:
+                        q.put({'verify_task_id': verify_id})
+                except Exception as e:
+                    logging.error(f"CALCULATION STREAM: could not start verification: {e}")
                 try:
                     await tutor_ai.close_async_clients()
                 except Exception:
@@ -1519,7 +1539,7 @@ def calculation_stream():
             if chunk is KEEPALIVE:
                 yield ": waiting\n\n"   # SSE comment: ignored by the page, keeps the connection open
                 continue
-            escaped = json.dumps(chunk)
+            escaped = json.dumps(chunk)   # text chunks are JSON strings; control messages JSON objects
             yield f"data: {escaped}\n\n"
 
     return Response(generate(), mimetype='text/event-stream',
@@ -1553,6 +1573,7 @@ def summary_stream():
             sent = ""
             full = None
             deadline = time.time() + 90
+            hard_deadline = time.time() + 300
             try:
                 while time.time() < deadline:
                     final = _storage_s.retrieve_content(session_id, 'executive_summary')
@@ -1566,11 +1587,16 @@ def summary_stream():
                     if len(partial) > len(sent) and partial.startswith(sent):
                         yield f"data: {json.dumps(partial[len(sent):])}\n\n"
                         sent = partial
+                        # Still arriving: keep relaying rather than stopping at
+                        # 90 s and presenting a half summary as the whole.
+                        deadline = min(time.time() + 30, hard_deadline)
                     elif not _storage_s.retrieve_content(session_id, 'summary_pending'):
                         break  # job finished without a final text (it failed): stop relaying
                     time.sleep(0.3)
                 if full is None:
                     full = sent
+                    if full:
+                        logging.warning("SUMMARY STREAM: relay ended before the summary finished; partial text shown")
                 if not full:
                     full = "I'm having trouble generating the summary right now. Please try again in a moment."
                     yield f"data: {json.dumps(full)}\n\n"
@@ -1621,7 +1647,7 @@ def summary_stream():
                 if not full_response:
                     q.put("I'm having trouble generating a summary right now. Please try again.")
             finally:
-                if stream_ok and full_response:
+                if stream_ok and full_response and not TutorAI.is_failure_text(full_response):
                     store_cached_ai_result(pdf_content, 'summary', full_response)
                 try:
                     storage_manager = StorageManager()
@@ -1661,80 +1687,6 @@ def summary_stream():
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
-@app.route('/start_summary_generation', methods=['POST'])
-@csrf.exempt
-@rate_limit(calls_per_minute=10, use_session=True)
-def start_summary_generation():
-    """Start background summary generation using polling pattern"""
-    try:
-        init_session()
-
-        pdf_content = get_pdf_content_with_fallback()
-
-        if not pdf_content:
-            logging.error("No document content found for summary generation")
-            # Return 200 with error message instead of 400 to prevent HTTP errors in frontend
-            return jsonify({'success': False, 'error': 'Document content not available. Please try uploading your file again.'}), 200
-
-        # Generate unique task ID
-        task_id = str(uuid_module.uuid4())
-
-        # Set initial status in PostgreSQL Database
-        create_task(task_id, "pending")
-
-        # Serve from the AI result cache when this document was already summarised
-        cached = get_cached_ai_result(pdf_content, 'summary')
-        if cached:
-            update_task_complete(task_id, success=True, data=cached)
-            return jsonify({"task_id": task_id}), 202
-
-        # Start background task in separate thread
-        thread = threading.Thread(
-            target=run_summary_generation_background,
-            args=(task_id, pdf_content, _stored_doc_type()),
-            daemon=True
-        )
-        thread.start()
-
-        return jsonify({"task_id": task_id}), 202
-
-    except Exception:
-        logging.exception("Critical error in summary generation")
-        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
-
-@app.route('/summary_status/<task_id>', methods=['GET'])
-def get_summary_status(task_id):
-    """Get the status of a summary generation task"""
-    try:
-        # Retrieve status from PostgreSQL Database
-        task_result = get_task_status(task_id)
-        
-        if not task_result:
-            return jsonify({"status": "not_found"}), 404
-
-        result_dict = task_result
-
-        # If task is complete, clear the summary flag but don't store in messages
-        # (the frontend will handle displaying it to avoid duplication)
-        if result_dict.get("status") == "complete" and result_dict.get("success"):
-            session_id = session.get('session_id')
-            if session_id:
-                # Clear the summary flag
-                session['needs_summary'] = False
-
-                logging.info(f"SUMMARY POLLING: Summary completed for task {task_id}")
-
-                # Clean up the task from database after successful completion
-                try:
-                    cleanup_task(task_id)
-                except:
-                    pass
-
-        return jsonify(result_dict)
-
-    except Exception:
-        logging.exception("SUMMARY POLLING: Error checking task status")
-        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
 def run_quiz_generation_background(task_id, pdf_content, doc_type=None):
     """Background task to generate retrieval quiz using async methods"""
@@ -1892,93 +1844,6 @@ def get_quiz_status(task_id):
         logging.exception("Error checking quiz task status")
         return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
-@app.route('/start_calculation_generation', methods=['POST'])
-@csrf.exempt
-@rate_limit(calls_per_minute=10, use_session=True)
-def start_calculation_generation():
-    """Start background calculation question generation using polling pattern"""
-    try:
-        logging.info("POLLING: Starting calculation generation")
-        init_session()
-        
-        # Parse request data safely
-        data = None
-        try:
-            if request.content_type == 'application/json':
-                data = request.get_json(force=True, silent=True)
-        except Exception as e:
-            logging.info(f"POLLING: No JSON data in request: {e}")
-            data = None
-        
-        # Set context from stored content with fallback
-        session_id = session.get('session_id')
-        logging.info(f"POLLING: Current session_id: {session_id}")
-        
-        pdf_content = get_pdf_content_with_fallback()
-        logging.info(f"POLLING: PDF content retrieved: {pdf_content is not None}")
-        
-        if not pdf_content:
-            logging.error("POLLING: No document content found even with fallback")
-            return jsonify({'error': 'No document content found'}), 400
-
-        record_activity('calculation_question')
-        
-        # Generate unique task ID
-        task_id = str(uuid_module.uuid4())
-        
-        # Set initial status in PostgreSQL Database
-        create_task(task_id, "pending")
-        
-        # Start background task in separate thread
-        thread = threading.Thread(
-            target=run_calculation_generation_background,
-            args=(task_id, session_id, pdf_content),
-            daemon=True
-        )
-        thread.start()
-
-        logging.info(f"POLLING: Background task started with ID: {task_id}")
-
-        return jsonify({"task_id": task_id}), 202
-
-    except Exception:
-        logging.exception("POLLING: Critical error")
-        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
-
-@app.route('/calculation_status/<task_id>', methods=['GET'])
-def get_calculation_status(task_id):
-    """Get the status of a calculation generation task"""
-    try:
-        # Retrieve status from PostgreSQL Database
-        task_result = get_task_status(task_id)
-        
-        if not task_result:
-            return jsonify({"status": "not_found"}), 404
-
-        result_dict = task_result
-
-        # If task is complete, update session storage
-        if result_dict.get("status") == "complete" and result_dict.get("success"):
-            session_id = session.get('session_id')
-            if session_id:
-                storage_manager = StorageManager()
-                question_text = result_dict.get("data", "")
-
-                if question_text:
-                    storage_manager.store_content(session_id, 'current_calculation_question', question_text)
-                    storage_manager.store_content(session_id, 'calculation_mode_active', True)
-
-                try:
-                    cleanup_task(task_id)
-                except:
-                    pass
-
-        return jsonify(result_dict)
-
-    except Exception:
-        logging.exception("Error checking calculation task status")
-        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
-
 
 @app.route('/increment_equation_index', methods=['POST'])
 @csrf.exempt
@@ -2005,109 +1870,24 @@ def increment_equation_index():
         logging.exception("Error incrementing equation index")
         return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
-@app.route('/start_calculation_answer_check', methods=['POST'])
-@csrf.exempt
-@rate_limit(calls_per_minute=10, use_session=True)
-def start_calculation_answer_check():
-    """Start background calculation answer checking using polling pattern"""
+@app.route('/calculation_verify_status/<task_id>', methods=['GET'])
+def get_calculation_verify_status(task_id):
+    """Verdict of the strong-model check on the question just shown:
+    {"status": "pending"} until done, then {"status": "complete",
+    "data": {"status": "ok"|"corrected"|"unverified", "question", "reason"}}."""
     try:
-        init_session()
-
-        # Parse request data — require application/json to prevent CSRF via form submissions
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'Request must be JSON (Content-Type: application/json)'}), 415
-        challenge_question = data.get('challenge_question')
-        user_answer = data.get('user_answer')
-
-        if not challenge_question or not user_answer:
-            return jsonify({'error': 'Missing challenge_question or user_answer'}), 400
-
-        # Input validation: both fields must be text with sane length limits
-        if not isinstance(challenge_question, str) or not isinstance(user_answer, str):
-            resource_monitor.increment('input_validation_failures')
-            return jsonify({'error': 'challenge_question and user_answer must be text'}), 400
-        if len(user_answer) > MAX_MESSAGE_LENGTH:
-            resource_monitor.increment('input_validation_failures')
-            return jsonify({'error': f'Answer too long (max {MAX_MESSAGE_LENGTH} characters)'}), 400
-        if len(challenge_question) > 50000:
-            resource_monitor.increment('input_validation_failures')
-            return jsonify({'error': 'Challenge question too long'}), 400
-
-        # Set context from stored content with fallback
-        session_id = session.get('session_id')
-
-        pdf_content = get_pdf_content_with_fallback()
-
-        if not pdf_content:
-            logging.info("No document content found for calculation answer checking")
-            return jsonify({'error': 'No document content found'}), 400
-
-        record_activity('calculation_answer')
-
-        # Generate unique task ID
-        task_id = str(uuid_module.uuid4())
-
-        # Set initial status in PostgreSQL Database
-        create_task(task_id, "pending")
-
-        # Start background task in separate thread
-        thread = threading.Thread(
-            target=run_calculation_answer_check_background,
-            args=(task_id, challenge_question, user_answer, pdf_content, _stored_doc_type()),
-            daemon=True
-        )
-        thread.start()
-
-
-        return jsonify({"task_id": task_id}), 202
-
-    except Exception:
-        logging.exception("Critical error in calculation answer checking")
-        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
-
-@app.route('/calculation_answer_status/<task_id>', methods=['GET'])
-def get_calculation_answer_status(task_id):
-    """Get the status of a calculation answer check task"""
-    try:
-        # Retrieve status from PostgreSQL Database
         task_result = get_task_status(task_id)
-        
         if not task_result:
             return jsonify({"status": "not_found"}), 404
-
-        result_dict = task_result
-
-        # If task is complete, also update session storage
-        if result_dict.get("status") == "complete" and result_dict.get("success"):
-            session_id = session.get('session_id')
-            if session_id:
-                storage_manager = StorageManager()
-                evaluation_response = result_dict.get("data", "")
-
-                # Add evaluation to messages
-                messages = storage_manager.retrieve_content(session_id, 'messages') or []
-                messages.append({
-                    "role": "assistant",
-                    "content": evaluation_response
-                })
-                storage_manager.store_content(session_id, 'messages', messages)
-
-                # Clear any current calculation question
-                storage_manager.delete_content(session_id, 'current_calculation_question')
-
-                # Clean up the task from database after successful completion
-                try:
-                    cleanup_task(task_id)
-                except:
-                    pass
-
-        return jsonify(result_dict)
-
+        if task_result.get("status") == "complete":
+            try:
+                cleanup_task(task_id)
+            except Exception:
+                pass
+        return jsonify(task_result)
     except Exception:
-        logging.exception("Error checking calculation answer task status")
-        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
-
+        logging.exception("Error reading calculation verification status")
+        return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
 
 def process_document_with_fallback(file, max_retries=3):
@@ -2295,8 +2075,15 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, dela
                         buf += chunk
                         now = time.perf_counter()
                         if now - last_write >= SUMMARY_PARTIAL_WRITE_INTERVAL:
+                            if not _upload_is_current(session_id, task_id):
+                                raise RuntimeError("superseded by a newer upload")
                             storage.store_content(session_id, f"{feature}_prewarm_partial", buf)
                             last_write = now
+                    if TutorAI.is_failure_text(buf):
+                        # A failure notice or cut-off draft must not be served
+                        # as the pre-generated result.
+                        logging.warning(f"PREWARM {feature}: stream ended with a failure notice; discarded")
+                        return None
                     if finalize:
                         # finalize(text) or finalize(text, tutor); may be a coroutine
                         n_params = len(inspect.signature(finalize).parameters)
@@ -2309,11 +2096,13 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, dela
                 value = loop.run_until_complete(_run())
             finally:
                 loop.close()
-            if value:
+            if isinstance(value, str) and TutorAI.is_failure_text(value):
+                logging.warning(f"PREWARM {feature}: produced a failure notice; discarded (upload {task_id})")
+            elif value and _upload_is_current(session_id, task_id):
                 storage.store_content(session_id, f"{feature}_prewarm", value)
                 logging.info(f"PREWARM {feature}: ready in {time.perf_counter() - started:.1f}s (upload {task_id})")
             else:
-                logging.warning(f"PREWARM {feature}: produced nothing (upload {task_id})")
+                logging.warning(f"PREWARM {feature}: produced nothing or superseded (upload {task_id})")
     except Exception as e:
         logging.error(f"PREWARM {feature}: failed (feature will generate on demand): {e}")
         try:
@@ -2327,6 +2116,52 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, dela
                 storage.store_content(session_id, f"{feature}_prewarm_pending", False)
         except Exception as e:
             logging.error(f"PREWARM {feature}: could not clear pending flag: {e}")
+
+
+def _extract_full_equation_list_background(session_id, pdf_text, doc_type, task_id, first_eq):
+    """Stage two of the equation extraction (after an upload): the full list,
+    reconciled with the stage-one equation and stored; clears the pending flag
+    that /calculation_stream waits on for 'next question' clicks."""
+    with app.app_context():
+        storage = StorageManager()
+        try:
+            tutor = TutorAI()
+            tutor.set_context(pdf_text, doc_type=doc_type)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                equations = loop.run_until_complete(tutor.extract_equation_list_async())
+            finally:
+                loop.close()
+            merged = TutorAI.merge_first_equation(first_eq, equations)
+            if not _upload_is_current(session_id, task_id):
+                return
+            storage.batch_store([(session_id, 'equation_list', merged),
+                                 (session_id, 'equation_list_pending', False)])
+            logging.info(f"Upload {task_id}: full equation list ready ({len(merged)} equations)")
+        except Exception as e:
+            logging.error(f"Upload {task_id}: full equation list extraction failed (first equation kept): {e}")
+            try:
+                storage.store_content(session_id, 'equation_list_pending', False)
+            except Exception:
+                pass
+
+
+EQUATION_LIST_WAIT_SECONDS = 90
+
+
+def _wait_for_equation_list(storage, session_id, equation_list, current_index):
+    """If the student has already used every equation stored so far but the
+    full list is still being extracted, wait for it (polling) before deciding
+    the notes are exhausted."""
+    deadline = time.time() + EQUATION_LIST_WAIT_SECONDS
+    while current_index >= len(equation_list or []) and time.time() < deadline:
+        rows = storage.batch_retrieve(session_id, ['equation_list', 'equation_list_pending'])
+        equation_list = rows.get('equation_list') or equation_list
+        if not rows.get('equation_list_pending'):
+            break
+        time.sleep(0.5)
+    return equation_list
 
 
 def _start_prewarm(feature, session_id, pdf_text, doc_type, task_id, produce, delay=0.0, finalize=None, force=False):
@@ -2353,7 +2188,6 @@ def _wait_prewarm_then_complete(task_id, session_id, feature, wait_seconds, fall
     fallback()
 
 
-
 def _generate_summary_early(session_id, pdf_text, task_id):
     """Start the executive summary the moment the text is stored (before the
     page asks for it). The text is streamed from the model and published to the
@@ -2364,8 +2198,20 @@ def _generate_summary_early(session_id, pdf_text, task_id):
     storage = StorageManager()
     try:
         with app.app_context():
+            # The upload job classifies the document in parallel; the summary's
+            # layout depends on the type (one category per exam question vs
+            # topic categories), so wait briefly for the real classification
+            # instead of summarising with the keyword guess.
+            doc_type = None
+            deadline = time.time() + 10
+            while not doc_type and time.time() < deadline:
+                doc_type = storage.retrieve_content(session_id, 'calc_doc_type')
+                if not doc_type:
+                    time.sleep(0.5)
+            if not doc_type:
+                logging.info(f"Upload {task_id}: classification not ready; early summary uses the keyword guess")
             tutor = TutorAI()
-            tutor.set_context(pdf_text)
+            tutor.set_context(pdf_text, doc_type=doc_type)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
@@ -2376,6 +2222,8 @@ def _generate_summary_early(session_id, pdf_text, task_id):
                     buf += chunk
                     now = time.perf_counter()
                     if now - last_write >= SUMMARY_PARTIAL_WRITE_INTERVAL:
+                        if not _upload_is_current(session_id, task_id):
+                            raise RuntimeError("superseded by a newer upload")
                         storage.store_content(session_id, 'executive_summary_partial', buf)
                         last_write = now
                 return buf
@@ -2384,12 +2232,14 @@ def _generate_summary_early(session_id, pdf_text, task_id):
                 text = loop.run_until_complete(_stream_and_publish())
             finally:
                 loop.close()
-            if text and text.strip():
+            if text and text.strip() and TutorAI.is_failure_text(text):
+                logging.warning(f"Upload {task_id}: early summary returned a failure notice; not stored")
+            elif text and text.strip() and _upload_is_current(session_id, task_id):
                 storage.store_content(session_id, 'executive_summary', text)
                 store_cached_ai_result(pdf_text, 'summary', text)
                 logging.info(f"Upload {task_id}: early summary ready in {time.perf_counter() - started:.1f}s")
             else:
-                logging.warning(f"Upload {task_id}: early summary came back empty")
+                logging.warning(f"Upload {task_id}: early summary came back empty or superseded")
     except Exception as e:
         logging.error(f"Upload {task_id}: early summary failed (page will generate it): {e}")
     finally:
@@ -2416,12 +2266,15 @@ def process_upload_background(task_id, file_data, filename, session_id):
                 # One write: primary_storage persists to the same table as
                 # storage_manager and also fills its in-memory cache.
                 primary_storage.store_content(session_id, 'pdf_content', pdf_text)
+                # Fingerprint for the request handlers to put in the cookie, so
+                # another worker's cached copy of a previous document is rejected.
+                storage_manager.store_content(session_id, 'pdf_content_hash', _pdf_hash(pdf_text))
 
                 # Reset per-document state so a fresh document starts from question 1
                 # (and no document type from a previous upload lingers): one bulk
                 # delete instead of nine sequential writes, so the completion
                 # signal reaches the waiting /upload request sooner.
-                storage_manager.delete_many(session_id, ['equation_list', 'exam_questions', 'calc_doc_type',
+                storage_manager.delete_many(session_id, ['equation_list', 'equation_list_pending', 'exam_questions', 'calc_doc_type',
                                                          'executive_summary', 'executive_summary_partial',
                                                          *ESSAY_STATE_KEYS, *PREWARM_KEYS])
                 storage_manager.store_content(session_id, 'current_equation_index', 0)
@@ -2461,13 +2314,19 @@ def process_upload_background(task_id, file_data, filename, session_id):
                     logging.info(f"Upload {task_id}: document classified as {doc_type}")
                 except Exception as e:
                     logging.error(f"Upload {task_id}: document classification failed: {e}")
-                storage_manager.store_content(session_id, 'calc_doc_type', doc_type)
                 record_upload(filename, session_id, True, doc_type=doc_type,
                               content_chars=len(pdf_text) if pdf_text else 0)
+                if not _upload_is_current(session_id, task_id):
+                    # A newer upload has replaced this one while it was being
+                    # classified: everything below would be stored under the
+                    # new document.
+                    return
+                storage_manager.store_content(session_id, 'calc_doc_type', doc_type)
 
                 # Prepare calculation practice in the background so the first
                 # calculation question streams immediately instead of first
                 # spending ~10 s extracting the equation list / exam questions.
+                calc_prewarm_started = False
                 try:
                     _prep = TutorAI()
                     _prep.set_context(pdf_text, doc_type=doc_type)
@@ -2480,10 +2339,26 @@ def process_upload_background(task_id, file_data, filename, session_id):
                                 storage_manager.store_content(session_id, 'exam_questions', questions)
                             logging.info(f"Upload {task_id}: pre-extracted {len(questions or [])} exam questions")
                         else:
-                            equations = _loop.run_until_complete(_prep.extract_equation_list_async())
-                            if equations:
-                                storage_manager.store_content(session_id, 'equation_list', equations)
-                            logging.info(f"Upload {task_id}: pre-extracted {len(equations or [])} equations")
+                            # Two stages: the first equation alone (~5 s) so the
+                            # calculation pre-generation can start now; the full
+                            # list follows in a thread and is reconciled so that
+                            # index 0 is the equation already pre-generated.
+                            first_eq = _loop.run_until_complete(_prep.extract_first_equation_async())
+                            if first_eq:
+                                storage_manager.batch_store([(session_id, 'equation_list', [first_eq]),
+                                                             (session_id, 'equation_list_pending', True)])
+                                _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
+                                               lambda t: t.generate_calculation_question_stream_async(specific_equation=first_eq, model=CALC_PREWARM_MODEL))
+                                calc_prewarm_started = True
+                                threading.Thread(target=_extract_full_equation_list_background,
+                                                 args=(session_id, pdf_text, doc_type, task_id, first_eq),
+                                                 daemon=True).start()
+                                logging.info(f"Upload {task_id}: first equation extracted; full list extracting in background")
+                            else:
+                                equations = _loop.run_until_complete(_prep.extract_equation_list_async())
+                                if equations:
+                                    storage_manager.store_content(session_id, 'equation_list', equations)
+                                logging.info(f"Upload {task_id}: pre-extracted {len(equations or [])} equations")
                     finally:
                         _loop.close()
                 except Exception as e:
@@ -2508,10 +2383,10 @@ def process_upload_background(task_id, file_data, filename, session_id):
                     eq_list = storage_manager.retrieve_content(session_id, 'equation_list')
                     if exam_qs:
                         _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
-                                       lambda t: t._generate_exam_worked_example_stream(t._get_truncated_context(), exam_qs[0]))
-                    elif eq_list:
+                                       lambda t: t._generate_exam_worked_example_stream(t._exam_context(exam_qs[0]), exam_qs[0], model=CALC_PREWARM_MODEL))
+                    elif eq_list and not calc_prewarm_started:
                         _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
-                                       lambda t: t.generate_calculation_question_stream_async(specific_equation=eq_list[0]))
+                                       lambda t: t.generate_calculation_question_stream_async(specific_equation=eq_list[0], model=CALC_PREWARM_MODEL))
                 except Exception as e:
                     logging.error(f"Upload {task_id}: could not start pre-generation: {e}")
             else:
@@ -2526,6 +2401,14 @@ def process_upload_background(task_id, file_data, filename, session_id):
             update_task_failed(task_id, "An internal error occurred. Please try again.")
             _signal_upload_done(task_id)
 
+@app.errorhandler(413)
+def _file_too_large(_error):
+    """Flask rejects bodies over MAX_CONTENT_LENGTH before the route runs; the
+    page expects JSON, not the default HTML error page."""
+    limit_mb = app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)
+    return jsonify({'error': f'That file is larger than {limit_mb} MB. Please upload a smaller file.'}), 413
+
+
 @app.route('/upload', methods=['POST'])
 @csrf.exempt
 @rate_limit(calls_per_minute=5, use_session=True)
@@ -2533,6 +2416,12 @@ def upload_file():
     """Handle file upload - returns immediately with task_id"""
     try:
         init_session()
+
+        # Reading request.files on an oversized body raises inside this try
+        # block and would be reported as an internal error: answer the size
+        # case first, in plain English.
+        if request.content_length and request.content_length > app.config['MAX_CONTENT_LENGTH']:
+            return _file_too_large(None)
 
         if 'file' not in request.files:
             return jsonify({'error': 'No file uploaded'}), 400
@@ -2572,9 +2461,15 @@ def upload_file():
             
             # Generate unique task ID
             task_id = str(uuid_module.uuid4())
-            
+
             # Initialize task status in database
             create_task(task_id, "pending")
+            # Background jobs of an earlier upload (summary, pre-generations,
+            # classification) check this before storing anything.
+            try:
+                storage_manager.store_content(session_id, 'current_upload', task_id)
+            except Exception as e:
+                logging.warning(f"Could not record current upload: {e}")
             
             # Start background thread for file processing
             done_event = _upload_event(task_id, create=True)
@@ -2600,6 +2495,9 @@ def upload_file():
             # Store sanitized filename in session
             session['pdf_filename'] = safe_filename
             session.pop('doc_type', None)  # new document: the type is re-classified
+            session.pop('pdf_hash', None)
+            if completed and completed.get('status') == 'complete':
+                _remember_pdf_hash(session_id)
 
             # Clear previous messages (one write: DB + this worker's cache)
             try:
@@ -2622,6 +2520,17 @@ def upload_file():
         logging.exception("Critical error in file upload")
         return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
 
+def _remember_pdf_hash(session_id):
+    """Copy the uploaded document's fingerprint into the signed cookie (see
+    get_pdf_content_with_fallback). Needs a request context."""
+    try:
+        digest = storage_manager.retrieve_content(session_id, 'pdf_content_hash')
+        if digest:
+            session['pdf_hash'] = digest
+    except Exception as e:
+        logging.debug(f"Could not read pdf_content_hash: {e}")
+
+
 @app.route('/upload_status/<task_id>', methods=['GET'])
 def get_upload_status(task_id):
     """Get the status of a file upload task"""
@@ -2638,6 +2547,7 @@ def get_upload_status(task_id):
         if result_dict.get("status") == "complete" and (result_dict.get("data") or {}).get('success'):
             session_id = session.get('session_id')
             if session_id:
+                _remember_pdf_hash(session_id)
                 # Get PDF content
                 pdf_content = (primary_storage.retrieve_content(session_id, 'pdf_content') or 
                              storage_manager.retrieve_content(session_id, 'pdf_content'))
@@ -2665,282 +2575,6 @@ def get_upload_status(task_id):
         logging.exception("Error checking upload task status")
         return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
 
-@app.route('/start_chat_response', methods=['POST'])
-@csrf.exempt
-@rate_limit(calls_per_minute=30, use_session=True)
-def start_chat_response():
-    """Start async chat response generation using polling pattern"""
-    init_session()
-    
-    data = request.get_json()
-    if not data or 'message' not in data:
-        return jsonify({'error': 'No message provided'}), 400
-    
-    user_message = data['message']
-
-    if not isinstance(user_message, str):
-        resource_monitor.increment('input_validation_failures')
-        return jsonify({'error': 'Message must be text'}), 400
-    if len(user_message.strip()) == 0:
-        resource_monitor.increment('input_validation_failures')
-        return jsonify({'error': 'Message cannot be empty'}), 400
-    if len(user_message) > MAX_MESSAGE_LENGTH:
-        resource_monitor.increment('input_validation_failures')
-        return jsonify({'error': f'Message too long (max {MAX_MESSAGE_LENGTH} characters)'}), 400
-    user_message = user_message.strip()
-
-    # Get PDF content with fallback to recent sessions
-    pdf_content = get_pdf_content_with_fallback()
-    if not pdf_content:
-        return jsonify({'error': 'No document content found. Please upload lecture notes first.'}), 400
-    
-    # Get current conversation history
-    session_id = session.get('session_id')
-    messages = storage_manager.retrieve_content(session_id, 'messages') or []
-    
-    # Create conversation history in the format expected by TutorAI
-    conversation_history = []
-    for msg in messages:
-        conversation_history.append({
-            "role": msg["role"],
-            "content": msg["content"]
-        })
-    
-    # Note: User message is already added to storage by the /chat route
-    # No need to add it again here to avoid duplication
-    
-    try:
-        # Generate unique task ID
-        task_id = str(uuid_module.uuid4())
-        
-        # Initialize task status in PostgreSQL Database
-        create_task(task_id, "pending")
-        
-        # Start background thread for async chat generation
-        thread = threading.Thread(
-            target=run_chat_response_background, 
-            args=(task_id, user_message, pdf_content, conversation_history, _stored_doc_type())
-        )
-        thread.daemon = True
-        thread.start()
-        
-        return jsonify({"task_id": task_id})
-        
-    except Exception as e:
-        logging.error(f"Error starting chat response generation: {e}")
-        return jsonify({'error': 'Failed to start chat response generation'}), 500
-
-@app.route('/chat_response_status/<task_id>')
-def chat_response_status(task_id):
-    """Check the status of async chat response generation"""
-    try:
-        # Retrieve status from PostgreSQL Database
-        task_result = get_task_status(task_id)
-        
-        if not task_result:
-            return jsonify({"status": "not_found"}), 404
-
-        result_dict = task_result
-
-        # If task is complete, clean up the task (no need to store in messages since frontend handles display)
-        if result_dict.get("status") == "complete" and result_dict.get("success"):
-            # Task completed successfully
-            
-            # Clean up the task from database after successful completion
-            try:
-                cleanup_task(task_id)
-            except:
-                pass
-        elif result_dict.get("status") == "failed":
-            logging.error(f"Chat task {task_id} failed with error: {result_dict.get('error')}")
-        
-        return jsonify(result_dict)
-
-    except Exception:
-        logging.exception("Error checking chat task status")
-        return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
-
-@app.route('/start_essay_generation', methods=['POST'])
-@csrf.exempt
-@rate_limit(calls_per_minute=10, use_session=True)
-def start_essay_generation():
-    """Start background essay question generation using polling pattern"""
-    try:
-        logging.info("ESSAY POLLING: Starting essay generation")
-        init_session()
-        
-        # Set context from stored content with fallback
-        session_id = session.get('session_id')
-        logging.info(f"ESSAY POLLING: Current session_id: {session_id}")
-        
-        pdf_content = get_pdf_content_with_fallback()
-        logging.info(f"ESSAY POLLING: PDF content retrieved: {pdf_content is not None}")
-        
-        if not pdf_content:
-            logging.error("ESSAY POLLING: No document content found even with fallback")
-            return jsonify({'error': 'No document content found'}), 400
-
-        record_activity('essay_questions')
-
-        # Generate unique task ID
-        task_id = str(uuid_module.uuid4())
-
-        # Set initial status in PostgreSQL Database
-        create_task(task_id, "pending")
-
-        # Serve from the AI result cache when this document was already processed
-        cached = get_cached_ai_result(pdf_content, 'essay')
-        if cached:
-            update_task_complete(task_id, success=True, data=cached)
-            return jsonify({"task_id": task_id}), 202
-
-        # Start background task in separate thread
-        thread = threading.Thread(
-            target=run_essay_generation_background,
-            args=(task_id, pdf_content, _stored_doc_type()),
-            daemon=True
-        )
-        thread.start()
-
-        logging.info(f"ESSAY POLLING: Background task started with ID: {task_id}")
-
-        return jsonify({"task_id": task_id}), 202
-
-    except Exception:
-        logging.exception("ESSAY POLLING: Critical error")
-        return jsonify({"error": "Failed to start essay generation"}), 500
-
-@app.route('/essay_status/<task_id>', methods=['GET'])
-def get_essay_status(task_id):
-    """Get the status of an essay generation task"""
-    try:
-        # Retrieve status from PostgreSQL Database
-        task_result = get_task_status(task_id)
-        
-        if not task_result:
-            return jsonify({"status": "not_found"}), 404
-
-        result_dict = task_result
-
-        # If task is complete, also update session storage
-        if result_dict.get("status") == "complete" and result_dict.get("success"):
-            session_id = session.get('session_id')
-            if session_id:
-                storage_manager = StorageManager()
-                essay_text = result_dict.get("data", "")
-                
-                # Add essay to messages
-                messages = storage_manager.retrieve_content(session_id, 'messages') or []
-                messages.append({
-                    "role": "assistant", 
-                    "content": f"📝 **Essay Question Practice:**\n\n{essay_text}"
-                })
-                storage_manager.store_content(session_id, 'messages', messages)
-                
-                logging.info(f"ESSAY POLLING: Essay stored in session for task {task_id}")
-                
-                # Clean up the task from database after successful completion
-                try:
-                    cleanup_task(task_id)
-                except:
-                    pass
-        
-        return jsonify(result_dict)
-
-    except Exception:
-        logging.exception(f"ESSAY POLLING: Error getting task status for {task_id}")
-        return jsonify({"error": "Failed to get task status"}), 500
-
-@app.route('/start_key_concepts_generation', methods=['POST'])
-@csrf.exempt
-@rate_limit(calls_per_minute=10, use_session=True)
-def start_key_concepts_generation():
-    """Start background key concepts explanation generation using polling pattern"""
-    try:
-        logging.info("KEY CONCEPTS POLLING: Starting key concepts generation")
-        init_session()
-        
-        # Set context from stored content with fallback
-        session_id = session.get('session_id')
-        logging.info(f"KEY CONCEPTS POLLING: Current session_id: {session_id}")
-        
-        pdf_content = get_pdf_content_with_fallback()
-        logging.info(f"KEY CONCEPTS POLLING: PDF content retrieved: {pdf_content is not None}")
-        
-        if not pdf_content:
-            logging.error("KEY CONCEPTS POLLING: No document content found even with fallback")
-            return jsonify({'error': 'No document content found'}), 400
-
-        record_activity('key_concepts')
-
-        # Generate unique task ID
-        task_id = str(uuid_module.uuid4())
-
-        # Set initial status in PostgreSQL Database
-        create_task(task_id, "pending")
-
-        # Serve from the AI result cache when this document was already processed
-        cached = get_cached_ai_result(pdf_content, 'key_concepts')
-        if cached:
-            update_task_complete(task_id, success=True, data=cached)
-            return jsonify({"task_id": task_id}), 202
-
-        # Start background task in separate thread
-        thread = threading.Thread(
-            target=run_key_concepts_generation_background,
-            args=(task_id, pdf_content, _stored_doc_type()),
-            daemon=True
-        )
-        thread.start()
-
-        logging.info(f"KEY CONCEPTS POLLING: Background task started with ID: {task_id}")
-
-        return jsonify({"task_id": task_id}), 202
-
-    except Exception:
-        logging.exception("KEY CONCEPTS POLLING: Critical error")
-        return jsonify({"error": "Failed to start key concepts generation"}), 500
-
-@app.route('/key_concepts_status/<task_id>', methods=['GET'])
-def get_key_concepts_status(task_id):
-    """Get the status of a key concepts explanation generation task"""
-    try:
-        # Retrieve status from PostgreSQL Database
-        task_result = get_task_status(task_id)
-        
-        if not task_result:
-            return jsonify({"status": "not_found"}), 404
-
-        result_dict = task_result
-
-        # If task is complete, also update session storage
-        if result_dict.get("status") == "complete" and result_dict.get("success"):
-            session_id = session.get('session_id')
-            if session_id:
-                storage_manager = StorageManager()
-                key_concepts_text = result_dict.get("data", "")
-                
-                # Add key concepts explanation to messages
-                messages = storage_manager.retrieve_content(session_id, 'messages') or []
-                messages.append({
-                    "role": "assistant", 
-                    "content": f"🔑 **Key Concepts Explained:**\n\n{key_concepts_text}"
-                })
-                storage_manager.store_content(session_id, 'messages', messages)
-                
-                logging.info(f"KEY CONCEPTS POLLING: Key concepts stored in session for task {task_id}")
-                
-                # Clean up the task from database after successful completion
-                try:
-                    cleanup_task(task_id)
-                except:
-                    pass
-        
-        return jsonify(result_dict)
-
-    except Exception:
-        logging.exception(f"KEY CONCEPTS POLLING: Error getting task status for {task_id}")
-        return jsonify({"error": "Failed to get task status"}), 500
 
 @app.route('/start_infographic_generation', methods=['POST'])
 @csrf.exempt
@@ -3115,8 +2749,9 @@ def clear_session_data(session_id=None):
         content_types = [
             'pdf_content', 'quiz_data', 'calculation_quiz_data', 
             'current_calculation_question', 'used_calculation_questions',
+            'current_calculation_verify_task', 'current_calculation_answer', 'pdf_content_hash',
             'messages', 'quiz_questions', 'practice_equations',
-            'equation_list', 'exam_questions', 'calc_doc_type', 'current_equation_index',
+            'equation_list', 'equation_list_pending', 'exam_questions', 'calc_doc_type', 'current_equation_index',
             'current_essay_question', 'essay_mode_active', 'used_essay_questions',
             'infographic_email_request', 'infographic_email_result',
             'executive_summary', 'executive_summary_partial', 'summary_pending',

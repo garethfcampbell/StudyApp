@@ -307,6 +307,17 @@ async function streamSSE(response, options) {
             if (payload === '[DONE]') continue;
             try {
                 const chunk = JSON.parse(payload);
+                if (chunk && typeof chunk === 'object') {
+                    // Control message (e.g. {verify_task_id}) rather than text.
+                    // {reset: true} discards text relayed so far: the server
+                    // abandoned a pre-generation and is starting afresh.
+                    if (chunk.reset) {
+                        fullText = '';
+                        scheduleRender();
+                    }
+                    if (options.onControl) options.onControl(chunk);
+                    continue;
+                }
                 fullText += chunk;
 
                 if (firstChunk) {
@@ -380,7 +391,11 @@ async function newSendMessage() {
                     if (calcButtonSection) calcButtonSection.style.display = 'block';
                 }
             } else {
-                addNewMessage('assistant', data.error || 'Sorry, I encountered an error. Please try again.');
+                // 429 carries a plain-English 'message'; other errors a plain 'error'.
+                const text = (response.status === 429 && data.message) ? data.message
+                           : (data.error && data.error !== 'Rate limit exceeded') ? data.error
+                           : 'Sorry, I encountered an error. Please try again.';
+                addNewMessage('assistant', text);
             }
             return;
         }
@@ -501,6 +516,44 @@ function addNewMessage(role, content) {
     
     // Make clearSession available globally for onclick handlers
     window.clearSession = clearSession;
+
+    // After a reload the page only knows how many messages exist: fetch them
+    // and rebuild the conversation, then show the chat box and the technique
+    // buttons (and the answer box if a practice round was in progress).
+    async function restoreChatHistory() {
+        const spinner = document.getElementById('loadingMessages');
+        let data = null;
+        try {
+            const response = await fetch('/chat_history');
+            if (response.ok) data = await response.json();
+        } catch (error) {
+            console.error('Could not restore the conversation:', error);
+        }
+        if (spinner) spinner.remove();
+        if (data && Array.isArray(data.messages)) {
+            for (const msg of data.messages) {
+                if (msg && typeof msg.content === 'string' && (msg.role === 'user' || msg.role === 'assistant')) {
+                    addMessage(msg.role, msg.content);
+                }
+            }
+        }
+        showQuickActions();
+        if (window.aiTutor && data) {
+            if (data.calculation_mode && aiTutor.showCalculationAnswerInput) aiTutor.showCalculationAnswerInput();
+            else if (data.essay_mode && aiTutor.showEssayAnswerInput) aiTutor.showEssayAnswerInput();
+        }
+        const messagesDiv = document.getElementById('messages');
+        if (messagesDiv) messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        if (document.getElementById('loadingMessages')) {
+            restoreChatHistory();
+        } else if ({{ 'true' if has_document else 'false' }}) {
+            // Document loaded but nothing generated yet: the chat box is still usable.
+            showQuickActions();
+        }
+    });
     
     // File upload handling
     document.getElementById('fileInput').addEventListener('change', handleFileUpload);
@@ -615,14 +668,46 @@ function addNewMessage(role, content) {
             if (existingProgressBar && existingProgressBar.parentNode) {
                 existingProgressBar.parentNode.removeChild(existingProgressBar);
             }
-            addMessage('assistant', `❌ Error generating summary: ${error.message}`);
+            addMessage('assistant', 'I could not generate the summary just now. You can still use the buttons below or ask me a question about your material.');
         }
+    }
+
+    const UPLOAD_MAX_MB = 16;
+    const UPLOAD_TYPES = ['pdf', 'pptx', 'docx'];
+
+    function showUploadProblem(message) {
+        const statusDiv = document.getElementById('uploadStatus');
+        statusDiv.innerHTML = `
+            <div class="alert alert-danger upload-completed">
+                <div class="d-flex align-items-center">
+                    <div class="me-3">
+                        <i class="fas fa-exclamation-triangle fa-2x"></i>
+                    </div>
+                    <div class="flex-grow-1">
+                        <h6 class="mb-1">The file could not be uploaded</h6>
+                        <small>${escapeHtml(message)}</small>
+                    </div>
+                </div>
+            </div>
+        `;
     }
 
     function handleFileUpload(event) {
         const file = event.target.files[0];
         if (!file) return;
-        
+
+        // Check the type and size here so a dropped file gets the same
+        // answer as one chosen through the file picker.
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (!UPLOAD_TYPES.includes(ext)) {
+            showUploadProblem('Please upload a PDF, PowerPoint (.pptx) or Word (.docx) file.');
+            return;
+        }
+        if (file.size > UPLOAD_MAX_MB * 1024 * 1024) {
+            showUploadProblem(`That file is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is ${UPLOAD_MAX_MB} MB. Please upload a smaller file.`);
+            return;
+        }
+
         // Clear session and chat messages for the new upload. The upload itself
         // waits for this to finish so the two requests cannot race.
         const sessionCleared = clearSessionSilent();
@@ -801,10 +886,14 @@ function addNewMessage(role, content) {
             method: 'POST',
             body: formData
         }))
-        .then(response => response.json())
+        .then(response => response.json().catch(() => ({ error: 'The server did not accept the file. Please try again.' })))
         .then(data => {
             if (data.error && !data.task_id) {
-                throw new Error(data.error);
+                // The server's reason (file type, size, too many uploads) is
+                // written for students: show it as is.
+                const err = new Error(data.error);
+                err.userMessage = (data.error === 'Rate limit exceeded' && data.message) ? data.message : data.error;
+                throw err;
             }
 
             // Fast path: for small files the upload response already carries
@@ -965,19 +1054,8 @@ function addNewMessage(role, content) {
             }
             
             console.error('Upload error:', error);
-            statusDiv.innerHTML = `
-                <div class="alert alert-danger upload-completed">
-                    <div class="d-flex align-items-center">
-                        <div class="me-3">
-                            <i class="fas fa-exclamation-triangle fa-2x"></i>
-                        </div>
-                        <div class="flex-grow-1">
-                            <h6 class="mb-1">❌ Upload Error</h6>
-                            <small>Network error or file too large. Please try again with a smaller file.</small>
-                        </div>
-                    </div>
-                </div>
-            `;
+            showUploadProblem(error.userMessage
+                || `The upload did not complete. Please check your connection and try again (PDF, PowerPoint or Word, up to ${UPLOAD_MAX_MB} MB).`);
         });
     }
     
@@ -1051,6 +1129,35 @@ function addNewMessage(role, content) {
         streamQuickAction(streamAction, action, clickedButton);
     }
 
+    // The question shown was drafted by the fast model; the strong model checks
+    // it in the background. The student is not told about the check: if a
+    // correction comes back, the question is silently re-rendered and the view
+    // returns to the top of it. The stored question used for marking is
+    // replaced server-side at the same time.
+    async function awaitCalculationVerification(taskId, messageDiv, messageContent, scrollToQuestionStart) {
+        const deadline = Date.now() + 90000;
+        let verdict = null;
+        while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 1500));
+            try {
+                const resp = await fetch('/calculation_verify_status/' + encodeURIComponent(taskId));
+                if (resp.status === 404) break;
+                const data = await resp.json();
+                if (data.status === 'complete') { verdict = data.data || {}; break; }
+                if (data.status === 'failed') break;
+            } catch (e) {
+                console.warn('Verification poll failed:', e);
+            }
+        }
+        if (!(verdict && verdict.status === 'corrected' && verdict.question)) return;
+        messageContent.innerHTML = formatMessageSimplified(verdict.question);
+        const hasMath = verdict.question.includes('\(') || verdict.question.includes('\[') || verdict.question.includes('\begin{');
+        if (hasMath) {
+            try { await loadMathJax(); await renderMathInElement(messageDiv); } catch (e) { console.error(e); }
+        }
+        if (scrollToQuestionStart) scrollToQuestionStart();
+    }
+
     async function streamCalculationQuestion(clickedButton) {
         const messagesDiv = document.getElementById('messages');
 
@@ -1095,6 +1202,7 @@ function addNewMessage(role, content) {
             messageContent.className = 'message-content';
             messageDiv.appendChild(messageContent);
 
+            let verifyTaskId = null;
             const fullText = await streamSSE(response, {
                 onFirstChunk: () => {
                     // On first chunk, swap progress bar for message bubble
@@ -1104,6 +1212,9 @@ function addNewMessage(role, content) {
                 render: (text) => {
                     messageContent.innerHTML = formatMessageSimplified(text);
                     messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                },
+                onControl: (msg) => {
+                    if (msg.verify_task_id) verifyTaskId = msg.verify_task_id;
                 }
             });
 
@@ -1148,6 +1259,12 @@ function addNewMessage(role, content) {
                 console.error('AITutor instance or showCalculationAnswerInput method not available');
             }
 
+            // Background check of the draft by the strong model; a correction is
+            // swapped in silently (see awaitCalculationVerification).
+            if (verifyTaskId && fullText) {
+                awaitCalculationVerification(verifyTaskId, messageDiv, messageContent, scrollToQuestionStart);
+            }
+
             // Set button to active state (green) to show success
             if (clickedButton) {
                 clickedButton.classList.remove('processing');
@@ -1159,7 +1276,7 @@ function addNewMessage(role, content) {
             if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
             const progressIndicator = document.getElementById('progress-indicator');
             if (progressIndicator) progressIndicator.remove();
-            addMessage('assistant', 'Error generating calculation question: ' + error.message);
+            addMessage('assistant', 'I could not generate a calculation question just now. Please try again in a moment.');
             document.querySelectorAll('.btn-outline-primary').forEach(btn => {
                 btn.classList.remove('processing', 'active');
             });
@@ -1264,7 +1381,7 @@ function addNewMessage(role, content) {
             if (currentProgressTimer) { clearInterval(currentProgressTimer); currentProgressTimer = null; }
             const progressIndicator = document.getElementById('progress-indicator');
             if (progressIndicator) progressIndicator.remove();
-            addMessage('assistant', `❌ Error: ${error.message}`);
+            addMessage('assistant', 'Something went wrong while generating that. Please try again in a moment.');
             document.querySelectorAll('.btn-outline-primary').forEach(btn => {
                 btn.classList.remove('processing', 'active');
             });
@@ -1594,9 +1711,12 @@ function addNewMessage(role, content) {
                     error: 'I\'m experiencing server issues right now. Please try again in a few seconds.'
                 });
             } else {
+                console.error('Request failed with status', response.status);
                 return Promise.resolve({
                     success: false,
-                    error: `HTTP error! status: ${response.status}`
+                    error: response.status === 429
+                        ? 'Too many requests. Please wait a moment and try again.'
+                        : 'That request could not be completed. Please try again.'
                 });
             }
         }

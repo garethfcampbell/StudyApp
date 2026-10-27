@@ -860,7 +860,7 @@
                               lambda: 'λ', delta: 'δ', Delta: 'Δ', pi: 'π', theta: 'θ', ln: 'ln', log: 'log', exp: 'exp' };
             s = s.replace(/\\([A-Za-z]+)/g, function(m, name) { return symbols[name] !== undefined ? symbols[name] : name; });
             s = s.replace(/\\([%$&#_{}])/g, '$1');       // \% \$ \& \# \_ -> the character itself
-            s = s.replace(/\\\\(\[\d+pt\])?/g, '\n');   // TeX line breaks
+            s = s.replace(/\\\\(\[-?\d*\.?\d+\s*(?:pt|em|ex|mm|cm|in|bp|mu)\])?/g, '\n');   // TeX line breaks, with any spacing
             s = s.replace(/&=/g, ' = ').replace(/&/g, ' ');
             s = s.replace(/[{}]/g, '');
             return s.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').trim();

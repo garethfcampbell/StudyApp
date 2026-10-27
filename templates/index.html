@@ -1623,8 +1623,9 @@ function addNewMessage(role, content) {
         result = result.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
         // Fix backslash escaping from JSON
-        // Use negative lookahead so \\[Npt] line-spacing commands are preserved for MathJax
-        result = result.replace(/\\\\\[(?!\d+pt\])/g, '\\[');
+        // Use negative lookahead so \\[6pt] line-spacing commands (also negative or
+        // decimal lengths, e.g. \\[-6pt], \\[0.5em]) are preserved for MathJax
+        result = result.replace(/\\\\\[(?!-?\d*\.?\d+\s*(?:pt|em|ex|mm|cm|in|bp|mu)\])/g, '\\[');
         result = result.replace(/\\\\\]/g, '\\]');
         result = result.replace(/\\\\\(/g, '\\(');
         result = result.replace(/\\\\\)/g, '\\)');

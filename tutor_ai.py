@@ -409,6 +409,48 @@ async def _normalize_study_stream(agen, mode='study'):
         yield tail
 
 
+_MANGLED_LATEX_RE = re.compile(r'[\x08\x0c]|\t[A-Za-z]|\r[A-Za-z]|\n(?:u|eq|e|abla|ot)\b')
+
+
+def _double_lone_backslashes(text):
+    """Make every odd run of backslashes even, so a model's single-backslash
+    LaTeX ("\\sigma", "\\frac") parses as literal backslashes; already escaped
+    pairs ("\\\\sigma") and escaped quotes are left alone."""
+    return re.sub(r'(\\+)(?=[^"\\]|$)', lambda m: '\\' * (len(m.group(1)) + len(m.group(1)) % 2), text)
+
+
+def _has_mangled_latex(value):
+    if isinstance(value, str):
+        return bool(_MANGLED_LATEX_RE.search(value))
+    if isinstance(value, dict):
+        return any(_has_mangled_latex(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_mangled_latex(v) for v in value)
+    return False
+
+
+def _loads_json_lenient(text):
+    """json.loads for model output that carries LaTeX.
+
+    A lone backslash before a letter is either an invalid JSON escape
+    ("\\sigma": the whole extraction used to fail and fall back to the other
+    model) or, worse, a valid one that silently corrupts the equation
+    ("\\frac" decodes to a form feed plus "rac", "\\beta" to a backspace plus
+    "eta", "\\times" to a tab plus "imes"). Parse strictly first; if that fails,
+    or if the decoded strings contain those tell-tale control characters,
+    re-parse with every lone backslash doubled so the LaTeX survives intact."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return json.loads(_double_lone_backslashes(text))
+    if _has_mangled_latex(value):
+        try:
+            return json.loads(_double_lone_backslashes(text))
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
 def _strip_code_fences(text):
     """Remove a wrapping markdown code fence (e.g. ```markdown ... ```) that models occasionally add.
 
@@ -2916,7 +2958,7 @@ Example output format:
                         messages, model=model, max_tokens=8000, timeout=90
                     )
                     content = _strip_code_fences(content.strip())
-                    questions = json.loads(content)
+                    questions = _loads_json_lenient(content)
                     if isinstance(questions, list) and len(questions) > 0:
                         logging.info(f"Extracted {len(questions)} exam questions using {model}")
                         return questions
@@ -2953,7 +2995,7 @@ Example output format:
                         messages, model=model, max_tokens=2000, timeout=60,
                         reasoning_effort=EXTRACTION_REASONING_EFFORT
                     )
-                    parsed = json.loads(_strip_code_fences(content.strip()))
+                    parsed = _loads_json_lenient(_strip_code_fences(content.strip()))
                     if isinstance(parsed, list):
                         parsed = parsed[0] if parsed else None
                     equations = self._normalize_equations([parsed] if parsed else [])
@@ -3083,7 +3125,7 @@ Example output format:
                         reasoning_effort=EXTRACTION_REASONING_EFFORT
                     )
                     content = _strip_code_fences(content.strip())
-                    equations = self._normalize_equations(json.loads(content))
+                    equations = self._normalize_equations(_loads_json_lenient(content))
                     if equations:
                         logging.info(f"Extracted {len(equations)} equations using {model}")
                         return equations

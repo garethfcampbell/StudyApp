@@ -1588,6 +1588,24 @@ function addNewMessage(role, content) {
             // "Math input error" box. \unicode{} is autoloaded by tex-svg. £ and
             // common unicode math symbols (≈ × ≤ …) are safe and left alone.
             fixed = fixed.replace(/€/g, '\\unicode{x20AC}');
+            // MathJax renders the inside of \text{...} literally (its text-macros
+            // extension is not loaded), so "\text{10-day 99\% VaR}" shows a
+            // backslash on screen. Move each escaped % $ & out of the text
+            // wrapper into maths mode, where MathJax always renders it as the
+            // plain character: \text{10-day 99}\%\text{ VaR}.
+            fixed = fixed.replace(/\\(text|textbf|textit|mathrm)\{([^{}]*)\}/g, function(m, cmd, body) {
+                if (!/\\[%$&]/.test(body)) return m;
+                const parts = body.split(/\\([%$&])/);
+                let out = '';
+                for (let i = 0; i < parts.length; i++) {
+                    if (i % 2 === 0) {
+                        if (parts[i]) out += '\\' + cmd + '{' + parts[i] + '}';
+                    } else {
+                        out += '\\' + parts[i];
+                    }
+                }
+                return out;
+            });
             return fixed;
         }
         function protectLatex(match) {

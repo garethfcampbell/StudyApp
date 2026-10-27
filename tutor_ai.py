@@ -3038,6 +3038,7 @@ lecture_notes"""
 
 Rules:
 - Include EVERY question and sub-question that requires a numerical calculation (e.g. 1a, 1b, 2a, 2b, 2c etc.).
+- A question with several parts (lettered, numbered or bulleted) gives one entry per part. If the parts are not labelled in the document, letter them a, b, c in order (question 1's parts are "1a", "1b", ...).
 - Preserve the EXACT wording, numbers, and data from the document — do not alter, summarise, or rephrase.
 - The text was extracted from a PDF or Word file, so a data table may appear with its columns run together or its rows out of order: reconstruct each table carefully, keeping every figure with the row and column label it belongs to, and include it in full in every question that uses it.
 - Each entry must be completely self-contained: include any shared data, tables, or context from the parent question that the sub-question depends on so it can be understood in isolation.
@@ -3091,7 +3092,8 @@ Rules:
 - The text was extracted from a PDF or Word file, so a data table may appear with its columns run together or its rows out of order: reconstruct the table carefully, keeping every figure with the row and column label it belongs to, and include it in full.
 - The entry must be completely self-contained: include any shared data, tables, or context from the parent question that it depends on so it can be understood in isolation.
 - Include the mark allocation if stated (e.g. "[10 marks]").
-- Use the question's own number as "id" (e.g. "1a", "2", "3b").
+- A question with several parts (lettered, numbered or bulleted) counts as separate sub-questions: return ONLY its FIRST calculation part, with the shared data it needs, never the whole question with all its parts.
+- Use the question's own number as "id" (e.g. "1a", "2", "3b"). If the parts are not labelled in the document, letter them a, b, c in order (the first part of question 1 is "1a").
 - Return ONLY one valid JSON object with the keys "id" and "question", no surrounding text.
 
 Example output format:
@@ -3125,17 +3127,49 @@ Example output format:
         return re.sub(r'^(question|q)', '', re.sub(r'[^a-z0-9]', '', qid.lower()))
 
     @staticmethod
+    def _question_text_key(question):
+        """The question's wording with spacing and punctuation removed."""
+        text = str((question or {}).get("question") or "") if isinstance(question, dict) else ""
+        return re.sub(r'[^a-z0-9]', '', text.lower())
+
+    @staticmethod
     def merge_first_exam_question(first, full):
         """Reconcile the stage-one exam question with the full list so that
         index 0 is the question whose worked example was already pre-generated.
         The full list's entry with the same id is replaced by `first` and moved
         to the front; any questions the full list puts before it follow it, so
-        none is lost. With no id match, `first` is added at the front."""
+        none is lost. When stage one took a whole question ("1") and the full
+        list has its parts ("1a", "1b", ...), those parts are already covered
+        and are dropped, as is any entry repeating `first` word for word. With
+        no match, `first` is added at the front."""
         full = [q for q in (full or []) if isinstance(q, dict)]
         if not first:
             return full
         key = TutorAI._question_id_key(first)
-        rest = [q for q in full if not (key and TutorAI._question_id_key(q) == key)]
+        text = TutorAI._question_text_key(first)
+        keys = [TutorAI._question_id_key(q) for q in full]
+
+        def is_part(child, parent):
+            # "1a", "1b", "1ii" are parts of "1" ("10" is not)
+            return bool(parent) and child.startswith(parent) and child[len(parent):len(parent) + 1].isalpha()
+
+        def covered(q):
+            qkey = TutorAI._question_id_key(q)
+            if key and qkey == key:
+                return True
+            # A part of the question stage one returned whole
+            if is_part(qkey, key):
+                return True
+            # The same question when the two stages number it differently:
+            # stage one "1a", the full list "1" with no parts of its own
+            if is_part(key, qkey) and not any(is_part(k, qkey) for k in keys):
+                return True
+            return bool(text) and TutorAI._question_text_key(q) == text
+
+        rest = [q for q in full if not covered(q)]
+        if len(rest) < len(full) - 1:
+            logging.info(f"EXAM QUESTIONS: stage-one Q{first.get('id')} covers {len(full) - len(rest)} "
+                         f"entries of the full list; they were dropped")
         if len(rest) == len(full):
             logging.info(f"EXAM QUESTIONS: stage-one Q{first.get('id')} not found in the full list; added in front")
         return [first] + rest

@@ -245,6 +245,30 @@ class TwoStageExamQuestionTests(unittest.TestCase):
         merged = module.TutorAI.merge_first_exam_question({"id": "1b", "question": "Annuity"}, self.FULL)
         self.assertEqual([q["id"] for q in merged], ["1b", "1a", "2"])
 
+    def test_whole_question_from_stage_one_replaces_its_parts(self):
+        # Stage one returned all of question 1; the full list split it into parts
+        first = {"id": "1", "question": "Spot rates 5%, 4.75%, 4%: the 4 year forward rate from t = 1, ..."}
+        full = [{"id": "1a", "question": "the 4 year forward rate from t = 1"},
+                {"id": "1b", "question": "the 1 year forward rate from t = 3"},
+                {"id": "2", "question": "FCFF"}, {"id": "10a", "question": "Duration"}]
+        merged = module.TutorAI.merge_first_exam_question(first, full)
+        self.assertEqual([q["id"] for q in merged], ["1", "2", "10a"])
+
+    def test_unsplit_question_numbered_differently_is_not_repeated(self):
+        # Week 7 sheet: stage one called the pension question "1a", the full list "1"
+        first = {"id": "1a", "question": "Pension, stage one copy"}
+        full = [{"id": "1", "question": "Pension, full-list copy"}, {"id": "2", "question": "Annuity"}]
+        self.assertEqual([q["id"] for q in module.TutorAI.merge_first_exam_question(first, full)], ["1a", "2"])
+        # but a parent that the full list also splits into parts is kept
+        full = [{"id": "1", "question": "Intro"}, {"id": "1b", "question": "Part b"}]
+        self.assertEqual([q["id"] for q in module.TutorAI.merge_first_exam_question(first, full)], ["1a", "1", "1b"])
+
+    def test_same_wording_under_another_id_is_not_repeated(self):
+        first = {"id": "1", "question": "Calculate the WACC."}
+        full = [{"id": "Question 1 (a)", "question": "Calculate  the WACC"}, {"id": "2", "question": "FCFF"}]
+        merged = module.TutorAI.merge_first_exam_question(first, full)
+        self.assertEqual([q["id"] for q in merged], ["1", "2"])
+
     def test_no_match_or_empty_list(self):
         self.assertEqual(len(module.TutorAI.merge_first_exam_question({"id": "9", "question": "x"}, self.FULL)), 4)
         self.assertEqual(module.TutorAI.merge_first_exam_question({"id": "1a", "question": "x"}, []),

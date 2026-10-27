@@ -776,6 +776,10 @@ function addNewMessage(role, content) {
         
         const formData = new FormData();
         formData.append('file', file);
+        // When the file was chosen: a large file chosen first can finish
+        // arriving after a small one chosen later, and the server must still
+        // keep the later choice.
+        formData.append('upload_order', String(Date.now()));
         
         const statusDiv = document.getElementById('uploadStatus');
         statusDiv.innerHTML = `

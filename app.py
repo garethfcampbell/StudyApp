@@ -2827,6 +2827,22 @@ def upload_file():
             # (_adopt_uploaded_document), so a corrupt file leaves the student's
             # current document and conversation as they were.
             session_id = session.get('session_id')
+            # A file chosen before the newest one but arriving after it (a large
+            # file uploads more slowly) must not replace it: the page stamps each
+            # upload with when it was chosen.
+            try:
+                upload_order = int(request.form.get('upload_order', ''))
+            except ValueError:
+                upload_order = None
+            if upload_order is not None:
+                try:
+                    latest_order = storage_manager.retrieve_content(session_id, 'current_upload_order')
+                    if isinstance(latest_order, int) and upload_order < latest_order:
+                        logging.info(f"Upload from session {session_id} chosen before the current one; ignored")
+                        return jsonify({'error': 'Replaced by a newer upload.', 'superseded': True}), 409
+                    storage_manager.store_content(session_id, 'current_upload_order', upload_order)
+                except Exception as e:
+                    logging.warning(f"Could not check upload order: {e}")
             try:
                 previous_upload = storage_manager.retrieve_content(session_id, 'current_upload')
             except Exception:

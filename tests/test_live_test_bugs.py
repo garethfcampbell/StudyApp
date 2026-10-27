@@ -130,12 +130,38 @@ class SupersededUploadTests(unittest.TestCase):
         failed.assert_called_once()
         done.assert_called_once_with("older-task")
 
+    def test_file_chosen_earlier_but_arriving_later_is_turned_away(self):
+        stored = {"current_upload_order": 2000}
+        storage = MagicMock()
+        storage.retrieve_content.side_effect = lambda sid, key: stored.get(key)
+        storage.store_content.side_effect = lambda sid, key, value: stored.__setitem__(key, value)
+        background = MagicMock()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(module, "storage_manager", storage))
+            stack.enter_context(patch.object(module, "process_upload_background", background))
+            stack.enter_context(patch.object(module, "create_task"))
+            stack.enter_context(patch.object(module.threading, "Thread", ImmediateThread))
+            client = module.app.test_client()
+            with client.session_transaction() as s:
+                s["session_id"] = "race-session"
+            older = client.post("/upload", data={"file": (io.BytesIO(b"x"), "big.pptx"), "upload_order": "1000"},
+                                content_type="multipart/form-data")
+            self.assertEqual(older.status_code, 409)
+            self.assertTrue(older.get_json()["superseded"])
+            background.assert_not_called()
+            newer = client.post("/upload", data={"file": (io.BytesIO(b"x"), "small.pdf"), "upload_order": "3000"},
+                                content_type="multipart/form-data")
+            self.assertEqual(newer.status_code, 200)
+            background.assert_called_once()
+        self.assertEqual(stored["current_upload_order"], 3000)
+
     def test_page_ignores_status_of_a_replaced_upload_and_keeps_summary_in_place(self):
         page = open(os.path.join(os.path.dirname(__file__), "..", "templates", "index.html"),
                     encoding="utf-8").read()
         self.assertIn("const isStale = () => uploadSeq !== window.__uploadSeq;", page)
         self.assertEqual(page.count("if (isStale())"), 4)
         self.assertIn("messagesDiv.insertBefore(messageDiv, existingProgressBar);", page)
+        self.assertIn("formData.append('upload_order', String(Date.now()));", page)
 
 
 class PrewarmDraftTests(unittest.TestCase):

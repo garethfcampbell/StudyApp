@@ -1282,7 +1282,7 @@ def quickaction_stream():
                 stream_ok = True
             except Exception as e:
                 logging.error(f"QUICKACTION STREAM: Error during streaming ({action}): {e}")
-                if not full_response:
+                if not full_response.strip():
                     q.put("I'm having trouble right now. Please try again in a moment.")
             finally:
                 # A failure notice or interrupted stream is never cached for
@@ -1484,6 +1484,14 @@ def calculation_stream():
                     async for chunk in tutor_ai.generate_calculation_question_stream_async(specific_equation=specific_equation):
                         full_response += chunk
                         q.put(chunk)
+
+                if not full_response:
+                    # Nothing reached the student. The model helpers retry and
+                    # fall back, so this should not happen; if it does, say so
+                    # rather than close the stream with nothing in it.
+                    logging.error("CALC STREAM request=%s event=empty_response", request_id)
+                    q.put({'error': "I'm having trouble generating a calculation question right now. Please try again in a moment.",
+                           'code': 'empty_response', 'retryable': True})
 
             except Exception as e:
                 logging.error("CALC STREAM request=%s event=generation_error type=%s",

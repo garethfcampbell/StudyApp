@@ -1608,9 +1608,10 @@ function addNewMessage(role, content) {
             return pre + protectLatex(latex);
         });
         // Outside math, a TeX-escaped percent ("10\%", seen in chat replies) is
-        // just a percent sign. Math blocks are already protected above, where \% is
-        // required, so this only touches ordinary text.
-        result = result.replace(/\\%/g, '%');
+        // just a percent sign, whether escaped once or, as the models sometimes
+        // do, with a doubled backslash ("99\\%"). Math blocks are already
+        // protected above, where \% is required, so this only touches ordinary text.
+        result = result.replace(/\\+%/g, '%');
 
         // Markdown tables ("| Year | MS Office |" rows with a |---| separator), which
         // the models use for exam questions that include a data table, become

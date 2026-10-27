@@ -824,6 +824,34 @@
         // "Math input error" box. Replace any such error with the raw TeX
         // source as plain styled text — imperfect but readable — and log
         // the offending expression so it can be diagnosed.
+        // Readable plain text for a formula MathJax could not typeset: TeX
+        // escapes and wrappers are removed so the student sees "10-day 99% VaR
+        // = £18.43m", not "\text{10-day 99\% VaR} = £18.43\text{m}".
+        function texToPlainText(src) {
+            let s = String(src || '');
+            s = s.replace(/\\begin\{[^}]*\}|\\end\{[^}]*\}/g, ' ');
+            s = s.replace(/\\(?:left|right|displaystyle|,|;|!|quad|qquad)\b/g, ' ');
+            for (let i = 0; i < 3; i++) {   // unwrap nested \text{\text{..}} up to three levels
+                s = s.replace(/\\(?:text|textbf|textit|mathrm|mathbf|operatorname)\{([^{}]*)\}/g, '$1');
+            }
+            for (let i = 0; i < 3; i++) {   // ^{t} -> ^t, _{10} -> _10, so fractions with powers still match
+                s = s.replace(/([_^])\{([^{}]*)\}/g, '$1$2');
+            }
+            for (let i = 0; i < 3; i++) {   // nested fractions, innermost first
+                s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)');
+            }
+            s = s.replace(/\\sqrt\{([^{}]*)\}/g, '√($1)');
+            const symbols = { times: '×', cdot: '·', approx: '≈', le: '≤', leq: '≤', ge: '≥', geq: '≥', neq: '≠', ne: '≠',
+                              pm: '±', sum: 'Σ', infty: '∞', sigma: 'σ', mu: 'μ', rho: 'ρ', beta: 'β', alpha: 'α',
+                              lambda: 'λ', delta: 'δ', Delta: 'Δ', pi: 'π', theta: 'θ', ln: 'ln', log: 'log', exp: 'exp' };
+            s = s.replace(/\\([A-Za-z]+)/g, function(m, name) { return symbols[name] !== undefined ? symbols[name] : name; });
+            s = s.replace(/\\([%$&#_{}])/g, '$1');       // \% \$ \& \# \_ -> the character itself
+            s = s.replace(/\\\\(\[\d+pt\])?/g, '\n');   // TeX line breaks
+            s = s.replace(/&=/g, ' = ').replace(/&/g, ' ');
+            s = s.replace(/[{}]/g, '');
+            return s.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').trim();
+        }
+
         function degradeMathErrors(element) {
             try {
                 const doc = window.MathJax.startup && window.MathJax.startup.document;
@@ -837,7 +865,7 @@
                             '| error:', errNode.getAttribute('data-mjx-error') || errNode.textContent);
                         const fallback = document.createElement('span');
                         fallback.className = 'math-fallback';
-                        fallback.textContent = item.math;
+                        fallback.textContent = texToPlainText(item.math);
                         root.replaceWith(fallback);
                     }
                 }

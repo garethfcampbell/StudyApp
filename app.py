@@ -532,6 +532,11 @@ def _checked_calc_prewarm(session_id, equation=None, exam_question=None):
         if not TutorAI.looks_like_calculation_question(text):
             return text
         result = await tutor.verify_calculation_question_async(text, equation=equation, exam_question=exam_question)
+        if StorageManager().retrieve_content(session_id, 'calculation_prewarm_served'):
+            # The draft was served while this check ran; that request started
+            # its own check of it, which applies any correction.
+            logging.info("PREWARM calculation: draft already served; this check is not stored")
+            return None
         corrected = result.get('status') in ('corrected', 'tidied') and result.get('question')
         try:
             StorageManager().store_content(session_id, 'calculation_prewarm_check', {
@@ -618,6 +623,15 @@ def _calc_message_is_a_question(user_message):
         # quotes a figure ("is the rate 2.8% for every payment?") is a question.
         return not has_number or len(words) >= 5
     return not has_number and len(words) >= 4 and bool(_CHAT_QUESTION_RE.match(text))
+
+
+_CALC_SOLUTION_RE = _re.compile(r"\bFinal Answer\s*:|\bStep-by-Step Solution\s*:", _re.I)
+
+
+def _shows_calculation_solution(marking_text):
+    """True when a marking reply worked the challenge out (the RESPONSE FORMAT
+    of the answer-check prompt); a hint for a non-attempt does not."""
+    return bool(_CALC_SOLUTION_RE.search((marking_text or '').replace('*', '')))
 
 
 def _settle_calculation_verification(session_id, wait_seconds=15):
@@ -1060,19 +1074,24 @@ def simple_chat_stream():
 
     # One query for the practice-mode flags instead of four round trips
     _flags = storage_manager.batch_retrieve(session_id, [
-        'calculation_mode_active', 'current_calculation_question',
+        'calculation_mode_active', 'current_calculation_question', 'calculation_answer_marked',
         'essay_mode_active', 'current_essay_question'])
     calculation_mode = _flags.get('calculation_mode_active')
     current_calculation = _flags.get('current_calculation_question')
     essay_mode = _flags.get('essay_mode_active')
     current_essay = _flags.get('current_essay_question')
     _ph.mark('mode_flags')
-    if (calculation_mode and current_calculation and not (essay_mode and current_essay)
-            and _calc_message_is_a_question(user_message)):
-        # A question to the tutor, not an answer: answer it in normal chat
-        # (the practice stays active for the next message).
-        logging.info("CALC_ANSWER_STREAM: message reads as a question; answering it in chat instead of marking it")
-        calculation_mode = False
+    if calculation_mode and current_calculation and not (essay_mode and current_essay):
+        if _flags.get('calculation_answer_marked'):
+            # The challenge has been marked and its solution shown: there is
+            # nothing left to mark until the next question.
+            logging.info("CALC_ANSWER_STREAM: challenge already marked; answering the message in chat")
+            calculation_mode = False
+        elif _calc_message_is_a_question(user_message):
+            # A question to the tutor, not an answer: answer it in normal chat
+            # (the practice stays active for the next message).
+            logging.info("CALC_ANSWER_STREAM: message reads as a question; answering it in chat instead of marking it")
+            calculation_mode = False
     if (essay_mode and current_essay) or (calculation_mode and current_calculation):
         pdf_content = get_pdf_content_with_fallback()
         if not pdf_content:
@@ -1114,7 +1133,12 @@ def simple_chat_stream():
                                 msgs = _storage.retrieve_content(session_id, 'messages') or []
                                 msgs.append({'role': 'user', 'content': user_message})
                                 msgs.append({'role': 'assistant', 'content': full_response})
-                                _storage.store_content(session_id, 'messages', msgs)
+                                writes = [(session_id, 'messages', msgs)]
+                                if not (essay_mode and current_essay) and _shows_calculation_solution(full_response):
+                                    # The solution is now on the page: later
+                                    # messages are chat, not answers to mark.
+                                    writes.append((session_id, 'calculation_answer_marked', True))
+                                _storage.batch_store(writes)
                         except Exception as e:
                             logging.error(f"CALC_ANSWER_STREAM: Error storing messages: {e}")
                         try:
@@ -1459,12 +1483,20 @@ def calculation_stream():
                     logging.info("CALC STREAM request=%s event=prewarm ready=%s pending=%s",
                                  request_id, bool(prewarmed), bool(_pw.get('calculation_prewarm_pending')))
                     sent = ""
+                    draft = None
                     if not prewarmed and _pw.get('calculation_prewarm_pending'):
                         deadline = time.time() + PREWARM_WAIT_SECONDS
                         while time.time() < deadline:
-                            _pw = _storage.batch_retrieve(session_id, ['calculation_prewarm', 'calculation_prewarm_pending', 'calculation_prewarm_partial'])
+                            _pw = _storage.batch_retrieve(session_id, ['calculation_prewarm', 'calculation_prewarm_pending',
+                                                                       'calculation_prewarm_partial', 'calculation_prewarm_draft'])
                             prewarmed = _pw.get('calculation_prewarm')
                             if prewarmed or not _pw.get('calculation_prewarm_pending'):
+                                break
+                            draft = _pw.get('calculation_prewarm_draft')
+                            if draft:
+                                # Written, but still being checked: serve the draft
+                                # now; the check below runs after it is shown and
+                                # the page swaps in any correction.
                                 break
                             partial = _pw.get('calculation_prewarm_partial') or ""
                             if len(partial) > len(sent) and partial.startswith(sent):
@@ -1492,6 +1524,26 @@ def calculation_stream():
                             # corrected by the check: replace it.
                             q.put({'reset': True})
                             remainder = prewarmed
+                        for i in range(0, len(remainder), 400):
+                            q.put(remainder[i:i + 400])
+                        return
+                    if draft and not prewarmed:
+                        logging.info("CALC STREAM request=%s event=prewarm_draft_served elapsed=%.3f",
+                                     request_id, time.perf_counter() - started)
+                        # Marked first so the pre-generation's own check, still
+                        # running, discards its verdict instead of storing it.
+                        _storage.store_content(session_id, 'calculation_prewarm_served', True)
+                        consume_prewarmed(session_id, 'calculation')
+                        full_response = draft
+                        if exam_questions:
+                            verify_exam_question = exam_questions[0]
+                        elif equation_list:
+                            verify_equation = equation_list[0]
+                        if draft.startswith(sent):
+                            remainder = draft[len(sent):]
+                        else:
+                            q.put({'reset': True})
+                            remainder = draft
                         for i in range(0, len(remainder), 400):
                             q.put(remainder[i:i + 400])
                         return
@@ -1533,6 +1585,8 @@ def calculation_stream():
                         _storage.store_content(session_id, 'current_equation_index', 0)
                         current_index = 0
 
+                    exam_questions = _wait_for_equation_list(_storage, session_id, exam_questions, current_index,
+                                                             'exam_questions', 'exam_questions_pending')
                     if current_index >= len(exam_questions):
                         q.put(f"You've worked through all {len(exam_questions)} calculation questions I found in this paper — great work! You can upload a new paper to continue practising.")
                         return
@@ -1600,6 +1654,7 @@ def calculation_stream():
                                    (session_id, 'current_calculation_answer',
                                     (already_checked or {}).get('answer')),
                                    (session_id, 'current_calculation_verify_task', None),
+                                   (session_id, 'calculation_answer_marked', False),
                                    (session_id, 'calculation_mode_active', True),
                                    (session_id, 'essay_mode_active', False)]
                     if writes:
@@ -2162,7 +2217,7 @@ PREWARM_WAIT_SECONDS = 120  # how long a click waits for a pending pre-generatio
 KEEPALIVE = object()        # queue sentinel: emit an SSE comment to keep a waiting connection open
 SSE_KEEPALIVE_SECONDS = 1.0  # live streams: comment line sent whenever the model has been silent this long
 PREWARM_KEYS = tuple(f"{f}_prewarm{suffix}" for f in ('essay', 'calculation', 'quiz', 'infographic', 'infographic_brief')
-                     for suffix in ('', '_pending', '_partial', '_check'))
+                     for suffix in ('', '_pending', '_partial', '_check', '_draft', '_served'))
 
 
 def get_prewarmed(session_id, feature, wait_seconds=0):
@@ -2185,7 +2240,7 @@ def consume_prewarmed(session_id, feature):
     """Remove a served pre-generated result so it is used only once."""
     try:
         StorageManager().delete_many(session_id, [f"{feature}_prewarm", f"{feature}_prewarm_partial",
-                                                  f"{feature}_prewarm_check"])
+                                                  f"{feature}_prewarm_check", f"{feature}_prewarm_draft"])
     except Exception as e:
         logging.debug(f"PREWARM: could not remove {feature}: {e}")
 
@@ -2226,6 +2281,11 @@ def _prewarm_one(feature, session_id, pdf_text, doc_type, task_id, produce, dela
                         logging.warning(f"PREWARM {feature}: stream ended with a failure notice; discarded")
                         return None
                     if finalize:
+                        # The finished draft, for a request that arrives while
+                        # finalize is still running (the calculation check takes
+                        # 20-30 s): it can serve the draft now instead of waiting.
+                        storage.batch_store([(session_id, f"{feature}_prewarm_partial", buf),
+                                             (session_id, f"{feature}_prewarm_draft", buf)])
                         # finalize(text) or finalize(text, tutor); may be a coroutine
                         n_params = len(inspect.signature(finalize).parameters)
                         out = finalize(buf, tutor) if n_params >= 2 else finalize(buf)
@@ -2288,18 +2348,49 @@ def _extract_full_equation_list_background(session_id, pdf_text, doc_type, task_
                 pass
 
 
+def _extract_full_exam_questions_background(session_id, pdf_text, doc_type, task_id, first_q):
+    """Stage two of the exam question extraction (after an upload): every
+    calculation question, reconciled with the stage-one question and stored;
+    clears the pending flag that /calculation_stream waits on for 'next
+    question' clicks."""
+    with app.app_context():
+        storage = StorageManager()
+        try:
+            tutor = TutorAI()
+            tutor.set_context(pdf_text, doc_type=doc_type)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                questions = loop.run_until_complete(tutor.extract_exam_questions_async())
+            finally:
+                loop.close()
+            merged = TutorAI.merge_first_exam_question(first_q, questions)
+            if not _upload_is_current(session_id, task_id):
+                return
+            storage.batch_store([(session_id, 'exam_questions', merged),
+                                 (session_id, 'exam_questions_pending', False)])
+            logging.info(f"Upload {task_id}: full exam question list ready ({len(merged)} questions)")
+        except Exception as e:
+            logging.error(f"Upload {task_id}: full exam question extraction failed (first question kept): {e}")
+            try:
+                storage.store_content(session_id, 'exam_questions_pending', False)
+            except Exception:
+                pass
+
+
 EQUATION_LIST_WAIT_SECONDS = 90
 
 
-def _wait_for_equation_list(storage, session_id, equation_list, current_index):
-    """If the student has already used every equation stored so far but the
-    full list is still being extracted, wait for it (polling) before deciding
-    the notes are exhausted."""
+def _wait_for_equation_list(storage, session_id, equation_list, current_index,
+                            key='equation_list', pending_key='equation_list_pending'):
+    """If the student has already used every equation (or exam question)
+    stored so far but the full list is still being extracted, wait for it
+    (polling) before deciding the material is exhausted."""
     deadline = time.time() + EQUATION_LIST_WAIT_SECONDS
     while current_index >= len(equation_list or []) and time.time() < deadline:
-        rows = storage.batch_retrieve(session_id, ['equation_list', 'equation_list_pending'])
-        equation_list = rows.get('equation_list') or equation_list
-        if not rows.get('equation_list_pending'):
+        rows = storage.batch_retrieve(session_id, [key, pending_key])
+        equation_list = rows.get(key) or equation_list
+        if not rows.get(pending_key):
             break
         time.sleep(0.5)
     return equation_list
@@ -2422,35 +2513,43 @@ def _transcribe_equation_pages(file_data, filename, pdf_text):
     return add_equation_transcripts(pdf_text, transcripts) if transcripts else None
 
 
-def process_upload_background(task_id, file_data, filename, session_id, display_name=None):
+def _restore_previous_upload(session_id, task_id, previous_upload):
+    """A failed upload keeps the previous document: hand the 'current upload'
+    marker back to it so its background jobs may store their results again."""
+    try:
+        if StorageManager().retrieve_content(session_id, 'current_upload') == task_id:
+            StorageManager().store_content(session_id, 'current_upload', previous_upload)
+    except Exception as e:
+        logging.debug(f"Could not restore current_upload: {e}")
+
+
+def process_upload_background(task_id, file_data, filename, session_id, display_name=None, previous_upload=None):
     """Background function to process uploaded file. display_name is the name
-    the student gave the file (shown on the page); filename is the sanitised one."""
+    the student gave the file (shown on the page); filename is the sanitised one.
+    The previous document's state is reset only once this file has been read."""
     import io
     with app.app_context():
         try:
             logging.info(f"Starting background file processing for task {task_id}")
-            
+
             file_obj = io.BytesIO(file_data)
             file_obj.filename = filename
-            
+
             success, pdf_text, error_message = process_document_with_fallback(file_obj)
-            
+
             if success:
+                # Reset the previous document's state (one bulk delete) so a
+                # fresh document starts from question 1 with an empty
+                # conversation and no document type from the previous upload.
+                clear_document_rows(session_id)
                 # One write: primary_storage persists to the same table as
                 # storage_manager and also fills its in-memory cache.
-                primary_storage.store_content(session_id, 'pdf_content', pdf_text)
+                primary_storage.batch_store([(session_id, 'pdf_content', pdf_text),
+                                             (session_id, 'messages', [])])
                 # Fingerprint for the request handlers to put in the cookie, so
                 # another worker's cached copy of a previous document is rejected.
-                storage_manager.store_content(session_id, 'pdf_content_hash', _pdf_hash(pdf_text))
-
-                # Reset per-document state so a fresh document starts from question 1
-                # (and no document type from a previous upload lingers): one bulk
-                # delete instead of nine sequential writes, so the completion
-                # signal reaches the waiting /upload request sooner.
-                storage_manager.delete_many(session_id, ['equation_list', 'equation_list_pending', 'exam_questions', 'calc_doc_type',
-                                                         'executive_summary', 'executive_summary_partial',
-                                                         *ESSAY_STATE_KEYS, *PREWARM_KEYS])
-                storage_manager.store_content(session_id, 'current_equation_index', 0)
+                storage_manager.batch_store([(session_id, 'pdf_content_hash', _pdf_hash(pdf_text)),
+                                             (session_id, 'current_equation_index', 0)])
 
                 # Start the executive summary NOW, in parallel with everything
                 # below, so it is usually finished by the time the page asks.
@@ -2527,10 +2626,28 @@ def process_upload_background(task_id, file_data, filename, session_id, display_
                     asyncio.set_event_loop(_loop)
                     try:
                         if _prep.is_question_set():
-                            questions = _loop.run_until_complete(_prep.extract_exam_questions_async())
-                            if questions:
-                                storage_manager.store_content(session_id, 'exam_questions', questions)
-                            logging.info(f"Upload {task_id}: pre-extracted {len(questions or [])} exam questions")
+                            # Same two stages as for notes: the first calculation
+                            # question alone (~3 s, against ~13 s for every
+                            # question of a 12-question paper), then the full
+                            # list in a thread, reconciled so that index 0 is
+                            # the question already pre-generated.
+                            first_q = _loop.run_until_complete(_prep.extract_first_exam_question_async())
+                            if first_q:
+                                storage_manager.batch_store([(session_id, 'exam_questions', [first_q]),
+                                                             (session_id, 'exam_questions_pending', True)])
+                                _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
+                                               lambda t: t._generate_exam_worked_example_stream(t._exam_context(first_q), first_q, model=CALC_PREWARM_MODEL),
+                                               finalize=_checked_calc_prewarm(session_id, exam_question=first_q))
+                                calc_prewarm_started = True
+                                threading.Thread(target=_extract_full_exam_questions_background,
+                                                 args=(session_id, pdf_text, doc_type, task_id, first_q),
+                                                 daemon=True).start()
+                                logging.info(f"Upload {task_id}: first exam question Q{first_q.get('id')} extracted; full list extracting in background")
+                            else:
+                                questions = _loop.run_until_complete(_prep.extract_exam_questions_async())
+                                if questions:
+                                    storage_manager.store_content(session_id, 'exam_questions', questions)
+                                logging.info(f"Upload {task_id}: pre-extracted {len(questions or [])} exam questions")
                         else:
                             # Two stages: the first equation alone (~5 s) so the
                             # calculation pre-generation can start now; the full
@@ -2575,7 +2692,7 @@ def process_upload_background(task_id, file_data, filename, session_id, display_
                                    lambda t: t.generate_infographic_async(), delay=6.0)
                     exam_qs = storage_manager.retrieve_content(session_id, 'exam_questions')
                     eq_list = storage_manager.retrieve_content(session_id, 'equation_list')
-                    if exam_qs:
+                    if exam_qs and not calc_prewarm_started:
                         _start_prewarm('calculation', session_id, pdf_text, doc_type, task_id,
                                        lambda t: t._generate_exam_worked_example_stream(t._exam_context(exam_qs[0]), exam_qs[0], model=CALC_PREWARM_MODEL),
                                        finalize=_checked_calc_prewarm(session_id, exam_question=exam_qs[0]))
@@ -2588,12 +2705,15 @@ def process_upload_background(task_id, file_data, filename, session_id, display_
             else:
                 logging.error(f"Document processing failed for task {task_id}: {error_message}")
                 record_upload(filename, session_id, False, error=error_message or 'Document processing failed')
+                _restore_previous_upload(session_id, task_id, previous_upload)
                 update_task_failed(task_id, error_message or 'Document processing failed')
                 _signal_upload_done(task_id)
-                
+
         except Exception as e:
             logging.error(f"Background file processing error for task {task_id}: {e}")
             record_upload(filename, session_id, False, error=str(e))
+            if not (get_task_status(task_id) or {}).get('status') == 'complete':
+                _restore_previous_upload(session_id, task_id, previous_upload)
             update_task_failed(task_id, "An internal error occurred. Please try again.")
             _signal_upload_done(task_id)
 
@@ -2649,11 +2769,17 @@ def upload_file():
         display_name = _re.sub(r'[\x00-\x1f\x7f]', '', _re.split(r'[\\/]', original_filename)[-1]).strip()[:120] or secure_name
 
         if file and secure_name and secure_name.lower().endswith(('.pdf', '.pptx', '.docx')):
-            
-            # Reset the previous document's state here (one bulk delete) instead
-            # of the page making a separate clear-session request first.
+
+            # The previous document is kept until this one has been read: the
+            # background job resets the stored state only on success, and the
+            # cookie is switched over when the completed status is reported
+            # (_adopt_uploaded_document), so a corrupt file leaves the student's
+            # current document and conversation as they were.
             session_id = session.get('session_id')
-            clear_session_data(session_id)
+            try:
+                previous_upload = storage_manager.retrieve_content(session_id, 'current_upload')
+            except Exception:
+                previous_upload = None
 
             # Read file data into memory immediately
             file_data = file.read()
@@ -2674,7 +2800,7 @@ def upload_file():
             done_event = _upload_event(task_id, create=True)
             thread = threading.Thread(
                 target=process_upload_background,
-                args=(task_id, file_data, safe_filename, session_id, display_name),
+                args=(task_id, file_data, safe_filename, session_id, display_name, previous_upload),
                 daemon=True
             )
             thread.start()
@@ -2691,18 +2817,8 @@ def upload_file():
             with _UPLOAD_DONE_LOCK:
                 _UPLOAD_DONE_EVENTS.pop(task_id, None)
 
-            # Store sanitized filename in session
-            session['pdf_filename'] = display_name
-            session.pop('doc_type', None)  # new document: the type is re-classified
-            session.pop('pdf_hash', None)
             if completed and completed.get('status') == 'complete':
-                _remember_pdf_hash(session_id)
-
-            # Clear previous messages (one write: DB + this worker's cache)
-            try:
-                primary_storage.store_content(session_id, 'messages', [])
-            except Exception:
-                pass  # Ignore if session doesn't exist in storage yet
+                _adopt_uploaded_document(session_id, completed.get('data'))
 
             # Return task_id for polling (sanitized + escaped filename only);
             # includes the finished status when the job already completed.
@@ -2718,6 +2834,15 @@ def upload_file():
     except Exception:
         logging.exception("Critical error in file upload")
         return jsonify({'error': 'An internal error occurred. Please try again.'}), 500
+
+def _adopt_uploaded_document(session_id, data):
+    """Switch the cookie to a document whose upload has completed (the stored
+    state was reset by the upload job). Needs a request context."""
+    display_name = (data or {}).get('filename')
+    clear_session_cookie(session_id)
+    session['pdf_filename'] = display_name
+    _remember_pdf_hash(session_id)
+
 
 def _remember_pdf_hash(session_id):
     """Copy the uploaded document's fingerprint into the signed cookie (see
@@ -2746,7 +2871,7 @@ def get_upload_status(task_id):
         if result_dict.get("status") == "complete" and (result_dict.get("data") or {}).get('success'):
             session_id = session.get('session_id')
             if session_id:
-                _remember_pdf_hash(session_id)
+                _adopt_uploaded_document(session_id, result_dict.get("data"))
                 # Get PDF content
                 pdf_content = (primary_storage.retrieve_content(session_id, 'pdf_content') or 
                              storage_manager.retrieve_content(session_id, 'pdf_content'))
@@ -2773,6 +2898,21 @@ def get_upload_status(task_id):
     except Exception:
         logging.exception("Error checking upload task status")
         return jsonify({"status": "error", "error": "An internal error occurred. Please try again."}), 500
+
+
+@app.route('/document_type', methods=['GET'])
+def document_type():
+    """The uploaded document's classification (exam_paper, exercise_set,
+    research_article, lecture_notes), or null while the upload job is still
+    classifying it: the page polls this after an upload to name the type."""
+    session_id = session.get('session_id')
+    doc_type = None
+    if session_id:
+        try:
+            doc_type = storage_manager.retrieve_content(session_id, 'calc_doc_type')
+        except Exception as e:
+            logging.debug(f"Could not read calc_doc_type: {e}")
+    return jsonify({'document_type': doc_type})
 
 
 @app.route('/start_infographic_generation', methods=['POST'])
@@ -2937,41 +3077,51 @@ def get_infographic_status(task_id):
         logging.exception(f"INFOGRAPHIC POLLING: Error getting task status for {task_id}")
         return jsonify({"error": "Failed to get task status"}), 500
 
+DOCUMENT_STATE_KEYS = (
+    'pdf_content', 'quiz_data', 'calculation_quiz_data',
+    'current_calculation_question', 'used_calculation_questions',
+    'current_calculation_verify_task', 'current_calculation_answer', 'pdf_content_hash',
+    'calculation_mode_active', 'calculation_answer_marked',
+    'messages', 'quiz_questions', 'practice_equations',
+    'equation_list', 'equation_list_pending', 'exam_questions', 'exam_questions_pending', 'calc_doc_type',
+    'current_equation_index',
+    'current_essay_question', 'essay_mode_active', 'used_essay_questions',
+    'infographic_email_request', 'infographic_email_result',
+    'executive_summary', 'executive_summary_partial', 'summary_pending',
+    *PREWARM_KEYS
+)
+
+
+def clear_document_rows(session_id):
+    """Delete everything stored for the session's document and conversation
+    (no request context needed, so the upload job can call it)."""
+    if not session_id:
+        return
+    # One DELETE for all types (this used to be 17 sequential round trips,
+    # which made the pre-upload clear take over two seconds).
+    try:
+        StorageManager().delete_many(session_id, list(DOCUMENT_STATE_KEYS))
+    except Exception as e:
+        logging.debug(f"Could not clear session content for {session_id}: {e}")
+
+
+def clear_session_cookie(session_id):
+    """Clear the Flask session but KEEP the session id. Regenerating it here
+    made any request that raced the clear (e.g. an upload started in the same
+    moment) store content under the old id while later requests looked it up
+    under a new one -> "Document content not available" right after a
+    successful upload."""
+    session.clear()
+    if session_id:
+        session['session_id'] = session_id
+
+
 def clear_session_data(session_id=None):
     """Clear current session data from both Flask session and file storage"""
     if session_id is None:
         session_id = session.get('session_id')
-    
-    if session_id:
-        # Clear all session-related files from storage
-        storage_manager = StorageManager()
-        content_types = [
-            'pdf_content', 'quiz_data', 'calculation_quiz_data', 
-            'current_calculation_question', 'used_calculation_questions',
-            'current_calculation_verify_task', 'current_calculation_answer', 'pdf_content_hash',
-            'messages', 'quiz_questions', 'practice_equations',
-            'equation_list', 'equation_list_pending', 'exam_questions', 'calc_doc_type', 'current_equation_index',
-            'current_essay_question', 'essay_mode_active', 'used_essay_questions',
-            'infographic_email_request', 'infographic_email_result',
-            'executive_summary', 'executive_summary_partial', 'summary_pending',
-            *PREWARM_KEYS
-        ]
-        
-        # One DELETE for all types (this used to be 17 sequential round trips,
-        # which made the pre-upload clear take over two seconds).
-        try:
-            storage_manager.delete_many(session_id, content_types)
-        except Exception as e:
-            logging.debug(f"Could not clear session content for {session_id}: {e}")
-    
-    # Clear the Flask session but KEEP the session id. Regenerating it here made
-    # any request that raced the clear (e.g. an upload started in the same
-    # moment) store content under the old id while later requests looked it up
-    # under a new one -> "Document content not available" right after a
-    # successful upload.
-    session.clear()
-    if session_id:
-        session['session_id'] = session_id
+    clear_document_rows(session_id)
+    clear_session_cookie(session_id)
 
 @app.route('/clear_session', methods=['POST'])
 @csrf.exempt

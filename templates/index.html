@@ -507,7 +507,14 @@ function addNewMessage(role, content) {
         if (benefitsSummary) {
             benefitsSummary.style.display = 'none';
         }
-        
+
+        // Practice panels belong to the previous document's question: hide them
+        // (restoreChatHistory shows them again if this upload fails).
+        ['calculationAnswerInput', 'calculationFeedbackActions', 'essayAnswerInput'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+        });
+
         // The backend reset now happens inside the /upload request itself (one
         // round trip fewer), so this only clears the page. Kept as a promise
         // for the caller's existing flow.
@@ -692,6 +699,29 @@ function addNewMessage(role, content) {
         `;
     }
 
+    // The upload job classifies the document a few seconds after the upload
+    // completes: ask for the type for up to 30 s, then name it in the banner.
+    const DOCUMENT_TYPE_NOTES = {
+        exam_paper: 'Exam paper detected - the tutor will focus on the topics its questions test.',
+        exercise_set: 'Tutorial / homework questions detected - the tutor will focus on the topics they cover.',
+        research_article: 'Research article detected - the tutor will focus on its question, methods and findings.'
+    };
+    async function showDocumentTypeWhenKnown() {
+        const note = document.getElementById('uploadTypeNote');
+        for (let attempt = 0; attempt < 30 && note && note.isConnected; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            try {
+                const data = await fetch('/document_type').then(r => r.json());
+                if (data.document_type) {
+                    if (DOCUMENT_TYPE_NOTES[data.document_type]) note.textContent = DOCUMENT_TYPE_NOTES[data.document_type];
+                    return;
+                }
+            } catch (error) {
+                console.warn('Could not read the document type:', error);
+            }
+        }
+    }
+
     function handleFileUpload(event) {
         const file = event.target.files[0];
         if (!file) return;
@@ -712,7 +742,21 @@ function addNewMessage(role, content) {
             return;
         }
 
-        // Clear session and chat messages for the new upload. The upload itself
+        // The server keeps the current document if this file cannot be read;
+        // the page then rebuilds its conversation (restorePreviousDocument).
+        const hadDocument = !!document.querySelector('#messages .message') || !!document.getElementById('previousFileInfo');
+        const restorePreviousDocument = () => {
+            const messagesDiv = document.getElementById('messages');
+            if (messagesDiv) messagesDiv.innerHTML = '';
+            if (hadDocument) {
+                restoreChatHistory();
+            } else {
+                const benefitsSummary = document.getElementById('benefitsSummary');
+                if (benefitsSummary) benefitsSummary.style.display = '';
+            }
+        };
+
+        // Clear the chat messages for the new upload. The upload itself
         // waits for this to finish so the two requests cannot race.
         const sessionCleared = clearSessionSilent();
         
@@ -937,22 +981,18 @@ function addNewMessage(role, content) {
                                             <i class="fas fa-check-circle fa-2x"></i>
                                         </div>
                                         <div class="flex-grow-1">
-                                            <h6 class="mb-1">✅ Successfully loaded: ${escapeHtml(data.filename)}</h6>
+                                            <h6 class="mb-1">✅ Successfully loaded: ${escapeHtml(statusData.data.filename || data.filename)}</h6>
                                             <small>
                                                 <i class="fas fa-robot me-1"></i>
-                                                ${data.document_type === 'exam_paper'
-                                                    ? 'Exam paper detected - the tutor will focus on the topics its questions test.'
-                                                    : data.document_type === 'exercise_set'
-                                                        ? 'Tutorial / homework questions detected - the tutor will focus on the topics they cover.'
-                                                        : data.document_type === 'research_article'
-                                                            ? 'Research article detected - the tutor will focus on its question, methods and findings.'
-                                                            : 'Upload successful!'} Executive summary will be generated automatically.
+                                                <span id="uploadTypeNote">Upload successful!</span> Executive summary will be generated automatically.
                                             </small>
                                         </div>
                                     </div>
                                 </div>
                             `;
                             
+                            showDocumentTypeWhenKnown();
+
                             // Start summary progress bar animation NOW that upload is complete
                             console.log('UPLOAD: Upload completed, starting summary progress bar animation');
                             if (window.summaryProgressBar && !window.summaryProgressTimer) {
@@ -989,7 +1029,8 @@ function addNewMessage(role, content) {
                                 existingProgressBar.remove();
                                 console.log('UPLOAD: Removed executive summary progress bar due to upload failure');
                             }
-                            
+                            restorePreviousDocument();
+
                             statusDiv.innerHTML = `
                                 <div class="alert alert-danger upload-completed">
                                     <div class="d-flex align-items-center">
@@ -1056,7 +1097,8 @@ function addNewMessage(role, content) {
                 existingProgressBar.remove();
                 console.log('UPLOAD: Removed executive summary progress bar due to upload error');
             }
-            
+            restorePreviousDocument();
+
             console.error('Upload error:', error);
             showUploadProblem(error.userMessage
                 || `The upload did not complete. Please check your connection and try again (PDF, PowerPoint or Word, up to ${UPLOAD_MAX_MB} MB).`);

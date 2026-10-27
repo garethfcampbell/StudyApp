@@ -3075,6 +3075,71 @@ Example output format:
             logging.error(f"extract_exam_questions_async failed: {e}")
             return []
 
+    async def extract_first_exam_question_async(self):
+        """Stage one of the exam question extraction: only the FIRST calculation
+        question, so the calculation pre-generation can start without waiting
+        for every question to be copied out. Returns one {"id", "question"}
+        dict or None."""
+        if not self.context:
+            return None
+        try:
+            prompt = f"""TASK: Find the FIRST question or sub-question in the {self._material_noun()} above, reading from top to bottom, that requires a numerical calculation, and return it as one self-contained question object.
+
+Rules:
+- Skip purely discursive questions that ask students to "explain", "discuss", or "describe" without any calculation.
+- Preserve the EXACT wording, numbers, and data from the document — do not alter, summarise, or rephrase.
+- The text was extracted from a PDF or Word file, so a data table may appear with its columns run together or its rows out of order: reconstruct the table carefully, keeping every figure with the row and column label it belongs to, and include it in full.
+- The entry must be completely self-contained: include any shared data, tables, or context from the parent question that it depends on so it can be understood in isolation.
+- Include the mark allocation if stated (e.g. "[10 marks]").
+- Use the question's own number as "id" (e.g. "1a", "2", "3b").
+- Return ONLY one valid JSON object with the keys "id" and "question", no surrounding text.
+
+Example output format:
+{{"id": "1a", "question": "A bond with a face value of £1,000 pays a coupon of 5% per annum... Calculate the present value of the bond. [10 marks]"}}"""
+            messages = self._build_feature_messages(
+                f"You are analysing the {self._material_noun()} above to extract its first calculation question.",
+                prompt, guidance="")
+            for model in (EXTRACTION_MODEL, _fallback_for(EXTRACTION_MODEL)):
+                try:
+                    content = await self._make_async_openai_fallback_call(
+                        messages, model=model, max_tokens=3000, timeout=60
+                    )
+                    parsed = _loads_json_lenient(_strip_code_fences(content.strip()))
+                    if isinstance(parsed, list):
+                        parsed = parsed[0] if parsed else None
+                    if isinstance(parsed, dict) and str(parsed.get("question") or "").strip():
+                        first = {"id": str(parsed.get("id") or "1").strip(), "question": str(parsed["question"]).strip()}
+                        logging.info(f"Extracted first exam question using {model}: Q{first['id']}")
+                        return first
+                except Exception as e:
+                    logging.error(f"First exam question extraction failed with {model}: {e}")
+            return None
+        except Exception as e:
+            logging.error(f"extract_first_exam_question_async failed: {e}")
+            return None
+
+    @staticmethod
+    def _question_id_key(question):
+        """Loose identity of an exam question id ("Q1(a)", "1a", "1 a" -> "1a")."""
+        qid = str((question or {}).get("id") or "") if isinstance(question, dict) else ""
+        return re.sub(r'^(question|q)', '', re.sub(r'[^a-z0-9]', '', qid.lower()))
+
+    @staticmethod
+    def merge_first_exam_question(first, full):
+        """Reconcile the stage-one exam question with the full list so that
+        index 0 is the question whose worked example was already pre-generated.
+        The full list's entry with the same id is replaced by `first` and moved
+        to the front; any questions the full list puts before it follow it, so
+        none is lost. With no id match, `first` is added at the front."""
+        full = [q for q in (full or []) if isinstance(q, dict)]
+        if not first:
+            return full
+        key = TutorAI._question_id_key(first)
+        rest = [q for q in full if not (key and TutorAI._question_id_key(q) == key)]
+        if len(rest) == len(full):
+            logging.info(f"EXAM QUESTIONS: stage-one Q{first.get('id')} not found in the full list; added in front")
+        return [first] + rest
+
     async def extract_first_equation_async(self):
         """Stage one of the equation extraction: only the FIRST main computable
         equation, with name, variables and pages, so the calculation

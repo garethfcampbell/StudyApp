@@ -112,6 +112,35 @@ class ActivityLogTests(unittest.TestCase):
                 self.assertIn(b"Executive summary", response.data)
                 self.assertIn(b"audit-document.pdf", response.data)
 
+    def test_csv_download_contains_every_recorded_event(self):
+        from datetime import datetime, timedelta
+        start = datetime(2026, 1, 1)
+        with app.app_context():
+            postgres_db.session.add_all([
+                ActivityLog(event="quiz", success=True, filename=f"doc-{i}.pdf",
+                            occurred_at=start + timedelta(minutes=i))
+                for i in range(2600)
+            ])
+            postgres_db.session.commit()
+        headers = {"X-Admin-Token": "test-admin-token"}
+        def fetch(url):
+            # A streamed response must be read before the next request
+            response = self.client.get(url, headers=headers)
+            text = response.get_data(as_text=True)
+            response.close()
+            return text
+
+        with patch.dict(os.environ, {"ADMIN_TOKEN": "test-admin-token"}):
+            full = fetch("/admin/activity?format=csv")
+            capped = fetch("/admin/activity?format=csv&limit=10")
+            page = fetch("/admin/activity")
+        lines = full.strip().splitlines()
+        self.assertEqual(len(lines), 2601)                       # header + every event
+        self.assertIn("doc-2599.pdf", lines[1])                  # newest first
+        self.assertIn("doc-0.pdf", lines[-1])
+        self.assertEqual(len(capped.strip().splitlines()), 11)
+        self.assertEqual(page.count("<tr><td>"), 500)
+
     def test_upload_success_failure_and_feature_use_are_persisted(self):
         record_upload(
             "successful-notes.pdf",

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, Response
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, Response, stream_with_context
 from flask_compress import Compress
 from werkzeug.middleware.proxy_fix import ProxyFix
 from markupsafe import escape
@@ -3233,7 +3233,8 @@ def _admin_challenge():
 def admin_activity():
     """Activity log for the module team: uploads and every feature use, newest first.
     Password protected (HTTP Basic auth, ADMIN_USER / ADMIN_PASSWORD secrets).
-    ?event=upload (or any event key) filters; ?format=csv downloads; ?limit=N (default 500)."""
+    ?event=upload (or any event key) filters; ?format=csv downloads every recorded
+    event; ?limit=N caps the page (default 500) or, if given, the download."""
     if not _admin_authorised():
         return _admin_challenge()
     try:
@@ -3244,7 +3245,9 @@ def admin_activity():
         q = ActivityLog.query
         if event_filter:
             q = q.filter(ActivityLog.event == event_filter)
-        rows = q.order_by(ActivityLog.occurred_at.desc()).limit(limit).all()
+        q = q.order_by(ActivityLog.occurred_at.desc())
+        want_csv = request.args.get('format') == 'csv'
+        rows = [] if want_csv else q.limit(limit).all()
         try:
             from zoneinfo import ZoneInfo
             display_tz, tz_label = ZoneInfo('Europe/London'), 'Europe/London'
@@ -3257,18 +3260,29 @@ def admin_activity():
         def label(ev):
             return EVENT_LABELS.get(ev, ev)
 
-        if request.args.get('format') == 'csv':
+        if want_csv:
             import csv
             import io as _io
-            buf = _io.StringIO()
-            w = csv.writer(buf)
-            w.writerow([f'time_{tz_label}', 'event', 'filename', 'document_type', 'status', 'error', 'detail',
-                        'text_chars', 'session_ref'])
-            for r in rows:
-                w.writerow([local_time(r.occurred_at), label(r.event), r.filename or '', r.doc_type or '',
-                            'ok' if r.success else 'failed', r.error or '', r.detail or '',
-                            r.content_chars or '', r.session_ref or ''])
-            return Response(buf.getvalue(), mimetype='text/csv',
+            # The whole log unless ?limit= is given, streamed in batches so a
+            # long history is never held in memory at once.
+            export = q.limit(limit) if request.args.get('limit') else q
+
+            def generate():
+                buf = _io.StringIO()
+                w = csv.writer(buf)
+                w.writerow([f'time_{tz_label}', 'event', 'filename', 'document_type', 'status', 'error', 'detail',
+                            'text_chars', 'session_ref'])
+                for n, r in enumerate(export.yield_per(1000), 1):
+                    w.writerow([local_time(r.occurred_at), label(r.event), r.filename or '', r.doc_type or '',
+                                'ok' if r.success else 'failed', r.error or '', r.detail or '',
+                                r.content_chars or '', r.session_ref or ''])
+                    if n % 1000 == 0:
+                        yield buf.getvalue()
+                        buf.seek(0)
+                        buf.truncate()
+                yield buf.getvalue()
+
+            return Response(stream_with_context(generate()), mimetype='text/csv',
                             headers={'Content-Disposition': 'attachment; filename="activity_log.csv"'})
 
         failed_cell = '<span style="color:#b00">failed</span>'
@@ -3288,7 +3302,7 @@ th,td{{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}
 .f a{{margin-right:.8rem}}</style></head>
 <body><h2>Activity log</h2>
 <p>{len(rows)} most recent event(s){' - ' + escape(label(event_filter)) if event_filter else ''}, times in {tz_label}.
-<a href="?format=csv{'&amp;event=' + escape(event_filter) if event_filter else ''}">Download CSV</a></p>
+<a href="?format=csv{'&amp;event=' + escape(event_filter) if event_filter else ''}">Download CSV (all recorded events)</a></p>
 <p class="f">Filter: <a href="?">All</a> {filters}</p>
 <table><tr><th>Time</th><th>Event</th><th>Document</th><th>Type</th><th>Status</th><th>Note</th><th>Session</th></tr>{cells}</table>
 </body></html>"""
